@@ -1,4 +1,4 @@
-## ADDED Requirements
+## Requirements
 
 > Reference: `related-repos/MeshCore/docs/payloads.md` is the authoritative payload document.
 > `src/helpers/AdvertDataHelpers.cpp`, `src/Mesh.cpp` and `src/MeshCore.h` in the same
@@ -84,12 +84,23 @@ cipher MAC, and ciphertext as the remainder.
 - **THEN** the parse yields a channel hash, a 2-byte MAC and a block-aligned ciphertext
 
 ### Requirement: Acknowledgement parsing
-The system SHALL parse an ACK payload as a single 4-byte little-endian CRC32 checksum and
-SHALL reject an ACK payload of any other length.
+The system SHALL parse an ACK payload as a 4-byte checksum (the truncated SHA-256 defined in
+`mesh-crypto`, not a CRC32) optionally followed by a 2-byte tail — an extended attempt byte
+and a random byte, which current firmware appends to make the packet hash unique
+(`BaseChatMesh.cpp:245-247`, `ack_hash[6]`). It SHALL accept payload lengths of exactly 4 or
+exactly 6 bytes, preserve the tail when present, and reject any other length.
+
+> Both lengths are live on the captured mesh: of the corpus's 42 ACK frames, 31 carry 4 bytes
+> and 11 carry 6. An earlier reading of this requirement demanded exactly 4 bytes, which would
+> have rejected those 11 frames as malformed.
 
 #### Scenario: ACK from the capture corpus
 - **WHEN** any ACK packet in the capture corpus is parsed
-- **THEN** the parse yields exactly one 4-byte checksum value and consumes the whole payload
+- **THEN** the parse yields one 4-byte checksum value, consumes the whole payload, and reports whether a 2-byte tail was present
+
+#### Scenario: ACK of an unexpected length
+- **WHEN** an ACK payload is 5 bytes long
+- **THEN** the parse fails as malformed, naming the length rather than truncating to the first four bytes
 
 ### Requirement: Plain text message body parsing
 The system SHALL parse a decrypted text-message body as a 4-byte little-endian timestamp, a
@@ -128,14 +139,27 @@ verified identity.
 - **THEN** the parse reports no sender name and the whole text as the body, rather than guessing a split
 
 ### Requirement: Returned path body parsing
-The system SHALL parse a decrypted PATH body as a 1-byte path length, that many single-byte
-path hashes, a 1-byte extra payload type using the same values as the packet header's payload
-type field, and the remaining bytes as the bundled extra payload, parsed according to that
-type.
+The system SHALL parse a decrypted PATH body as a path length byte using the **same packed
+encoding as the packet header** — hop count in bits 0-5, hash size minus one in bits 6-7 —
+followed by `hop_count * hash_size` path bytes, a 1-byte extra payload type whose low nibble
+uses the same values as the packet header's payload type field, and the remaining bytes as the
+bundled extra. The bundled extra is already-decrypted content of that type, not a further
+envelope, and SHALL be preserved verbatim including any block padding.
+
+> `Mesh.cpp:167-168` reads this byte with `hash_size = (path_len >> 6) + 1` and
+> `hash_count = path_len & 63`, and validates it with `Packet::isValidPathLen` — the same
+> function the packet header uses. `payloads.md` still documents it as a plain count of
+> single-byte hashes, which holds only for the 1-byte case. `Mesh.cpp:172` notes the extra
+> "may be padded with zeroes", and `BaseChatMesh.cpp:336` reads only the leading 4 bytes of a
+> bundled ACK for exactly that reason.
 
 #### Scenario: Returned path bundling an acknowledgement
-- **WHEN** a decrypted PATH body declares extra type `0x03` (ACK)
-- **THEN** the parse yields the path hashes and an ACK checksum parsed from the extra bytes
+- **WHEN** a decrypted PATH body declares extra type `0x03` (ACK) with at least four extra bytes
+- **THEN** the parse yields the path hashes and an ACK checksum taken from the first four extra bytes, with the remaining extra bytes preserved rather than interpreted
+
+#### Scenario: Returned path with multi-byte hashes
+- **WHEN** a decrypted PATH body's path length byte is `0x43`
+- **THEN** the parse yields 3 hops of 2-byte hashes over the following 6 bytes, not 0x43 single-byte hashes
 
 #### Scenario: Returned path with no bundled extra
 - **WHEN** a decrypted PATH body ends immediately after its path hashes

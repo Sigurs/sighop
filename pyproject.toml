@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "A virtualization platform for MeshCore over a KISS modem"
 requires-python = ">=3.13"
 dependencies = [
+    "cryptography>=43.0",
+    "pynacl>=1.5",
     "pyserial-asyncio>=0.6",
     "structlog>=24.1",
 ]
@@ -24,3 +26,6 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# The corpus harness imports its loader as `tests.protocol.corpus`, so the repo
+# root must be importable.
+pythonpath = ["."]

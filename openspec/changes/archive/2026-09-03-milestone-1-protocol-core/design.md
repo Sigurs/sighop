@@ -202,6 +202,10 @@ computation the same way this milestone verified the wire format against `Utils.
 - **What does the 2-byte `feature 1`/`feature 2` appdata actually carry in the wild?** No corpus
   advert sets `0x20` or `0x40`. Preserved as raw bytes; not interpreted.
 - **Is the corpus's dedup-relevant flood repetition rate high enough to size the milestone 3
-  dedup cache?** DESIGN.md §13 lists this as an in-flight unknown. The decoded corpus can
-  answer it as a by-product — worth computing during this milestone and recording, even though
-  the cache itself is milestone 3.
+  dedup cache?** DESIGN.md §13 lists this as an in-flight unknown. **Answered** (task 9.3):
+  counting duplicates as `Packet::calculatePacketHash` does, the 351 receptions carried 205
+  distinct packets — 41.6% repeats, at most 4 copies of any one packet, duplicates arriving
+  within 3.6 s of each other at p95 and 31.1 s at worst, and at most 16 distinct packets in any
+  60 s window. A ~128-entry cache with a 60 s TTL covers everything observed by an order of
+  magnitude. Full numbers in `tests/protocol/CORPUS.md`; milestone 3 should re-measure rather
+  than treat them as constants, since this is one location on two nights.

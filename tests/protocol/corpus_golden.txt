@@ -1,0 +1,354 @@
+# sighop protocol corpus golden file
+# Structural fields and ciphertext digests only - never decrypted plaintext.
+# Regenerate with `uv run python -m tests.protocol.generate_golden` and review the diff.
+2026-09-02.jsonl[000] route=DIRECT type=ANON_REQ v1 tc=- hops=0x1 path=- | anon_req dest=98 sender=[redacted] mac=c0ec len=16 sha=dc5e5bf290123a82
+2026-09-02.jsonl[001] route=DIRECT type=RESPONSE v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=3138 len=16 sha=262b44956a57634b
+2026-09-02.jsonl[002] route=DIRECT type=RESPONSE v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=3138 len=16 sha=262b44956a57634b
+2026-09-02.jsonl[003] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=7cf1 len=48 sha=71edcab1995f401a
+2026-09-02.jsonl[004] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=7cf1 len=48 sha=71edcab1995f401a
+2026-09-02.jsonl[005] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=7cf1 len=48 sha=71edcab1995f401a
+2026-09-02.jsonl[006] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=2605 len=32 sha=cf51ab707adb4c90
+2026-09-02.jsonl[007] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=7916 len=16 sha=1b82f1fb1ffa6e32
+2026-09-02.jsonl[008] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=98 src=38 mac=2a2b len=32 sha=239c3ebd212cbaa6
+2026-09-02.jsonl[009] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=40224f98 tail=-
+2026-09-02.jsonl[010] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=ee9c len=32 sha=067d25f5a3674087
+2026-09-02.jsonl[011] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=ee9c len=32 sha=067d25f5a3674087
+2026-09-02.jsonl[012] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e468571 | envelope dest=62 src=98 mac=4dce len=32 sha=dbfc33d7f32a75cd
+2026-09-02.jsonl[013] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e468571 | envelope dest=62 src=98 mac=4dce len=32 sha=dbfc33d7f32a75cd
+2026-09-02.jsonl[014] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=4870d36d tail=-
+2026-09-02.jsonl[015] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=1ef2 len=32 sha=68336a2a1e1a109c
+2026-09-02.jsonl[016] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=1ef2 len=32 sha=68336a2a1e1a109c
+2026-09-02.jsonl[017] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=d0bf7cf1 tail=-
+2026-09-02.jsonl[018] route=DIRECT type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=e3 src=38 mac=f432 len=32 sha=0d300fdf636dc6fe
+2026-09-02.jsonl[019] route=DIRECT type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=e3 src=38 mac=f432 len=32 sha=0d300fdf636dc6fe
+2026-09-02.jsonl[020] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=46e53c9d tail=0078
+2026-09-02.jsonl[021] route=DIRECT type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=e3 src=38 mac=baf0 len=32 sha=73947b1e04b4c1db
+2026-09-02.jsonl[022] route=DIRECT type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=e3 src=38 mac=baf0 len=32 sha=73947b1e04b4c1db
+2026-09-02.jsonl[023] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=d3a93939 tail=00b5
+2026-09-02.jsonl[024] route=DIRECT type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=e3 src=38 mac=b319 len=16 sha=72dbadd6bd90d801
+2026-09-02.jsonl[025] route=DIRECT type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=e3 src=38 mac=b319 len=16 sha=72dbadd6bd90d801
+2026-09-02.jsonl[026] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=c4f209f4 tail=00be
+2026-09-02.jsonl[027] route=FLOOD type=GRP_DATA v1 tc=- hops=0x3 path=- | group channel=11 mac=ffe2 len=160 sha=8fb8ec7d2a88340c
+2026-09-02.jsonl[028] route=FLOOD type=GRP_DATA v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=ffe2 len=160 sha=8fb8ec7d2a88340c
+2026-09-02.jsonl[029] route=FLOOD type=GRP_DATA v1 tc=- hops=0x3 path=- | group channel=11 mac=96a7 len=176 sha=4897fe7e7850ca18
+2026-09-02.jsonl[030] route=FLOOD type=GRP_DATA v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=96a7 len=176 sha=4897fe7e7850ca18
+2026-09-02.jsonl[031] route=FLOOD type=GRP_DATA v1 tc=- hops=2x3 path=df6a0a[redacted] | group channel=11 mac=96a7 len=176 sha=4897fe7e7850ca18
+2026-09-02.jsonl[032] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=e368 len=16 sha=eeec0839966ef074
+2026-09-02.jsonl[033] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=ffc8c853 tail=-
+2026-09-02.jsonl[034] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=ffc8c853 tail=-
+2026-09-02.jsonl[035] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=5b70 len=32 sha=0e2ac5aebf81545f
+2026-09-02.jsonl[036] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=fa66d3a2 tail=-
+2026-09-02.jsonl[037] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e468571 | envelope dest=62 src=98 mac=a781 len=32 sha=83213de1930df83b
+2026-09-02.jsonl[038] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=99055fe7 tail=-
+2026-09-02.jsonl[039] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788377904 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[040] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=7e79 len=160 sha=ca66a48943820134
+2026-09-02.jsonl[041] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=fed2a813 tail=-
+2026-09-02.jsonl[042] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=fed2a813 tail=-
+2026-09-02.jsonl[043] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=ef72 len=160 sha=cd1fe68d95718f58
+2026-09-02.jsonl[044] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e468571 | envelope dest=62 src=98 mac=2acd len=160 sha=d8bb015ff545c5b2
+2026-09-02.jsonl[045] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=47d076f8 tail=-
+2026-09-02.jsonl[046] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e468571 | envelope dest=62 src=98 mac=2acd len=160 sha=d8bb015ff545c5b2
+2026-09-02.jsonl[047] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=f378 len=32 sha=30472480d321357c
+2026-09-02.jsonl[048] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=586f len=16 sha=906a717ae959e8a3
+2026-09-02.jsonl[049] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e468571 | envelope dest=62 src=98 mac=c240 len=160 sha=dbcfdc1448b1fd6d
+2026-09-02.jsonl[050] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=ba7ddb82 tail=-
+2026-09-02.jsonl[051] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e468571 | envelope dest=62 src=98 mac=c240 len=160 sha=dbcfdc1448b1fd6d
+2026-09-02.jsonl[052] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e468571 | envelope dest=62 src=98 mac=6484 len=160 sha=25b6b3c9fdb9e07b
+2026-09-02.jsonl[053] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e468571 | envelope dest=62 src=98 mac=6484 len=160 sha=25b6b3c9fdb9e07b
+2026-09-02.jsonl[054] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=98 src=38 mac=10ed len=64 sha=9babff1cd765bb0f
+2026-09-02.jsonl[055] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=a988f0e8 tail=-
+2026-09-02.jsonl[056] route=DIRECT type=TRACE v1 tc=- hops=0x1 path=- | trace len=13 sha=fb63c6010fb21a7b
+2026-09-02.jsonl[057] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=fb6b len=64 sha=f325ee265b97113d
+2026-09-02.jsonl[058] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=fb6b len=64 sha=f325ee265b97113d
+2026-09-02.jsonl[059] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=040db663 tail=-
+2026-09-02.jsonl[060] route=DIRECT type=TRACE v1 tc=- hops=0x1 path=- | trace len=21 sha=cb9d14d3c8eb4164
+2026-09-02.jsonl[061] route=DIRECT type=TRACE v1 tc=- hops=1x1 path=17 | trace len=21 sha=cb9d14d3c8eb4164
+2026-09-02.jsonl[062] route=DIRECT type=TRACE v1 tc=- hops=3x1 path=17cb5f | trace len=21 sha=cb9d14d3c8eb4164
+2026-09-02.jsonl[063] route=DIRECT type=ANON_REQ v1 tc=- hops=1x2 path=08c1 | anon_req dest=8e sender=[redacted] mac=e7a9 len=16 sha=711f115900996e60
+2026-09-02.jsonl[064] route=DIRECT type=ANON_REQ v1 tc=- hops=0x2 path=- | anon_req dest=8e sender=[redacted] mac=e7a9 len=16 sha=711f115900996e60
+2026-09-02.jsonl[065] route=FLOOD type=RESPONSE v1 tc=- hops=1x2 path=df6a | envelope dest=38 src=8e mac=4c85 len=16 sha=055a59535039f224
+2026-09-02.jsonl[066] route=DIRECT type=REQ v1 tc=- hops=1x2 path=08c1 | envelope dest=8e src=38 mac=83f9 len=16 sha=23e655e106a10e36
+2026-09-02.jsonl[067] route=DIRECT type=REQ v1 tc=- hops=0x2 path=- | envelope dest=8e src=38 mac=83f9 len=16 sha=23e655e106a10e36
+2026-09-02.jsonl[068] route=DIRECT type=PATH v1 tc=- hops=1x2 path=08c1 | envelope dest=8e src=38 mac=9c5c len=16 sha=a88aa78c55d9e64d
+2026-09-02.jsonl[069] route=DIRECT type=PATH v1 tc=- hops=0x2 path=- | envelope dest=8e src=38 mac=9c5c len=16 sha=a88aa78c55d9e64d
+2026-09-02.jsonl[070] route=DIRECT type=PATH v1 tc=- hops=1x2 path=08c1 | envelope dest=8e src=38 mac=b9ef len=16 sha=11fd4d138618f8ae
+2026-09-02.jsonl[071] route=DIRECT type=PATH v1 tc=- hops=0x2 path=- | envelope dest=8e src=38 mac=b9ef len=16 sha=11fd4d138618f8ae
+2026-09-02.jsonl[072] route=DIRECT type=REQ v1 tc=- hops=1x2 path=08c1 | envelope dest=8e src=38 mac=549c len=16 sha=4805101d0d38f5fe
+2026-09-02.jsonl[073] route=DIRECT type=REQ v1 tc=- hops=0x2 path=- | envelope dest=8e src=38 mac=549c len=16 sha=4805101d0d38f5fe
+2026-09-02.jsonl[074] route=DIRECT type=REQ v1 tc=- hops=1x2 path=08c1 | envelope dest=8e src=38 mac=09b3 len=16 sha=d905e1761bc92279
+2026-09-02.jsonl[075] route=DIRECT type=REQ v1 tc=- hops=0x2 path=- | envelope dest=8e src=38 mac=09b3 len=16 sha=d905e1761bc92279
+2026-09-02.jsonl[076] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8e08 | group channel=11 mac=2933 len=96 sha=dcbd28055fe8f639
+2026-09-02.jsonl[077] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8edf | group channel=11 mac=2933 len=96 sha=dcbd28055fe8f639
+2026-09-02.jsonl[078] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e46df6a | advert key=[redacted] ts=1788378546 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[079] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e4608c1 | advert key=[redacted] ts=1788378546 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[080] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=7933 len=48 sha=4f9f9df84e218b5b
+2026-09-02.jsonl[081] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=96050b4c tail=-
+2026-09-02.jsonl[082] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=96050b4c tail=-
+2026-09-02.jsonl[083] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=4afd len=64 sha=fadf349b4cedbbad
+2026-09-02.jsonl[084] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=c4836306 tail=-
+2026-09-02.jsonl[085] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=46 src=38 mac=d1b5 len=32 sha=b7210ec2142730d4
+2026-09-02.jsonl[086] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=46 src=38 mac=d1b5 len=32 sha=b7210ec2142730d4
+2026-09-02.jsonl[087] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=df6a0a | envelope dest=46 src=38 mac=d1b5 len=32 sha=b7210ec2142730d4
+2026-09-02.jsonl[088] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=46 src=38 mac=4f0f len=32 sha=98ef45b05b6b3f0d
+2026-09-02.jsonl[089] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=46 src=38 mac=4f0f len=32 sha=98ef45b05b6b3f0d
+2026-09-02.jsonl[090] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=df6a0a | envelope dest=46 src=38 mac=4f0f len=32 sha=98ef45b05b6b3f0d
+2026-09-02.jsonl[091] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=5d1b len=32 sha=ea0b8e1aa5f215b8
+2026-09-02.jsonl[092] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=f34a len=16 sha=b8df8d7ada63113b
+2026-09-02.jsonl[093] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=46 src=38 mac=8a0e len=32 sha=15911039c886a712
+2026-09-02.jsonl[094] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=df6a0a | envelope dest=46 src=38 mac=8a0e len=32 sha=15911039c886a712
+2026-09-02.jsonl[095] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=46 src=38 mac=8a0e len=32 sha=15911039c886a712
+2026-09-02.jsonl[096] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=46 src=38 mac=762a len=32 sha=9eb24e479ed3e454
+2026-09-02.jsonl[097] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=df6a0a | envelope dest=46 src=38 mac=762a len=32 sha=9eb24e479ed3e454
+2026-09-02.jsonl[098] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=46 src=38 mac=762a len=32 sha=9eb24e479ed3e454
+2026-09-02.jsonl[099] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=46 src=38 mac=0b4d len=32 sha=daba2804e7eaa51d
+2026-09-02.jsonl[100] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=df6a0a | envelope dest=46 src=38 mac=0b4d len=32 sha=daba2804e7eaa51d
+2026-09-02.jsonl[101] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=46 src=38 mac=0b4d len=32 sha=daba2804e7eaa51d
+2026-09-02.jsonl[102] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=8154 len=32 sha=4f08a27d04ce6236
+2026-09-02.jsonl[103] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=8154 len=32 sha=4f08a27d04ce6236
+2026-09-02.jsonl[104] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=8154 len=32 sha=4f08a27d04ce6236
+2026-09-02.jsonl[105] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=6647 len=32 sha=3a40aecfd69be2a6
+2026-09-02.jsonl[106] route=DIRECT type=ACK v1 tc=- hops=1x2 path=08c1 | ack checksum=9c9a3224 tail=00fe
+2026-09-02.jsonl[107] route=DIRECT type=ACK v1 tc=- hops=0x2 path=- | ack checksum=9c9a3224 tail=00fe
+2026-09-02.jsonl[108] route=FLOOD type=PATH v1 tc=- hops=2x1 path=8edf | envelope dest=e3 src=77 mac=d0b1 len=16 sha=d5cafe9ef25ffa03
+2026-09-02.jsonl[109] route=FLOOD type=ANON_REQ v1 tc=- hops=2x1 path=8edf | anon_req dest=77 sender=[redacted] mac=8533 len=32 sha=e351027b9336cb35
+2026-09-02.jsonl[110] route=FLOOD type=ANON_REQ v1 tc=- hops=2x1 path=8e08 | anon_req dest=77 sender=[redacted] mac=8533 len=32 sha=e351027b9336cb35
+2026-09-02.jsonl[111] route=FLOOD type=PATH v1 tc=- hops=2x1 path=8e08 | envelope dest=e3 src=77 mac=d0b1 len=16 sha=d5cafe9ef25ffa03
+2026-09-02.jsonl[112] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788379011 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[113] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461b[redacted] | advert key=[redacted] ts=1788379011 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[114] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=70ed len=64 sha=f2412ca47ab4c5ca
+2026-09-02.jsonl[115] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=70ed len=64 sha=f2412ca47ab4c5ca
+2026-09-02.jsonl[116] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=e2e2 len=64 sha=866f6ad04ff846c0
+2026-09-02.jsonl[117] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e4608c1 | advert key=[redacted] ts=1788380935 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[118] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e46df6a | advert key=[redacted] ts=1788380935 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[119] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788381504 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[120] route=FLOOD type=ADVERT v1 tc=- hops=0x2 path=- | advert key=[redacted] ts=1788382642 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-02.jsonl[121] route=FLOOD type=ADVERT v1 tc=- hops=1x2 path=df6a | advert key=[redacted] ts=1788382642 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-02.jsonl[122] route=FLOOD type=ADVERT v1 tc=- hops=1x2 path=08c1 | advert key=[redacted] ts=1788382642 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-02.jsonl[123] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788384521 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[124] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788385104 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[125] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=67ae len=176 sha=898faaecaeffc1d9
+2026-09-02.jsonl[126] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=67ae len=176 sha=898faaecaeffc1d9
+2026-09-02.jsonl[127] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=67ae len=176 sha=898faaecaeffc1d9
+2026-09-02.jsonl[128] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=474e len=32 sha=e32e31338a12e289
+2026-09-02.jsonl[129] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=dfb8 len=16 sha=a133b66243252a0e
+2026-09-02.jsonl[130] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=f35e len=32 sha=f6fa7b099490f12c
+2026-09-02.jsonl[131] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=afc3 len=16 sha=c50b891dba0331aa
+2026-09-02.jsonl[132] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788388704 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[133] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e46df6a | advert key=[redacted] ts=1788391735 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[134] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788392304 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[135] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=f9e525df6a0a | advert key=[redacted] ts=1788395321 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[136] route=FLOOD type=ADVERT v1 tc=- hops=3x3 path=f9e525df6a0a[redacted] | advert key=[redacted] ts=1788395321 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[137] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788395904 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[138] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788398328 sig=ok flags=0x92 type=REPEATER loc=15000,27000 name='[redacted]'
+2026-09-02.jsonl[139] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788399504 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[140] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e4608c1 | advert key=[redacted] ts=1788402535 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[141] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e46df6a | advert key=[redacted] ts=1788402535 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-02.jsonl[142] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788403104 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[143] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=f9e525df6a0a | advert key=[redacted] ts=1788406121 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[144] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=f9e525[redacted] | advert key=[redacted] ts=1788406121 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-02.jsonl[145] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788406704 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[146] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=24d7 len=32 sha=e791929d99f8ff22
+2026-09-02.jsonl[147] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=24d7 len=32 sha=e791929d99f8ff22
+2026-09-02.jsonl[148] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=24d7 len=32 sha=e791929d99f8ff22
+2026-09-02.jsonl[149] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788410304 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-02.jsonl[150] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=24d8 len=32 sha=7af0cada56fe95a1
+2026-09-02.jsonl[151] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=24d8 len=32 sha=7af0cada56fe95a1
+2026-09-03.jsonl[000] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=53b0 len=80 sha=f945dabcf6e13e61
+2026-09-03.jsonl[001] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=53b0 len=80 sha=f945dabcf6e13e61
+2026-09-03.jsonl[002] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=ef14 len=48 sha=02a75849f52bfbe2
+2026-09-03.jsonl[003] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=ef14 len=48 sha=02a75849f52bfbe2
+2026-09-03.jsonl[004] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=ef14 len=48 sha=02a75849f52bfbe2
+2026-09-03.jsonl[005] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=e673 len=112 sha=b8dd9cb1d83cc42d
+2026-09-03.jsonl[006] route=DIRECT type=ACK v1 tc=- hops=1x2 path=08c1 | ack checksum=4a8f804f tail=002a
+2026-09-03.jsonl[007] route=DIRECT type=ACK v1 tc=- hops=0x2 path=- | ack checksum=4a8f804f tail=002a
+2026-09-03.jsonl[008] route=DIRECT type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=e3 src=38 mac=4cfd len=16 sha=11689c138ca2776a
+2026-09-03.jsonl[009] route=DIRECT type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=e3 src=38 mac=4cfd len=16 sha=11689c138ca2776a
+2026-09-03.jsonl[010] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=019ed07f tail=004e
+2026-09-03.jsonl[011] route=DIRECT type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=e3 src=38 mac=6164 len=16 sha=105471800a7e629b
+2026-09-03.jsonl[012] route=DIRECT type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=e3 src=38 mac=6164 len=16 sha=105471800a7e629b
+2026-09-03.jsonl[013] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=80c2e444 tail=0dd2
+2026-09-03.jsonl[014] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=a873 len=16 sha=ca91d0ad7b9839b1
+2026-09-03.jsonl[015] route=DIRECT type=ACK v1 tc=- hops=1x2 path=08c1 | ack checksum=069c48f1 tail=0075
+2026-09-03.jsonl[016] route=DIRECT type=ACK v1 tc=- hops=0x2 path=- | ack checksum=069c48f1 tail=0075
+2026-09-03.jsonl[017] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=af63 len=96 sha=9b1591db228a2871
+2026-09-03.jsonl[018] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=af63 len=96 sha=9b1591db228a2871
+2026-09-03.jsonl[019] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=d233 len=128 sha=939b024c51e91a89
+2026-09-03.jsonl[020] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=d233 len=128 sha=939b024c51e91a89
+2026-09-03.jsonl[021] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=b47c len=64 sha=10edf261ea66f60f
+2026-09-03.jsonl[022] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=b47c len=64 sha=10edf261ea66f60f
+2026-09-03.jsonl[023] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=be69 len=80 sha=e77b30dec478584d
+2026-09-03.jsonl[024] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=be69 len=80 sha=e77b30dec478584d
+2026-09-03.jsonl[025] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=be69 len=80 sha=e77b30dec478584d
+2026-09-03.jsonl[026] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=6305 len=112 sha=f1538b09f64fbdda
+2026-09-03.jsonl[027] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=6305 len=112 sha=f1538b09f64fbdda
+2026-09-03.jsonl[028] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e46df6a | advert key=[redacted] ts=1788413335 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-03.jsonl[029] route=FLOOD type=ADVERT v1 tc=- hops=2x2 path=8e4608c1 | advert key=[redacted] ts=1788413335 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-03.jsonl[030] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=3625 len=32 sha=24bdd7a532ef11bd
+2026-09-03.jsonl[031] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=3625 len=32 sha=24bdd7a532ef11bd
+2026-09-03.jsonl[032] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=91a6 len=96 sha=8d5f76ee787ca56c
+2026-09-03.jsonl[033] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=91a6 len=96 sha=8d5f76ee787ca56c
+2026-09-03.jsonl[034] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=ca0d len=48 sha=9e9d44efc3e372a8
+2026-09-03.jsonl[035] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=ca0d len=48 sha=9e9d44efc3e372a8
+2026-09-03.jsonl[036] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788413904 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[037] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8edf | group channel=11 mac=28a7 len=176 sha=9671324d10a12e83
+2026-09-03.jsonl[038] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8e08 | group channel=11 mac=28a7 len=176 sha=9671324d10a12e83
+2026-09-03.jsonl[039] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8edf | group channel=11 mac=193a len=48 sha=0119cf64fd8cf321
+2026-09-03.jsonl[040] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8e08 | group channel=11 mac=193a len=48 sha=0119cf64fd8cf321
+2026-09-03.jsonl[041] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461b[redacted] | advert key=[redacted] ts=1788416922 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[042] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788416922 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[043] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788417504 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[044] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=f9e525df6a0a | advert key=[redacted] ts=1788417760 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[045] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461b[redacted] | advert key=[redacted] ts=1788417760 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[046] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788419928 sig=ok flags=0x92 type=REPEATER loc=15000,27000 name='[redacted]'
+2026-09-03.jsonl[047] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461b[redacted] | advert key=[redacted] ts=1788419928 sig=ok flags=0x92 type=REPEATER loc=15000,27000 name='[redacted]'
+2026-09-03.jsonl[048] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788421104 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[049] route=FLOOD type=ANON_REQ v1 tc=- hops=3x1 path=ac8e08 | anon_req dest=98 sender=468592e35df49e036c5483a414cab7e7c43ccd91462341b93bd1b57b8a6a3442 mac=825a len=16 sha=766f4b18d8c9ee2a
+2026-09-03.jsonl[050] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=46 src=98 mac=5621 len=32 sha=b59f1063989b54e5
+2026-09-03.jsonl[051] route=FLOOD type=ANON_REQ v1 tc=- hops=4x1 path=ac8ea1df | anon_req dest=98 sender=468592e35df49e036c5483a414cab7e7c43ccd91462341b93bd1b57b8a6a3442 mac=825a len=16 sha=766f4b18d8c9ee2a
+2026-09-03.jsonl[052] route=FLOOD type=PATH v1 tc=- hops=1x1 path=df | envelope dest=46 src=98 mac=5621 len=32 sha=b59f1063989b54e5
+2026-09-03.jsonl[053] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=46 src=98 mac=5621 len=32 sha=b59f1063989b54e5
+2026-09-03.jsonl[054] route=FLOOD type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=46 src=98 mac=2ce5 len=80 sha=2cfada83e428dfbd
+2026-09-03.jsonl[055] route=FLOOD type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=46 src=98 mac=2ce5 len=80 sha=2cfada83e428dfbd
+2026-09-03.jsonl[056] route=FLOOD type=TXT_MSG v1 tc=- hops=1x2 path=df6a | envelope dest=46 src=98 mac=2ce5 len=80 sha=2cfada83e428dfbd
+2026-09-03.jsonl[057] route=FLOOD type=PATH v1 tc=- hops=3x1 path=ac8e08 | envelope dest=98 src=46 mac=3882 len=16 sha=023b614cb2cd97c2
+2026-09-03.jsonl[058] route=FLOOD type=TXT_MSG v1 tc=- hops=0x2 path=- | envelope dest=46 src=98 mac=2ce5 len=80 sha=2cfada83e428dfbd
+2026-09-03.jsonl[059] route=FLOOD type=PATH v1 tc=- hops=3x1 path=ac8edf | envelope dest=98 src=46 mac=3882 len=16 sha=023b614cb2cd97c2
+2026-09-03.jsonl[060] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=cd40 len=16 sha=8ef0684fce945797
+2026-09-03.jsonl[061] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=cd40 len=16 sha=8ef0684fce945797
+2026-09-03.jsonl[062] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=c9d3 len=16 sha=285583d2cffc8ecf
+2026-09-03.jsonl[063] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=c9d3 len=16 sha=285583d2cffc8ecf
+2026-09-03.jsonl[064] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=6e8573f9 tail=-
+2026-09-03.jsonl[065] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=1aed len=16 sha=d3bb081b313e5c6a
+2026-09-03.jsonl[066] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=1aed len=16 sha=d3bb081b313e5c6a
+2026-09-03.jsonl[067] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=7515 len=16 sha=e9d5228957628a6f
+2026-09-03.jsonl[068] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=7515 len=16 sha=e9d5228957628a6f
+2026-09-03.jsonl[069] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=a06fbc5c tail=-
+2026-09-03.jsonl[070] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=7d0d len=64 sha=3701c19b995e9011
+2026-09-03.jsonl[071] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=7d0d len=64 sha=3701c19b995e9011
+2026-09-03.jsonl[072] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=14ec0041 tail=-
+2026-09-03.jsonl[073] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=6a3e len=16 sha=9f79257218af17a2
+2026-09-03.jsonl[074] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=6a3e len=16 sha=9f79257218af17a2
+2026-09-03.jsonl[075] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=2932 len=16 sha=6611997aa9f63c44
+2026-09-03.jsonl[076] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=2932 len=16 sha=6611997aa9f63c44
+2026-09-03.jsonl[077] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=784cd9c9 tail=-
+2026-09-03.jsonl[078] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=51c9 len=32 sha=cbadb0fe5b3c357a
+2026-09-03.jsonl[079] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=51c9 len=32 sha=cbadb0fe5b3c357a
+2026-09-03.jsonl[080] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=f7ec60b9 tail=-
+2026-09-03.jsonl[081] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=42db len=64 sha=afda39699ee59891
+2026-09-03.jsonl[082] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=42db len=64 sha=afda39699ee59891
+2026-09-03.jsonl[083] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=0237 len=64 sha=8040c3f808dd894b
+2026-09-03.jsonl[084] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=0237 len=64 sha=8040c3f808dd894b
+2026-09-03.jsonl[085] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=fc861adc tail=-
+2026-09-03.jsonl[086] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=1ce1 len=64 sha=b30da9fe70b35f88
+2026-09-03.jsonl[087] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=1ce1 len=64 sha=b30da9fe70b35f88
+2026-09-03.jsonl[088] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=3c5904e8 tail=-
+2026-09-03.jsonl[089] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=5abd len=96 sha=66a49e3bf9753ab0
+2026-09-03.jsonl[090] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=5abd len=96 sha=66a49e3bf9753ab0
+2026-09-03.jsonl[091] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=fce6 len=96 sha=9c97835eaa806cc4
+2026-09-03.jsonl[092] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=fce6 len=96 sha=9c97835eaa806cc4
+2026-09-03.jsonl[093] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=766df6a9 tail=-
+2026-09-03.jsonl[094] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=f8f2 len=80 sha=05593000d0b33bfb
+2026-09-03.jsonl[095] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=f8f2 len=80 sha=05593000d0b33bfb
+2026-09-03.jsonl[096] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=3c94d82b tail=-
+2026-09-03.jsonl[097] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=8aaa len=48 sha=9f4234331cc64f7b
+2026-09-03.jsonl[098] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=8aaa len=48 sha=9f4234331cc64f7b
+2026-09-03.jsonl[099] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=0478 len=48 sha=1a4f176b91020284
+2026-09-03.jsonl[100] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=0478 len=48 sha=1a4f176b91020284
+2026-09-03.jsonl[101] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=44bbdde6 tail=-
+2026-09-03.jsonl[102] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=c573 len=48 sha=cc8e686a54dd6e3c
+2026-09-03.jsonl[103] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=c573 len=48 sha=cc8e686a54dd6e3c
+2026-09-03.jsonl[104] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=2bcac7fe tail=-
+2026-09-03.jsonl[105] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=5434 len=64 sha=fdf1cb2dc4280c92
+2026-09-03.jsonl[106] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=5434 len=64 sha=fdf1cb2dc4280c92
+2026-09-03.jsonl[107] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=ce15 len=64 sha=44f10af714abba01
+2026-09-03.jsonl[108] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=ce15 len=64 sha=44f10af714abba01
+2026-09-03.jsonl[109] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=4f94 len=64 sha=dc69f36f6e2a37d4
+2026-09-03.jsonl[110] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=4f94 len=64 sha=dc69f36f6e2a37d4
+2026-09-03.jsonl[111] route=DIRECT type=ANON_REQ v1 tc=- hops=0x1 path=- | anon_req dest=98 sender=468592e35df49e036c5483a414cab7e7c43ccd91462341b93bd1b57b8a6a3442 mac=8436 len=16 sha=8d0c8c47441c210c
+2026-09-03.jsonl[112] route=DIRECT type=RESPONSE v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=699b len=16 sha=3c1d8ffcbc2ba9aa
+2026-09-03.jsonl[113] route=DIRECT type=RESPONSE v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=699b len=16 sha=3c1d8ffcbc2ba9aa
+2026-09-03.jsonl[114] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=5434 len=64 sha=fdf1cb2dc4280c92
+2026-09-03.jsonl[115] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=1d822af0 tail=-
+2026-09-03.jsonl[116] route=DIRECT type=TXT_MSG v1 tc=- hops=3x2 path=08c18e46ac23 | envelope dest=46 src=98 mac=89de len=64 sha=568aa2a883f47f7c
+2026-09-03.jsonl[117] route=DIRECT type=TXT_MSG v1 tc=- hops=2x2 path=8e46ac23 | envelope dest=46 src=98 mac=89de len=64 sha=568aa2a883f47f7c
+2026-09-03.jsonl[118] route=FLOOD type=ANON_REQ v1 tc=- hops=3x1 path=df8edf | anon_req dest=98 sender=468592e35df49e036c5483a414cab7e7c43ccd91462341b93bd1b57b8a6a3442 mac=0ecb len=16 sha=f957deff1a7a3b9c
+2026-09-03.jsonl[119] route=FLOOD type=ANON_REQ v1 tc=- hops=3x1 path=df8e08 | anon_req dest=98 sender=468592e35df49e036c5483a414cab7e7c43ccd91462341b93bd1b57b8a6a3442 mac=0ecb len=16 sha=f957deff1a7a3b9c
+2026-09-03.jsonl[120] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=46 src=98 mac=d79f len=32 sha=bfec54684a039277
+2026-09-03.jsonl[121] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=46 src=98 mac=d79f len=32 sha=bfec54684a039277
+2026-09-03.jsonl[122] route=FLOOD type=PATH v1 tc=- hops=1x1 path=df | envelope dest=46 src=98 mac=d79f len=32 sha=bfec54684a039277
+2026-09-03.jsonl[123] route=FLOOD type=TXT_MSG v1 tc=- hops=1x2 path=08c1 | envelope dest=46 src=98 mac=1ba3 len=32 sha=74600b7263ab595f
+2026-09-03.jsonl[124] route=FLOOD type=TXT_MSG v1 tc=- hops=2x2 path=08c1df6a | envelope dest=46 src=98 mac=1ba3 len=32 sha=74600b7263ab595f
+2026-09-03.jsonl[125] route=FLOOD type=ACK v1 tc=- hops=4x1 path=ac85a1df | ack checksum=345e6939 tail=-
+2026-09-03.jsonl[126] route=FLOOD type=ACK v1 tc=- hops=5x1 path=ac85a1df08 | ack checksum=345e6939 tail=-
+2026-09-03.jsonl[127] route=DIRECT type=PATH v1 tc=- hops=0x1 path=- | envelope dest=98 src=46 mac=5d25 len=16 sha=f8ae7ef210a4a2d9
+2026-09-03.jsonl[128] route=DIRECT type=TXT_MSG v1 tc=- hops=3x1 path=df8e85 | envelope dest=46 src=98 mac=c514 len=32 sha=dc1e4016b143e4cb
+2026-09-03.jsonl[129] route=DIRECT type=TXT_MSG v1 tc=- hops=2x1 path=8e85 | envelope dest=46 src=98 mac=c514 len=32 sha=dc1e4016b143e4cb
+2026-09-03.jsonl[130] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=4f307d4b tail=-
+2026-09-03.jsonl[131] route=DIRECT type=TXT_MSG v1 tc=- hops=3x1 path=df8e85 | envelope dest=46 src=98 mac=dafb len=32 sha=114a28053732d1b5
+2026-09-03.jsonl[132] route=DIRECT type=TXT_MSG v1 tc=- hops=2x1 path=8e85 | envelope dest=46 src=98 mac=dafb len=32 sha=114a28053732d1b5
+2026-09-03.jsonl[133] route=DIRECT type=TXT_MSG v1 tc=- hops=3x1 path=df8e85 | envelope dest=46 src=98 mac=2531 len=32 sha=a09b39453fe25b11
+2026-09-03.jsonl[134] route=DIRECT type=TXT_MSG v1 tc=- hops=2x1 path=8e85 | envelope dest=46 src=98 mac=2531 len=32 sha=a09b39453fe25b11
+2026-09-03.jsonl[135] route=DIRECT type=TXT_MSG v1 tc=- hops=3x1 path=df8e85 | envelope dest=46 src=98 mac=a80f len=32 sha=32cc292e8bb7a17a
+2026-09-03.jsonl[136] route=DIRECT type=TXT_MSG v1 tc=- hops=2x1 path=8e85 | envelope dest=46 src=98 mac=a80f len=32 sha=32cc292e8bb7a17a
+2026-09-03.jsonl[137] route=FLOOD type=ADVERT v1 tc=- hops=3x2 path=ac238e4608c1 | advert key=[redacted] ts=1788424135 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-03.jsonl[138] route=FLOOD type=ADVERT v1 tc=- hops=3x2 path=ac238e46df6a | advert key=[redacted] ts=1788424135 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
+2026-09-03.jsonl[139] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788424704 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[140] route=FLOOD type=GRP_TXT v1 tc=- hops=4x1 path=ac858e08 | group channel=11 mac=1f44 len=32 sha=492073eed54faa92
+2026-09-03.jsonl[141] route=FLOOD type=GRP_TXT v1 tc=- hops=4x1 path=ac858edf | group channel=11 mac=1f44 len=32 sha=492073eed54faa92
+2026-09-03.jsonl[142] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=afcf len=32 sha=05e63ea7a9341786
+2026-09-03.jsonl[143] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=afcf len=32 sha=05e63ea7a9341786
+2026-09-03.jsonl[144] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=afcf len=32 sha=05e63ea7a9341786
+2026-09-03.jsonl[145] route=FLOOD type=ADVERT v1 tc=- hops=0x2 path=- | advert key=[redacted] ts=1788425842 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-03.jsonl[146] route=FLOOD type=ADVERT v1 tc=- hops=1x2 path=df6a | advert key=[redacted] ts=1788425842 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-03.jsonl[147] route=FLOOD type=ADVERT v1 tc=- hops=1x2 path=08c1 | advert key=[redacted] ts=1788425842 sig=ok flags=0x93 type=ROOM_SERVER loc=14000,26000 name='[redacted] '
+2026-09-03.jsonl[148] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=f9e525df6a0a | group channel=11 mac=ed77 len=128 sha=ef036470f320327e
+2026-09-03.jsonl[149] route=FLOOD type=GRP_TXT v1 tc=- hops=3x3 path=f9e525df6a0a[redacted] | group channel=11 mac=ed77 len=128 sha=ef036470f320327e
+2026-09-03.jsonl[150] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=f9e525df6a0a | advert key=[redacted] ts=1788427722 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[151] route=FLOOD type=ADVERT v1 tc=- hops=3x3 path=f9e525df6a0a[redacted] | advert key=[redacted] ts=1788427722 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[152] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788428304 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[153] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8e08 | group channel=11 mac=8857 len=64 sha=768832f9eb663b56
+2026-09-03.jsonl[154] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8edf | group channel=11 mac=8857 len=64 sha=768832f9eb663b56
+2026-09-03.jsonl[155] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8edf | group channel=11 mac=efb3 len=96 sha=710b5914c8d1935b
+2026-09-03.jsonl[156] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8e08 | group channel=11 mac=efb3 len=96 sha=710b5914c8d1935b
+2026-09-03.jsonl[157] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=2067 len=96 sha=a5839f62a5d0cc31
+2026-09-03.jsonl[158] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=2067 len=96 sha=a5839f62a5d0cc31
+2026-09-03.jsonl[159] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=f0fc len=80 sha=91d3b2be5ac39f67
+2026-09-03.jsonl[160] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=f0fc len=80 sha=91d3b2be5ac39f67
+2026-09-03.jsonl[161] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8e08 | group channel=11 mac=78e0 len=64 sha=d181473d88c8068b
+2026-09-03.jsonl[162] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8edf | group channel=11 mac=78e0 len=64 sha=d181473d88c8068b
+2026-09-03.jsonl[163] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8e08 | group channel=11 mac=421e len=112 sha=13b682e9f2fe52bb
+2026-09-03.jsonl[164] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8edf | group channel=11 mac=421e len=112 sha=13b682e9f2fe52bb
+2026-09-03.jsonl[165] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=813a len=160 sha=41b4bf1afe323792
+2026-09-03.jsonl[166] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=813a len=160 sha=41b4bf1afe323792
+2026-09-03.jsonl[167] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=0fe3 len=48 sha=60f340b33acdd480
+2026-09-03.jsonl[168] route=FLOOD type=GRP_TXT v1 tc=- hops=4x1 path=df85a1df | group channel=11 mac=2d31 len=96 sha=d0f9039d50ac83db
+2026-09-03.jsonl[169] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=0fe3 len=48 sha=60f340b33acdd480
+2026-09-03.jsonl[170] route=FLOOD type=GRP_TXT v1 tc=- hops=5x1 path=df85a1df08 | group channel=11 mac=2d31 len=96 sha=d0f9039d50ac83db
+2026-09-03.jsonl[171] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=a1df | group channel=11 mac=3702 len=48 sha=4b9c294dbc727cd7
+2026-09-03.jsonl[172] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=a1df08 | group channel=11 mac=3702 len=48 sha=4b9c294dbc727cd7
+2026-09-03.jsonl[173] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8e08 | group channel=11 mac=bd6c len=96 sha=1810777ddecf05b0
+2026-09-03.jsonl[174] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8edf | group channel=11 mac=bd6c len=96 sha=1810777ddecf05b0
+2026-09-03.jsonl[175] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788431904 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[176] route=DIRECT type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=98 sender=[redacted] mac=43bf len=32 sha=d3971a8e0ba65349
+2026-09-03.jsonl[177] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=b123 len=16 sha=c136de67fac6b651
+2026-09-03.jsonl[178] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8e08 | group channel=11 mac=8420 len=80 sha=a8ed6d8e3efc6418
+2026-09-03.jsonl[179] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=ac8edf | group channel=11 mac=8420 len=80 sha=a8ed6d8e3efc6418
+2026-09-03.jsonl[180] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=b545 len=96 sha=b33b65c9df0518fe
+2026-09-03.jsonl[181] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=b545 len=96 sha=b33b65c9df0518fe
+2026-09-03.jsonl[182] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8e08 | group channel=11 mac=926d len=32 sha=b42fe3c587c68894
+2026-09-03.jsonl[183] route=FLOOD type=GRP_TXT v1 tc=- hops=2x1 path=8edf | group channel=11 mac=926d len=32 sha=b42fe3c587c68894
+2026-09-03.jsonl[184] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=d17a len=32 sha=f8808326a4f0b4a2
+2026-09-03.jsonl[185] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=d17a len=32 sha=f8808326a4f0b4a2
+2026-09-03.jsonl[186] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=d17a len=32 sha=f8808326a4f0b4a2
+2026-09-03.jsonl[187] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788435504 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-03.jsonl[188] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=a789 len=48 sha=f69fedc66ad5e9b3
+2026-09-03.jsonl[189] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=a789 len=48 sha=f69fedc66ad5e9b3
+2026-09-03.jsonl[190] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=a789 len=48 sha=f69fedc66ad5e9b3
+2026-09-03.jsonl[191] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8e08 | group channel=11 mac=c847 len=80 sha=6e90de60ff34e164
+2026-09-03.jsonl[192] route=FLOOD type=GRP_TXT v1 tc=- hops=3x1 path=df8edf | group channel=11 mac=c847 len=80 sha=6e90de60ff34e164
+2026-09-03.jsonl[193] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461b[redacted] | advert key=[redacted] ts=1788438522 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[194] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=8e461bdf6a0a | advert key=[redacted] ts=1788438522 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
+2026-09-03.jsonl[195] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=11 mac=4ae0 len=160 sha=8e88ebe52db34090
+2026-09-03.jsonl[196] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=df6a0a | group channel=11 mac=4ae0 len=160 sha=8e88ebe52db34090
+2026-09-03.jsonl[197] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=11 mac=4ae0 len=160 sha=8e88ebe52db34090
+2026-09-03.jsonl[198] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788439104 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
