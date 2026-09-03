@@ -1,0 +1,3 @@
+[submodule "related-repos/MeshCore"]
+	path = related-repos/MeshCore
+	url = https://github.com/meshcore-dev/MeshCore.git
