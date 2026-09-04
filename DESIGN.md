@@ -634,9 +634,10 @@ vulnerability scan of the result.
 ```
 sighop/
 ├── src/sighop/
-│   ├── radio/          kiss transport, modem, framing
+│   ├── radio/          kiss transport, modem, probe, capture, replay
 │   ├── protocol/       packet codec, payloads, crypto, path learning
-│   ├── net/            bus, rx pipeline, tx scheduler, airtime
+│   ├── net/            rx.py (decode stage), bus, tx scheduler, airtime
+│   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
 │   ├── entities/       base, room server, companion, bot runtime
 │   │   └── bots/       greeter
 │   ├── db/             models, repositories
@@ -655,6 +656,12 @@ sighop/
 `protocol/` must have no dependency on `db/` or `net/` — it is pure functions over bytes.
 That is what makes it testable against captured packets, and it is the layer where
 correctness matters most.
+
+`radio/replay.py` is the inverse of `radio/capture.py` and lives beside it deliberately:
+it re-hydrates a capture file into the same event stream the modem produces, so the live
+decode path can be driven offline. `monitor/` is a separate top-level package rather than
+part of `net/` because rendering is not networking — and keeping `render.py` a set of pure
+functions is what makes the output testable by string comparison.
 
 ---
 
@@ -676,9 +683,76 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    party, so it proves framing, adverts and signature verification but **cannot prove
    decryption**. Ciphertext handling is verifiable here only by round-trip and by fixed
    known-answer vectors against the firmware source; milestone 4 is what actually closes it.
+   *The corpus is not frozen:* milestone 2's live session added `captures/2026-09-04.jsonl`,
+   `-02` and `-03` (91 frames), taking it to **442 frames across five files**. A session is
+   appended when it carries a shape the corpus lacks — that one brought the first
+   `TRANSPORT_FLOOD` frame and the first CONTROL payloads — and is appended whole, because a
+   corpus of hand-picked interesting frames stops being a sample of the mesh.
 2. **Live decode.** Point the decoder at the live link. Adverts, names, paths and SNR
    printing in real time. *This is where the design is proven or isn't* — and it is still
    entirely receive-only.
+   *Done:* `sighop monitor` (live or `--replay`), the stateless `net/rx.py` decode stage,
+   `radio/replay.py`, and a `SetHardware` request/response API on `Modem` with a startup
+   capability probe. Both `capture` and `monitor --capture` now write the `capture_meta`
+   header described below, built from that probe. Three findings from the live runs, none
+   of which the offline corpus could have produced:
+   - **The first `SetRadio` can be sent into a booting board and lost.** The modem answered
+     nothing for ~2 s and then answered every probe sub-command within 19 ms, so the
+     handshake retries within a budget instead of asking once. Milestone 0 never saw this
+     because its handshake waited indefinitely for `OK`.
+   - **Do not "fix" DTR/RTS.** Deasserting them before opening looks like the careful thing
+     to do — those lines drive the ESP32 auto-reset circuit — and it is measurably the
+     opposite: with `dtr`/`rts` deasserted the board reset 0.52 s after every open,
+     reproducibly, while pyserial's defaults reset it not at all. The circuit fires on a
+     difference between the two lines, so the transition is what matters, not the level.
+   - **A reboot is invisible without reading the boot banner.** The USB bridge is a separate
+     chip and stays enumerated across an ESP32 reset, so no disconnect is reported; the
+     firmware persists no radio configuration (`handleSetRadio` writes a runtime struct), so
+     the board silently reverts to its build defaults. The `ESP-ROM:` banner arriving on the
+     KISS stream is therefore treated as a reconnect: re-handshake and re-probe.
+   - **The V3 is faulty**, which took a while to establish because every symptom pointed at
+     software first. It power-cycles on a **75.07 s timer** (`rst:0x1 (POWERON)`, measured
+     repeatedly), invariant across all four DTR/RTS combinations, both USB ports, with and
+     without sighop, with kernel USB autosuspend disabled (`runtime_suspended_time` 0) and
+     with nothing else holding the tty. Swapping to the V4 gave three minutes with **zero**
+     resets. Hardware; no software change addresses it, and the reboot handling above only
+     keeps sighop honest about it.
+     *Reading those logs correctly:* the `serial_disconnected` events were a **consequence**
+     of the board resetting, not a USB fault — the CP2102 stayed enumerated throughout
+     (`active_duration` == `connected_duration` across many resets).
+   - **Board-agnosticism is now observed rather than argued.** The same unmodified code
+     decoded live traffic from the **Heltec V3** behind a CP2102 bridge and from a **Heltec
+     V4** on the ESP32-S3's native USB (`/dev/ttyACM0`, `USB_JTAG_serial_debug_unit`). The
+     V4 reported its name as `Heltec V4 OLED`, exactly the runtime-chosen string §4.1
+     predicted, which is why device name is a probe result and never a constant. The two
+     present *different* failure modes on reset, though: the CP2102 stays enumerated while a
+     native-USB board disappears from the bus entirely.
+   - **`GetSensors` answers with an empty payload on both boards** — supported, zero bytes.
+     §4.1's warning against parsing it against a fixed schema stands, and is cheap to honour.
+   - **The reconnect loop could spin.** A device that is present but immediately reports
+     EOF reconnects instantly, and the backoff only applied *after* a failed connect —
+     seven reconnects in 60 ms, observed. The backoff now applies before every attempt.
+   - **The UART loses bytes occasionally.** One frame in a 3-minute run arrived with type
+     byte `0x80` and no leading `0x00`, followed 1 ms later by its orphaned `RxMeta` — a
+     `Data` frame that lost a byte between the ESP32 and the CP2102, where 8N1 has no error
+     detection. Reported as an unparsed frame with its raw bytes, which is exactly the
+     §4.1 rule working. Not worked around: masking the KISS port nibble would accept a
+     frame we know to be damaged.
+   - **`GetSensors` answers on the V3 with an empty CayenneLPP payload** (0 bytes), with
+     `GetBattery` and `GetMCUTemp` answering normally. §4.1's build-flag expectation holds:
+     the shape is not fixed, and nothing may parse it against a schema.
+   - **The overnight V4 session grew the corpus**, and this is the milestone's substantive
+     protocol finding. 91 receptions over 15 hours, zero decode failures, zero unreadable
+     lines, 22 adverts all verifying — and two shapes the 351-frame corpus never held: one
+     **`ROUTE_TYPE_TRANSPORT_FLOOD`** advert (transport codes `0x0075`/`0x0000`) and six
+     **CONTROL** payloads in three lengths, two of them carrying a repeater's public key
+     inline. Both had been synthetic-only since milestone 1; both now round-trip against
+     recorded air. `TRANSPORT_DIRECT` and RAW_CUSTOM remain unsighted.
+   - **Repetition rate is not a property of the mesh.** The same firmware-style duplicate
+     count that gave 41.6% repeats over the milestone 0 nights gives **11.0%** over this one
+     (81 distinct packets in 91 receptions, at most 2 copies, max spread 4.6 s). Milestone 3
+     sizes its dedup cache from its own measurement, not from either figure. The direction is
+     stable, though: every repeat was a flood reception, and no direct reception repeated.
 3. **Bus and scheduler.** RX fan-out with dedup, TX scheduler with airtime budget and the
    duty-cycle ceiling under test. Transmit still disabled; verify the budget accounting
    against what *would* have been sent.
@@ -715,6 +789,13 @@ untrustworthy fixtures.
 sighop version and commit, and the probe results from §4.1. Never infer these from config —
 record what the hardware reported.
 
+Implemented in milestone 2, and written by **both** `sighop capture` and
+`sighop monitor --capture` — they share one writer (`radio/capture.py`'s `CaptureWriter`)
+rather than two implementations of one format. A value the board did not answer is written
+as an explicit null *with its reason*, and the read-back radio parameters are recorded
+separately from the configured ones so a disagreement is visible in the file itself.
+`radio/replay.py` reads the header back as provenance and tolerates its absence.
+
 The existing `captures/2026-09-02.jsonl` and `captures/2026-09-03.jsonl` predate this and
 have no header. Their frames are left untouched; provenance lives in the sidecar
 `captures/2026-09-02.meta.json` and `captures/2026-09-03.meta.json`, which separate what was
@@ -724,6 +805,14 @@ Reconstructed radio settings are not evidence — if a decoder disagreement ever
 re-capture with a real header rather than trusting them. The two files are kept as separate
 captures rather than merged — the second run started independently (~12 min after the first's
 `capture_stopped`) and each carries its own provenance.
+
+Everything recorded from milestone 2 onward carries the header instead, so the sidecar is a
+transitional form and not a second supported mechanism. What the corpus requires is that
+*every* file state the conditions it was recorded under, by one means or the other; a capture
+whose origin is unrecorded is a fixture, not evidence, and the corpus harness refuses it.
+Files from one session stay separate for the same reason as above: `captures/2026-09-04.jsonl`,
+`-02` and `-03` are one night split by device restarts, and each restart re-probed the board,
+so each file's header describes its own run.
 
 This is also how the V3-vs-V4 RX question gets settled if it ever matters: capture on each
 board from the same aerial over the same interval and diff the frame counts by device name.

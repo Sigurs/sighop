@@ -19,8 +19,10 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "mypy>=1.11",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "ruff>=0.6",
 ]
 
 [tool.pytest.ini_options]
@@ -29,3 +31,83 @@ testpaths = ["tests"]
 # The corpus harness imports its loader as `tests.protocol.corpus`, so the repo
 # root must be importable.
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+# Vendored upstream clones, read as reference and never edited here.
+extend-exclude = ["related-repos"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "W",
+    "F",      # pyflakes
+    "I",      # import order
+    "UP",     # pyupgrade — this is a 3.13-only codebase
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "RET",    # return semantics
+    "ASYNC",  # blocking calls in async code, which the radio layer cannot afford
+    "PT",     # pytest style
+    "RUF",
+]
+ignore = [
+    # The codec mirrors a C++ wire format; `if/elif` chains over byte values read
+    # closer to the firmware than a refactor into dispatch tables would.
+    "SIM102",
+    "SIM108",
+    # Explicit `return None` is used deliberately where None is a documented
+    # outcome (`replay.py`'s unreadable-line reporting).
+    "RET501",
+    # `Modem.request(..., timeout=)` is the API the `modem-probe` spec asks for:
+    # a request that resolves as a timeout *value* rather than raising. Ruff
+    # would rather callers wrapped it in `asyncio.timeout`, which is exactly the
+    # shape the spec rejects.
+    "ASYNC109",
+    # A composite assertion often states one property; splitting it would make
+    # the test say less, not more.
+    "PT018",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on real captured bytes and build fixtures inline; long hex
+# literals, multi-statement `raises` blocks and poll loops are the point.
+"tests/**" = ["E501", "ASYNC110", "PT012"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["sighop", "tests"]
+
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests"]
+# `tests/` has no `__init__.py` at its root but the corpus harness is imported
+# as `tests.protocol.corpus`, so mypy needs the repo root as the package base.
+mypy_path = "src:."
+explicit_package_bases = true
+namespace_packages = true
+# The protocol and radio layers are the parts where a type error is a wire-format
+# bug, so they carry the strict settings; tests stay readable instead.
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+strict_equality = true
+
+[[tool.mypy.overrides]]
+module = "sighop.*"
+disallow_untyped_defs = true
+warn_return_any = true
+
+[[tool.mypy.overrides]]
+# A test that builds an RxEvent and then reads `.packet` off it is narrowing by
+# construction, not by luck. Making it prove that to mypy with isinstance
+# ceremony would cost readability in the place readability matters most.
+module = "tests.*"
+disable_error_code = ["union-attr", "index"]
+
+[[tool.mypy.overrides]]
+# structlog's stdlib BoundLogger and pyserial-asyncio ship partial or absent stubs.
+module = ["serial_asyncio.*", "serial.*", "nacl.*"]
+ignore_missing_imports = true

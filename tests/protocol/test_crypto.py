@@ -17,22 +17,22 @@ import pytest
 
 from sighop.protocol.crypto import (
     CIPHER_BLOCK_SIZE,
+    AdvertVerificationFailure,
     ChannelKey,
     MacCandidateMatch,
     SharedSecretCache,
     VerifiedAdvert,
-    AdvertVerificationFailure,
     ack_checksum,
     ack_checksum_for,
     advert_signed_message,
     calc_shared_secret,
     channel_key_from_hashtag,
-    shared_secret_from_scalar,
     compute_mac,
     decrypt,
     encrypt,
     encrypt_then_mac,
     mac_then_decrypt,
+    shared_secret_from_scalar,
     sign_advert,
     verify_advert,
     verify_mac,
@@ -47,9 +47,9 @@ from sighop.protocol.identity import (
 from sighop.protocol.payloads import (
     Advert,
     NodeType,
+    TextMessageBody,
     TextType,
     WireText,
-    TextMessageBody,
     build_appdata,
 )
 

@@ -1,8 +1,10 @@
 """Loader for the captured-frame regression corpus.
 
-The capture files and their `.meta.json` provenance sidecars are read-only
-evidence (DESIGN.md §12): this module opens them for reading and never writes
-to them, and nothing in the test suite regenerates them.
+The capture files and their provenance — a `capture_meta` header line from
+milestone 2 onward, a paired `.meta.json` sidecar for the two milestone 0
+files — are read-only evidence (DESIGN.md §12): this module opens them for
+reading and never writes to them, and nothing in the test suite regenerates
+them.
 
 See `CORPUS.md` for what the corpus does and does not cover.
 """
@@ -16,11 +18,28 @@ from pathlib import Path
 
 CAPTURES_DIR = Path(__file__).resolve().parents[2] / "captures"
 
-CAPTURE_FILES = ("2026-09-02.jsonl", "2026-09-03.jsonl")
+CAPTURE_FILES = (
+    "2026-09-02.jsonl",
+    "2026-09-03.jsonl",
+    "2026-09-04.jsonl",
+    "2026-09-04-02.jsonl",
+    "2026-09-04-03.jsonl",
+)
+
+# The milestone 2 files carry their provenance in-band, as a `capture_meta`
+# first line; the two milestone 0 files predate that record and carry theirs in
+# a paired `.meta.json` sidecar (DESIGN.md §12).
+SIDECAR_PROVENANCE_FILES = ("2026-09-02.jsonl", "2026-09-03.jsonl")
 
 # Recorded expectations. Asserted, never regenerated from a failing run.
-EXPECTED_FRAME_COUNT = 351
-EXPECTED_FRAMES_PER_FILE = {"2026-09-02.jsonl": 152, "2026-09-03.jsonl": 199}
+EXPECTED_FRAME_COUNT = 442
+EXPECTED_FRAMES_PER_FILE = {
+    "2026-09-02.jsonl": 152,
+    "2026-09-03.jsonl": 199,
+    "2026-09-04.jsonl": 56,
+    "2026-09-04-02.jsonl": 2,
+    "2026-09-04-03.jsonl": 33,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +99,7 @@ def _load_file(name: str) -> list[CorpusFrame]:
 
 @cache
 def load_corpus() -> tuple[CorpusFrame, ...]:
-    """Every `rx_frame` record across both capture files, in capture order."""
+    """Every `rx_frame` record across every capture file, in capture order."""
     frames: list[CorpusFrame] = []
     for name in CAPTURE_FILES:
         loaded = _load_file(name)

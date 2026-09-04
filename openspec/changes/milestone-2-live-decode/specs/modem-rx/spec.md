@@ -1,0 +1,63 @@
+## MODIFIED Requirements
+
+### Requirement: RxMeta correlation
+The system SHALL correlate an `RxMeta` (command byte `0xF9`) frame with the `Data` frame that
+immediately preceded it, attaching the parsed SNR and RSSI values to that frame's RX event
+before emitting it.
+
+#### Scenario: RxMeta immediately follows its Data frame
+- **WHEN** a `Data` frame is received and the next frame from the transport is an `RxMeta` frame
+- **THEN** the emitted RX event for that `Data` frame includes the SNR and RSSI parsed from the `RxMeta` frame
+
+#### Scenario: A second Data frame arrives before RxMeta for the first
+- **WHEN** a `Data` frame is received and another `Data` frame arrives before any `RxMeta` frame
+- **THEN** the modem emits the first `Data` frame's RX event with no RxMeta attached, logs a wide event flagging the anomaly, and begins tracking the second `Data` frame for correlation
+
+#### Scenario: Run ends with a Data frame still pending correlation
+- **WHEN** the modem is stopped while a `Data` frame is held pending a following `RxMeta`
+- **THEN** the modem emits that frame's RX event with no RxMeta attached rather than discarding it
+
+#### Scenario: A SetHardware response arrives between a Data frame and its RxMeta
+- **WHEN** a `Data` frame is being held for correlation and a `SetHardware` response that resolves an outstanding request arrives before the `RxMeta`
+- **THEN** the modem resolves that request and continues holding the `Data` frame, so the subsequent `RxMeta` is still attached to it
+
+### Requirement: Startup handshake
+The system SHALL perform the `SetHardware` request/response exchange needed to confirm the modem
+link is alive, apply the configured radio parameters (via `SetRadio`), and probe the board for
+its identity, radio readback and available telemetry sub-commands before treating the link as
+ready to receive, and SHALL redo this exchange on every reconnect.
+
+#### Scenario: Successful startup
+- **WHEN** the modem opens a serial connection for the first time
+- **THEN** it applies the configured radio parameters via `SetRadio`, confirms a response, runs the startup probe, and signals the link is ready together with the probe result
+
+#### Scenario: Reconnect after a transport-level disconnect
+- **WHEN** the underlying transport reconnects after a disconnect
+- **THEN** the modem re-applies the configured radio parameters rather than assuming the device retained its prior configuration, and re-runs the startup probe
+
+#### Scenario: Probe fails but the link is alive
+- **WHEN** `SetRadio` is accepted but one or more probe sub-commands go unanswered or are rejected
+- **THEN** the link is still treated as ready and frames are received normally, with the unanswered sub-commands recorded as absent in the probe result
+
+### Requirement: Unparseable frame reporting
+The system SHALL emit a distinct event for any frame from the transport that is not a recognized
+`Data`, `RxMeta`, or `SetHardware` response — including transport-reported malformed frames —
+rather than discarding it silently. A `SetHardware` response that resolves an outstanding request
+SHALL be routed to that request instead of being reported as unparsed; a `SetHardware` response
+matching no outstanding request SHALL still be reported as unparsed.
+
+#### Scenario: Unrecognized command byte
+- **WHEN** the transport emits a decoded frame whose command byte does not match `Data`, `RxMeta`, or a `SetHardware` response code
+- **THEN** the modem emits an "unparsed frame" event carrying the raw frame bytes
+
+#### Scenario: Transport reports a malformed frame
+- **WHEN** the transport reports a frame it could not decode
+- **THEN** the modem forwards this as an "unparsed frame" event carrying whatever raw bytes were available
+
+#### Scenario: SetHardware response for an outstanding request
+- **WHEN** a `SetHardware` response arrives whose code matches an outstanding request
+- **THEN** the modem resolves that request with the response data and emits no unparsed-frame event
+
+#### Scenario: Unsolicited SetHardware response
+- **WHEN** a `SetHardware` response arrives that matches no outstanding request and is not `RxMeta`
+- **THEN** the modem emits an "unparsed frame" event carrying the raw frame bytes

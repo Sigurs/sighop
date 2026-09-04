@@ -1,9 +1,26 @@
 # The protocol regression corpus
 
-351 frames captured off the live mesh on two consecutive nights, in
-`captures/2026-09-02.jsonl` (152 frames) and `captures/2026-09-03.jsonl` (199).
-Provenance is in the paired `.meta.json` sidecars. Per DESIGN.md §12 these files
-are the permanent regression corpus for the protocol layer.
+442 frames captured off the live mesh, in five files:
+
+| File | Frames | Recorded | Provenance |
+|---|---|---|---|
+| `captures/2026-09-02.jsonl` | 152 | milestone 0, Heltec V3 | `.meta.json` sidecar |
+| `captures/2026-09-03.jsonl` | 199 | milestone 0, Heltec V3 | `.meta.json` sidecar |
+| `captures/2026-09-04.jsonl` | 56 | milestone 2, Heltec V4 OLED | `capture_meta` header |
+| `captures/2026-09-04-02.jsonl` | 2 | milestone 2, Heltec V4 OLED | `capture_meta` header |
+| `captures/2026-09-04-03.jsonl` | 33 | milestone 2, Heltec V4 OLED | `capture_meta` header |
+
+Per DESIGN.md §12 these files are the permanent regression corpus for the
+protocol layer. The two milestone 0 files predate the `capture_meta` header
+record and keep their sidecars; everything recorded from milestone 2 onward
+carries its provenance in-band, as the first line of the file itself. Either
+way every corpus file states the conditions it was recorded under —
+`test_every_corpus_file_carries_provenance` refuses a file that states neither.
+
+The 2026-09-04 files are one overnight session split by device restarts. They
+were kept whole rather than filtered down to their novel frames: a corpus of
+hand-picked interesting frames stops being a sample of what the mesh actually
+carries.
 
 **They are read-only evidence.** The harness opens them for reading and never
 writes to them or their sidecars. Nothing regenerates them.
@@ -12,10 +29,11 @@ writes to them or their sidecars. Nothing regenerates them.
 
 - **Framing.** Every frame decodes structurally and re-encodes byte-identically,
   including the packed `path_length` encoding, all three live path hash sizes,
-  and hop counts 0-5.
+  hop counts 0-5, and the one transport-routed frame's transport codes.
 - **Payload shapes.** Every payload parses to its envelope and rebuilds
-  byte-identically across ten payload types.
-- **Adverts.** All 53 ADVERT frames pass Ed25519 signature verification, and
+  byte-identically across eleven payload types, CONTROL included — preserved
+  uninterpreted, which is itself the recorded behaviour.
+- **Adverts.** All 75 ADVERT frames pass Ed25519 signature verification, and
   their appdata decodes to consistent flags, node types and UTF-8 names.
 - **That the multi-byte hash reading is the correct one.** Forcing 1-byte hashes
   yields corrupt flags and truncated names (`0xfa` / `rala Hill repeater`); the
@@ -25,8 +43,12 @@ writes to them or their sidecars. Nothing regenerates them.
 
 ## What the corpus does NOT prove
 
-**Decryption.** This is the important one. Every encrypted payload in the corpus
-is addressed to a third party and sighop holds no key for any of it. Ciphertext
+**Decryption.** This is the important one. sighop holds no key for any encrypted
+payload in the corpus, so not one of them is decrypted here. Nearly all are
+third-party traffic; the 2026-09-04 files also caught a handful of exchanges
+involving the operator's own MeshCore node (`Sigurs`, key `[redacted]7064e837…`),
+whose key sighop still does not hold. If it ever does, the golden file's
+no-plaintext rule is what keeps those frames rendered as digests. Ciphertext
 handling is verified only by round-trip against our own keys and by the fixed
 known-answer vectors in `test_crypto.py`. Nothing here confirms that sighop
 decrypts the way MeshCore does. The milestone 4 exchange with the reference peer
@@ -38,36 +60,46 @@ Shapes absent from the corpus, each covered by a synthetic fixture instead:
 
 | Absent shape | Where the synthetic fixture lives |
 |---|---|
-| `ROUTE_TYPE_TRANSPORT_FLOOD` / `TRANSPORT_DIRECT` and their transport codes | `test_packet.py::test_transport_routed_packet_carries_transport_codes` |
+| `ROUTE_TYPE_TRANSPORT_DIRECT` | `test_packet.py::test_transport_routed_packet_carries_transport_codes` |
 | Hop counts above 5 | `test_packet.py::test_hop_count_above_the_corpus_maximum` |
 | The reserved `0b11` hash size code | `test_packet.py::test_reserved_hash_size_code_is_rejected` |
 | Payload versions other than v1 | `test_packet.py::test_non_v1_payload_version_is_rejected` |
-| MULTIPART, CONTROL, RAW_CUSTOM, reserved payload types | `test_payloads.py::test_unsupported_payload_types_are_preserved_not_dropped` |
+| MULTIPART, RAW_CUSTOM, reserved payload types | `test_payloads.py::test_unsupported_payload_types_are_preserved_not_dropped` |
 | Adverts setting feature 1 / feature 2 (`0x20` / `0x40`) | `test_payloads.py::test_feature_fields_decode_in_wire_order` |
 | Adverts with no name flag, or a non-UTF-8 name | `test_payloads.py::test_advert_with_no_name_flag_preserves_trailing_bytes`, `::test_name_that_is_not_valid_utf8_is_flagged_not_discarded` |
 | Every decrypted body layout (text, group text, returned path, room login) | `test_payloads.py`, over synthetic plaintext |
-| Node types NONE, CHAT and SENSOR | `test_payloads.py::test_feature_fields_decode_in_wire_order` and neighbours |
+| Node types NONE and SENSOR | `test_payloads.py::test_feature_fields_decode_in_wire_order` and neighbours |
+
+The 2026-09-04 session closed three of these gaps with live evidence:
+**`ROUTE_TYPE_TRANSPORT_FLOOD`** (one frame, an advert, transport codes
+`0x0075`/`0x0000` — the first proof that the transport-code field is read from
+real air and not only from a fixture we wrote), **CONTROL** (six frames, three
+distinct lengths, all preserved uninterpreted), and the **CHAT** node type (six
+adverts, flags `0x81`). The synthetic fixtures for them stay: they cover the
+shapes around what happened to arrive.
 
 ## Recorded composition
 
 Asserted by `test_corpus.py`; a decoder change that shifts classification fails
 loudly even when every frame still decodes.
 
-- **Payload types**: TXT_MSG 108, GRP_TXT 91, ADVERT 53, ACK 42, ANON_REQ 16,
-  PATH 15, RESPONSE 11, REQ 6, GRP_DATA 5, TRACE 4.
-- **Route types**: FLOOD 171, DIRECT 180. No transport-routed frames.
-- **Hop counts**: 0→119, 1→66, 2→95, 3→64, 4→5, 5→2.
-- **Path hash sizes**: 1-byte 152, 2-byte 106, 3-byte 93.
-- **Adverts**: 53, all verifying; 47 with flags `0x92` (repeater, located,
-  named), 6 with `0x93` (room server, located, named). Five distinct names.
-- **ACK payload lengths**: 4 bytes ×31, 6 bytes ×11.
+- **Payload types**: GRP_TXT 118, TXT_MSG 118, ADVERT 75, ACK 44, RESPONSE 23,
+  ANON_REQ 22, PATH 15, REQ 12, CONTROL 6, GRP_DATA 5, TRACE 4.
+- **Route types**: DIRECT 237, FLOOD 204, TRANSPORT_FLOOD 1. No
+  `TRANSPORT_DIRECT`.
+- **Hop counts**: 0→187, 1→76, 2→105, 3→67, 4→5, 5→2.
+- **Path hash sizes**: 1-byte 197, 2-byte 108, 3-byte 137.
+- **Adverts**: 75, all verifying and all named; 63 with flags `0x92` (repeater,
+  located, named), 6 with `0x93` (room server, located, named), 6 with `0x81`
+  (chat, named, no location). Six distinct names.
+- **ACK payload lengths**: 4 bytes ×33, 6 bytes ×11.
 
 ## Flood repetition rate (input to the milestone 3 dedup cache)
 
 DESIGN.md §13 lists dedup cache sizing as an in-flight unknown. Counting
 duplicates the way the firmware does — `Packet::calculatePacketHash`, over the
-payload type and payload bytes, plus `path_len` for TRACE — over the decoded
-corpus:
+payload type and payload bytes, plus `path_len` for TRACE — over the 351-frame
+milestone 0 subset:
 
 - 351 receptions carried **205 distinct packets**: **41.6% of receptions are
   repeats**, 1.71 receptions per distinct packet.
@@ -80,10 +112,18 @@ corpus:
 - Distinct packets within a sliding window: **16** in any 60 s, 49 in any 300 s,
   56 in any 900 s.
 
+The 2026-09-04 session, measured the same way, came out **much quieter**: 91
+receptions, 81 distinct packets, **11.0% repeats**, at most 2 copies of any
+packet, median spread 2.8 s and maximum 4.6 s, 24 distinct packets in any 60 s.
+The directional finding survives and sharpens — all 10 repeats were flood
+receptions, and **not one of the 57 direct receptions repeated** — but the
+*rate* clearly is not a constant of this mesh: it moved from 41.6% to 11.0%
+between nights, on a different board.
+
 So on this mesh a dedup cache of ~128 entries with a 60 s TTL covers every
-duplicate observed with an order of magnitude of headroom. That is one location
-on two nights, not a design limit — milestone 3 should re-measure rather than
-treat these as constants.
+duplicate observed on either night with an order of magnitude of headroom. That
+is one location on three nights, not a design limit — milestone 3 should
+re-measure rather than treat these as constants.
 
 ## The golden file
 

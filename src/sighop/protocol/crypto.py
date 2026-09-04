@@ -111,7 +111,7 @@ def _cipher(secret: bytes) -> Cipher:
         raise ValueError(f"shared secret must be at least {CIPHER_KEY_SIZE} bytes")
     # `Utils::encrypt` keys AES on the FIRST 16 bytes of the 32-byte secret,
     # while the HMAC below keys on all 32. Different slices, same secret.
-    return Cipher(algorithms.AES128(secret[:CIPHER_KEY_SIZE]), modes.ECB())  # noqa: S305
+    return Cipher(algorithms.AES128(secret[:CIPHER_KEY_SIZE]), modes.ECB())
 
 
 def encrypt(secret: bytes, plaintext: bytes) -> bytes:

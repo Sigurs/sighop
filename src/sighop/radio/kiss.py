@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 import serial_asyncio
 import structlog
@@ -57,6 +58,21 @@ class Reconnected:
 FrameEvent = KissFrame | MalformedFrame | Reconnected
 
 Connector = Callable[[], Awaitable[tuple[asyncio.StreamReader, asyncio.StreamWriter]]]
+
+
+class Transport(Protocol):
+    """The slice of `KissTransport` that `Modem` depends on.
+
+    Narrow on purpose: it is what lets a test drive modem semantics from a
+    scripted list of frames, with no serial device and no reconnect loop
+    anywhere near it.
+    """
+
+    async def open(self) -> None: ...
+
+    def frames(self) -> AsyncIterator[FrameEvent]: ...
+
+    async def send(self, type_byte: int, data: bytes = b"") -> None: ...
 
 
 class DeviceNotFoundError(RuntimeError):
@@ -150,17 +166,31 @@ def encode_frame(type_byte: int, data: bytes = b"") -> bytes:
 def serial_connector(device_path: str, baudrate: int = DEFAULT_BAUDRATE) -> Connector:
     """Build a connector that opens `device_path` over serial.
 
+    **Leaves DTR and RTS at their defaults**, which is what resets this board
+    the least. On an ESP32 those lines drive the auto-reset circuit (`EN` and
+    `GPIO0`) through a transistor pair that fires on a *difference* between
+    them, so what matters is the transition, not the level. Measured on the
+    Heltec V3 + CP2102, 2026-09-03: opening with `dtr`/`rts` deasserted reset
+    the board 0.52 s after every open, reproducibly; opening with pyserial's
+    defaults reset it not at all. Deasserting them looks like the careful
+    thing to do and is the opposite — hence this note, so it is not
+    "fixed" again.
+
     Raises `DeviceNotFoundError` if the path doesn't exist at connect time —
     the caller decides whether that's fatal (initial connect) or something
     to retry (reconnect loop); see `KissTransport`.
     """
 
     async def _connect() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-        if not Path(device_path).exists():
+        # A single stat on a device node, deliberately kept synchronous: it is
+        # the check that turns "device unplugged" into a named error instead of
+        # an opaque one, and moving it to a thread would cost more than it saves.
+        if not Path(device_path).exists():  # noqa: ASYNC240
             raise DeviceNotFoundError(f"KISS serial device not found: {device_path}")
-        return await serial_asyncio.open_serial_connection(
+        reader, writer = await serial_asyncio.open_serial_connection(
             url=device_path, baudrate=baudrate
         )
+        return reader, writer
 
     return _connect
 
@@ -217,10 +247,15 @@ class KissTransport:
             backoff = self._backoff_initial
             while True:
                 attempts += 1
+                # Back off *before* every attempt, not only after a failed
+                # one. Reopening a device that is present but immediately
+                # reports EOF -- an ESP32-S3 rebooting because opening the
+                # CP2102 port asserted DTR -- otherwise succeeds instantly and
+                # spins: observed live 2026-09-03, seven reconnects in 60 ms.
+                await asyncio.sleep(backoff)
                 try:
                     self._reader, self._writer = await self._connect()
-                except Exception:  # noqa: BLE001 - any failure just retries
-                    await asyncio.sleep(backoff)
+                except Exception:
                     backoff = min(backoff * 2, self._backoff_cap)
                     continue
                 fields["attempts"] = attempts

@@ -13,19 +13,25 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
-from importlib.metadata import PackageNotFoundError, version as pkg_version
-from typing import IO
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
+from typing import IO, TextIO, cast
 
 import structlog
 
 _INSTANCE_ID = os.environ.get("SIGHOP_INSTANCE_ID", uuid.uuid4().hex[:12])
 
 
-def _package_version() -> str:
+def package_version() -> str:
+    """The installed sighop version, or a dev placeholder outside a install."""
     try:
         return pkg_version("sighop")
     except PackageNotFoundError:
         return "0.0.0-dev"
+
+
+def commit_hash() -> str:
+    return os.environ.get("SIGHOP_COMMIT_HASH", "unknown")
 
 
 class _Tee:
@@ -43,12 +49,19 @@ class _Tee:
             stream.flush()
 
 
-def configure_logging(log_file: IO[str] | None = None) -> None:
-    """Configure JSON wide-event logging to stdout, and additionally to
-    `log_file` when given (e.g. so an unattended run's logs survive
-    alongside its capture file).
+def configure_logging(
+    log_file: IO[str] | None = None, *, stream: IO[str] | None = None
+) -> None:
+    """Configure JSON wide-event logging to `stream` (stdout by default), and
+    additionally to `log_file` when given (e.g. so an unattended run's logs
+    survive alongside its capture file).
+
+    `sighop monitor` passes `stream=sys.stderr`: its standard output is
+    rendered lines, and mixing JSON into them would cost the format the one
+    property it was chosen for.
     """
-    output: IO[str] = _Tee(sys.stdout, log_file) if log_file is not None else sys.stdout
+    stream = sys.stdout if stream is None else stream
+    output = _Tee(stream, log_file) if log_file is not None else stream
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -57,18 +70,23 @@ def configure_logging(log_file: IO[str] | None = None) -> None:
             structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(20),  # INFO
-        logger_factory=structlog.PrintLoggerFactory(file=output),
+        # `_Tee` is not a TextIO, but PrintLogger only ever calls write and
+        # flush on it, which is the whole of the class above.
+        logger_factory=structlog.PrintLoggerFactory(file=cast(TextIO, output)),
         cache_logger_on_first_use=True,
     )
 
 
 def get_logger(**initial_context: object) -> structlog.stdlib.BoundLogger:
-    return structlog.get_logger().bind(
-        service="sighop",
-        version=_package_version(),
-        commit_hash=os.environ.get("SIGHOP_COMMIT_HASH", "unknown"),
-        instance_id=_INSTANCE_ID,
-        **initial_context,
+    return cast(
+        structlog.stdlib.BoundLogger,
+        structlog.get_logger().bind(
+            service="sighop",
+            version=package_version(),
+            commit_hash=commit_hash(),
+            instance_id=_INSTANCE_ID,
+            **initial_context,
+        ),
     )
 
 

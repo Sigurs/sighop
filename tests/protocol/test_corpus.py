@@ -1,10 +1,12 @@
 """Corpus replay: the protocol layer verified against recorded reality.
 
-351 frames captured off the live mesh over two nights (DESIGN.md §12). What
-this proves and — just as importantly — what it does not, is written down in
-`CORPUS.md`. In short: it proves framing, adverts and signature verification;
-it cannot prove decryption, because every encrypted payload in it is addressed
-to a third party.
+442 frames captured off the live mesh over three nights (DESIGN.md §12) — the
+351 milestone 0 frames plus the 91 the milestone 2 live runs recorded, which is
+where the first `ROUTE_TYPE_TRANSPORT_FLOOD` and the first CONTROL payloads
+came from. What this proves and — just as importantly — what it does not, is
+written down in `CORPUS.md`. In short: it proves framing, adverts and signature
+verification; it cannot prove decryption, because every encrypted payload in it
+is addressed to a third party.
 """
 
 from __future__ import annotations
@@ -23,11 +25,11 @@ from sighop.protocol.payloads import (
     parse_payload,
 )
 from sighop.protocol.result import DecodeFailure
-
 from tests.protocol.corpus import (
     CAPTURE_FILES,
     CAPTURES_DIR,
     EXPECTED_FRAME_COUNT,
+    SIDECAR_PROVENANCE_FILES,
     CorpusError,
     CorpusFrame,
     load_corpus,
@@ -38,21 +40,31 @@ from tests.protocol.golden import render_corpus
 # Recorded expectations, spot-checked against the independent analysis in the
 # proposal before being committed as fixtures (design D10).
 EXPECTED_PAYLOAD_TYPES = {
-    PayloadType.TXT_MSG: 108,
-    PayloadType.GRP_TXT: 91,
-    PayloadType.ADVERT: 53,
-    PayloadType.ACK: 42,
-    PayloadType.ANON_REQ: 16,
+    PayloadType.GRP_TXT: 118,
+    PayloadType.TXT_MSG: 118,
+    PayloadType.ADVERT: 75,
+    PayloadType.ACK: 44,
+    PayloadType.RESPONSE: 23,
+    PayloadType.ANON_REQ: 22,
     PayloadType.PATH: 15,
-    PayloadType.RESPONSE: 11,
-    PayloadType.REQ: 6,
+    PayloadType.REQ: 12,
+    PayloadType.CONTROL: 6,
     PayloadType.GRP_DATA: 5,
     PayloadType.TRACE: 4,
 }
-EXPECTED_ROUTE_TYPES = {RouteType.FLOOD: 171, RouteType.DIRECT: 180}
-EXPECTED_HOP_COUNTS = {0: 119, 1: 66, 2: 95, 3: 64, 4: 5, 5: 2}
-EXPECTED_HASH_SIZES = {1: 152, 2: 106, 3: 93}
-EXPECTED_ADVERT_COUNT = 53
+EXPECTED_ROUTE_TYPES = {
+    RouteType.DIRECT: 237,
+    RouteType.FLOOD: 204,
+    RouteType.TRANSPORT_FLOOD: 1,
+}
+EXPECTED_HOP_COUNTS = {0: 187, 1: 76, 2: 105, 3: 67, 4: 5, 5: 2}
+EXPECTED_HASH_SIZES = {1: 197, 2: 108, 3: 137}
+EXPECTED_ADVERT_COUNT = 75
+# The one transport-routed frame in the corpus, sighted on 2026-09-04: a
+# TRANSPORT_FLOOD advert. Its codes are recorded here so a codec change that
+# stops reading them fails on evidence rather than on a synthetic fixture.
+EXPECTED_TRANSPORT_FRAMES = 1
+EXPECTED_TRANSPORT_CODES = (117, 0)
 
 
 @pytest.fixture(scope="module")
@@ -113,18 +125,41 @@ def test_a_missing_capture_file_fails_loudly(tmp_path: Path) -> None:
 def test_corpus_files_are_treated_as_read_only(
     frames: tuple[CorpusFrame, ...],
 ) -> None:
-    """The captures and their provenance sidecars are evidence, not fixtures the
-    suite may rewrite. Recording their digests here makes a stray write fail.
+    """The captures and their provenance are evidence, not fixtures the suite
+    may rewrite. Recording their digests here makes a stray write fail.
     """
     import hashlib
 
     for name in CAPTURE_FILES:
-        for path in (CAPTURES_DIR / name, CAPTURES_DIR / name.replace(".jsonl", ".meta.json")):
-            assert path.is_file(), f"corpus evidence missing: {path}"
-        before = hashlib.sha256((CAPTURES_DIR / name).read_bytes()).hexdigest()
+        path = CAPTURES_DIR / name
+        assert path.is_file(), f"corpus evidence missing: {path}"
+        before = hashlib.sha256(path.read_bytes()).hexdigest()
         load_corpus()
-        after = hashlib.sha256((CAPTURES_DIR / name).read_bytes()).hexdigest()
+        after = hashlib.sha256(path.read_bytes()).hexdigest()
         assert before == after, f"the harness modified {name}"
+
+
+def test_every_corpus_file_carries_provenance(
+    frames: tuple[CorpusFrame, ...],
+) -> None:
+    """A corpus file without recorded recording conditions is a fixture of
+    unknown origin (DESIGN.md §12). Milestone 2 files carry a `capture_meta`
+    header; the two milestone 0 files, which predate it, carry a sidecar.
+    """
+    import json
+
+    for name in CAPTURE_FILES:
+        path = CAPTURES_DIR / name
+        if name in SIDECAR_PROVENANCE_FILES:
+            sidecar = CAPTURES_DIR / name.replace(".jsonl", ".meta.json")
+            assert sidecar.is_file(), f"provenance sidecar missing: {sidecar}"
+            continue
+        with path.open("r", encoding="utf-8") as handle:
+            first = json.loads(handle.readline())
+        assert first.get("kind") == "capture_meta", (
+            f"{name} has no capture_meta header and no provenance sidecar"
+        )
+        assert first["device_name"]["value"], f"{name} header names no device"
 
 
 # --- Round-trip ------------------------------------------------------------
@@ -182,13 +217,23 @@ def test_path_hash_size_distribution_holds(
     assert dict(counts) == EXPECTED_HASH_SIZES
 
 
-def test_no_transport_routed_frames_in_the_corpus(
+def test_the_one_transport_routed_frame_decodes_with_its_codes(
     decoded: list[tuple[CorpusFrame, Packet]],
 ) -> None:
-    """A recorded gap, not an oversight: `TRANSPORT_*` routing gets synthetic
-    tests only. See `CORPUS.md`.
+    """Transport routing stopped being a synthetic-only shape on 2026-09-04.
+
+    One frame, so this asserts it exactly rather than a distribution: a codec
+    change that drops the transport-code field, or reads it as path bytes,
+    fails here against recorded air rather than against a fixture we wrote.
+    `TRANSPORT_DIRECT` is still unsighted and still synthetic-only.
     """
-    assert all(packet.transport_codes is None for _, packet in decoded)
+    routed = [(frame, packet) for frame, packet in decoded if packet.transport_codes is not None]
+
+    assert len(routed) == EXPECTED_TRANSPORT_FRAMES
+    frame, packet = routed[0]
+    assert packet.route_type is RouteType.TRANSPORT_FLOOD, frame.describe()
+    assert packet.transport_codes == EXPECTED_TRANSPORT_CODES, frame.describe()
+    assert packet.payload_type is PayloadType.ADVERT, frame.describe()
 
 
 # --- Adverts ---------------------------------------------------------------

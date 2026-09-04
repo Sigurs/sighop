@@ -28,7 +28,6 @@ from sighop.protocol.payloads import (
     parse_payload,
 )
 from sighop.protocol.result import DecodeFailure
-
 from tests.protocol.corpus import CorpusFrame, load_corpus
 
 GOLDEN_HEADER = (

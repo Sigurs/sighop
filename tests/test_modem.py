@@ -1,3 +1,5 @@
+from typing import Protocol
+
 import pytest
 
 from sighop.radio.kiss import KissFrame, MalformedFrame, Reconnected
@@ -61,13 +63,32 @@ async def collect(modem: Modem) -> list:
     return [event async for event in modem.events()]
 
 
+class SendRecorder(Protocol):
+    """Any transport double that records what was sent to it."""
+
+    sent: list[tuple[int, bytes]]
+
+
+def set_radio_sends(transport: SendRecorder) -> list[tuple[int, bytes]]:
+    """Just the handshake's SetRadio frames.
+
+    The startup probe (milestone 2) sends query sub-commands over the same
+    transport, so a raw count of `sent` no longer means "handshakes".
+    """
+    return [
+        (type_byte, data)
+        for type_byte, data in transport.sent
+        if type_byte == TYPE_SET_HARDWARE and data[:1] == bytes((0x09,))
+    ]
+
+
 async def test_handshake_sends_set_radio_and_confirms_ok():
     transport = FakeTransport([ok_frame()])
     modem = Modem(transport, radio_params=EU868_NARROW)
     events = await collect(modem)
     assert events == []
     assert transport.opened is True
-    assert transport.sent == [
+    assert set_radio_sends(transport) == [
         (TYPE_SET_HARDWARE, bytes((0x09,)) + EU868_NARROW.to_bytes())
     ]
 
@@ -161,4 +182,4 @@ async def test_reconnect_redoes_handshake_and_flushes_pending():
     assert events[1].packet == bytes((0x02,))
     assert events[1].rx_meta.rssi_dbm == -70
     # handshake sent once initially, once after reconnect
-    assert len(transport.sent) == 2
+    assert len(set_radio_sends(transport)) == 2
