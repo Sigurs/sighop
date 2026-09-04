@@ -1,3 +1,10 @@
+# modem-probe Specification
+
+## Purpose
+The `SetHardware` request/response exchange and the startup probe that establishes what the
+attached board is and which telemetry it supports — recording observation and absence as
+distinct outcomes, reading radio parameters back rather than assuming them, and transmitting
+nothing over the air to find out.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/docs/kiss_modem_protocol.md` is authoritative for the

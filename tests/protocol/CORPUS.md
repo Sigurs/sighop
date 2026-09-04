@@ -1,6 +1,6 @@
 # The protocol regression corpus
 
-442 frames captured off the live mesh, in five files:
+997 frames captured off the live mesh, in six files:
 
 | File | Frames | Recorded | Provenance |
 |---|---|---|---|
@@ -9,6 +9,7 @@
 | `captures/2026-09-04.jsonl` | 56 | milestone 2, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-04-02.jsonl` | 2 | milestone 2, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-04-03.jsonl` | 33 | milestone 2, Heltec V4 OLED | `capture_meta` header |
+| `captures/2026-09-05.jsonl` | 555 | milestone 3, Heltec V4 OLED | `capture_meta` header |
 
 Per DESIGN.md §12 these files are the permanent regression corpus for the
 protocol layer. The two milestone 0 files predate the `capture_meta` header
@@ -17,10 +18,12 @@ carries its provenance in-band, as the first line of the file itself. Either
 way every corpus file states the conditions it was recorded under —
 `test_every_corpus_file_carries_provenance` refuses a file that states neither.
 
-The 2026-09-04 files are one overnight session split by device restarts. They
-were kept whole rather than filtered down to their novel frames: a corpus of
-hand-picked interesting frames stops being a sample of what the mesh actually
-carries.
+The 2026-09-04 files are one overnight session split by device restarts. The
+2026-09-05 file is milestone 3's long receive-only run — 2 h 54 min on the V4,
+17:06–20:00 UTC, recorded by `sighop run --capture` while the TX scheduler
+carried live advert load behind a closed gate. All of them were kept whole
+rather than filtered down to their novel frames: a corpus of hand-picked
+interesting frames stops being a sample of what the mesh actually carries.
 
 **They are read-only evidence.** The harness opens them for reading and never
 writes to them or their sidecars. Nothing regenerates them.
@@ -33,7 +36,7 @@ writes to them or their sidecars. Nothing regenerates them.
 - **Payload shapes.** Every payload parses to its envelope and rebuilds
   byte-identically across eleven payload types, CONTROL included — preserved
   uninterpreted, which is itself the recorded behaviour.
-- **Adverts.** All 75 ADVERT frames pass Ed25519 signature verification, and
+- **Adverts.** All 92 ADVERT frames pass Ed25519 signature verification, and
   their appdata decodes to consistent flags, node types and UTF-8 names.
 - **That the multi-byte hash reading is the correct one.** Forcing 1-byte hashes
   yields corrupt flags and truncated names (`0xfa` / `rala Hill repeater`); the
@@ -78,21 +81,35 @@ distinct lengths, all preserved uninterpreted), and the **CHAT** node type (six
 adverts, flags `0x81`). The synthetic fixtures for them stay: they cover the
 shapes around what happened to arrive.
 
+The 2026-09-05 session added three more, and settled how ordinary one of the
+2026-09-04 findings really was:
+
+- **A chat node that reports a location** — flags `0x91`, two adverts from one
+  node. Every chat advert before it was `0x81`, named with no location, so
+  `ADV_LATLON_MASK` and a non-repeater node type had never been seen set
+  together on real air.
+- **A 10-byte TRACE**, against 13 and 21 bytes in every earlier trace.
+- **CONTROL is routine traffic, not a curiosity.** 162 frames in this one
+  session against six in the entire corpus before it, 154 of them at 38 bytes.
+  The shape has not changed; its frequency has. Preserving CONTROL
+  uninterpreted is now a path taken by roughly a fifth of the corpus.
+
 ## Recorded composition
 
 Asserted by `test_corpus.py`; a decoder change that shifts classification fails
 loudly even when every frame still decodes.
 
-- **Payload types**: GRP_TXT 118, TXT_MSG 118, ADVERT 75, ACK 44, RESPONSE 23,
-  ANON_REQ 22, PATH 15, REQ 12, CONTROL 6, GRP_DATA 5, TRACE 4.
-- **Route types**: DIRECT 237, FLOOD 204, TRANSPORT_FLOOD 1. No
+- **Payload types**: GRP_TXT 341, TXT_MSG 191, CONTROL 168, ADVERT 92, ACK 67,
+  ANON_REQ 42, PATH 38, RESPONSE 36, REQ 12, GRP_DATA 5, TRACE 5.
+- **Route types**: FLOOD 502, DIRECT 494, TRANSPORT_FLOOD 1. No
   `TRANSPORT_DIRECT`.
-- **Hop counts**: 0→187, 1→76, 2→105, 3→67, 4→5, 5→2.
-- **Path hash sizes**: 1-byte 197, 2-byte 108, 3-byte 137.
-- **Adverts**: 75, all verifying and all named; 63 with flags `0x92` (repeater,
-  located, named), 6 with `0x93` (room server, located, named), 6 with `0x81`
-  (chat, named, no location). Six distinct names.
-- **ACK payload lengths**: 4 bytes ×33, 6 bytes ×11.
+- **Hop counts**: 0→418, 1→326, 2→177, 3→69, 4→5, 5→2.
+- **Path hash sizes**: 1-byte 487, 2-byte 109, 3-byte 401.
+- **Adverts**: 92, all verifying and all named; 77 with flags `0x92` (repeater,
+  located, named), 7 with `0x81` (chat, named, no location), 6 with `0x93` (room
+  server, located, named), 2 with `0x91` (chat, located, named). Eight distinct
+  names.
+- **ACK payload lengths**: 4 bytes ×48, 6 bytes ×19.
 
 ## Flood repetition rate (input to the milestone 3 dedup cache)
 
@@ -120,10 +137,28 @@ receptions, and **not one of the 57 direct receptions repeated** — but the
 *rate* clearly is not a constant of this mesh: it moved from 41.6% to 11.0%
 between nights, on a different board.
 
-So on this mesh a dedup cache of ~128 entries with a 60 s TTL covers every
-duplicate observed on either night with an order of magnitude of headroom. That
-is one location on three nights, not a design limit — milestone 3 should
-re-measure rather than treat these as constants.
+The 2026-09-05 session, being both long and busy, is the one that settled the
+sizing. 555 receptions, 370 distinct, **33.3% repeats**, at most 3 copies of any
+packet, 16 distinct packets in any 60 s and 49 in any 300 s. Over the whole
+997-frame corpus: 656 distinct packets, 34.2% repeats, median gap between
+consecutive copies **0.99 s**, p95 **3.3 s**, and only **two** gaps anywhere
+above 60 s. Those two are worth naming, because they are not the same thing:
+
+- **200.7 s** — a flood ANON_REQ whose late copy arrived by a *different* path
+  (`23` against `be`, SNR −10.25 against 14.25). A genuine late echo, six times
+  the 31.1 s the milestone 0 subset called its worst case.
+- **3158 s (52.6 min)** — two **byte-for-byte identical** zero-hop DIRECT
+  TXT_MSG frames, same ciphertext, same SNR. Not a copy of one transmission but
+  the sender **retransmitting an unacked DM**.
+
+So the earlier recommendation here — "~128 entries with a 60 s TTL, an order of
+magnitude of headroom" — was wrong, and wrong because three short nights cannot
+sample the tail of a duration. A 60 s TTL would have missed the 200.7 s copy
+outright. The shipped defaults are **300 s and 4096 entries**, and the TTL is
+bounded from both sides: shorter discards real flood copies, much longer starts
+swallowing sender retries, which are events a user should see rather than have
+deduplicated away. Peak occupancy at 300 s is 49 entries, so the cap is headroom
+against a busier mesh, not a fit to this one.
 
 ## The golden file
 

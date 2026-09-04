@@ -297,3 +297,135 @@ def test_rendering_touches_no_io(snr):
     record = record_for(packet_bytes(PayloadType.ACK, b"\x01\x02\x03\x04"), snr=snr)
     assert isinstance(render_frame_line(record), str)
     assert isinstance(render_detail_line(record), str)
+
+
+# --- The runtime status line (milestone 3) ---------------------------------
+
+
+def _status(**overrides):
+    from sighop.net.tx import SchedulerStats, SchedulerStatus
+
+    fields = {
+        "transmit_enabled": False,
+        "duty_cycle_pct": 12.5,
+        "duty_cycle_used_ms": 45_000.0,
+        "duty_cycle_ceiling_ms": 360_000.0,
+        "reserve_reached": False,
+        "above_regulatory_default": False,
+        "queue_depths": {0: 0, 1: 0, 2: 2, 3: 1},
+        "stats": SchedulerStats(transmitted=4, suppressed=7, dropped=1, failed=2),
+    }
+    fields.update(overrides)
+    return SchedulerStatus(**fields)
+
+
+def _dedup_stats(**overrides):
+    from sighop.net.dedup import DedupStats
+
+    fields = {
+        "considered": 100,
+        "duplicates": 11,
+        "passed_through": 89,
+        "entries": 42,
+        "peak_entries": 51,
+        "max_entries": 4096,
+        "ttl_seconds": 300.0,
+        "widest_interval_seconds": 4.6,
+        "evictions_by_age": 0,
+        "evictions_by_cap": 0,
+    }
+    fields.update(overrides)
+    return DedupStats(**fields)
+
+
+def test_the_status_line_leads_with_the_gate_and_the_duty_cycle():
+    from sighop.monitor.render import render_status
+
+    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=5)
+
+    assert line == (
+        "== TX=disabled duty= 12.5% (45/360s) q=0/0/2/1 tx=4 sup=7 drop=1 fail=2 "
+        "dup=11.0% cache=42/4096 paths=5"
+    )
+
+
+def test_an_enabled_transmitter_says_so_in_the_status_line():
+    from sighop.monitor.render import render_status
+
+    line = render_status(_status(transmit_enabled=True), dedup=_dedup_stats(), learned_paths=0)
+
+    assert line.startswith("== TX=ENABLED ")
+
+
+def test_the_status_line_marks_the_reserve_and_a_raised_ceiling():
+    from sighop.monitor.render import render_status
+
+    line = render_status(
+        _status(reserve_reached=True, above_regulatory_default=True),
+        dedup=_dedup_stats(),
+        learned_paths=0,
+    )
+
+    assert "RESERVE(classes 2-3 stalled)" in line
+    assert "ABOVE-10%" in line
+
+
+def test_the_status_line_reports_an_active_advert_override():
+    from sighop.monitor.render import render_status
+
+    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=0, active_overrides=2)
+
+    assert line.endswith("overrides=2")
+
+
+def test_the_startup_banner_states_that_nothing_will_be_sent():
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=False,
+        ceiling_pct=10.0,
+        above_regulatory_default=False,
+    )
+
+    assert "transmit disabled — nothing will be sent" in text
+
+
+def test_the_startup_banner_is_emphatic_when_transmit_is_enabled():
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=True,
+        ceiling_pct=10.0,
+        above_regulatory_default=False,
+    )
+
+    assert "** TRANSMIT ENABLED **" in text
+    assert "360 s/hour" in text
+
+
+def test_the_startup_banner_warns_about_a_raised_ceiling():
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=True,
+        ceiling_pct=50.0,
+        above_regulatory_default=True,
+    )
+
+    assert "above the EU 868 10% limit" in text
+
+
+def test_stubs_are_rendered_as_ephemeral():
+    from sighop.monitor.render import render_stubs
+    from sighop.net.adverts import EntityStub
+    from sighop.protocol.identity import generate_identity
+
+    stub = EntityStub(entity_id="stub-1", name="skogen", identity=generate_identity())
+    text = render_stubs([stub])
+
+    assert "skogen" in text
+    assert "ephemeral" in text
+    assert render_stubs([]) == "stubs: none"

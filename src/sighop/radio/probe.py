@@ -28,6 +28,7 @@ from sighop.radio.modem import (
     ERROR_NO_CALLBACK,
     ERROR_UNKNOWN_CMD,
     SENSOR_PERMISSIONS_ALL,
+    SUB_GET_AIRTIME,
     SUB_GET_BATTERY,
     SUB_GET_DEVICE_NAME,
     SUB_GET_MCU_TEMP,
@@ -156,9 +157,7 @@ def _absence(result: RequestRejected | RequestTimedOut) -> Absent:
         detail = "UnknownCmd: the firmware does not implement this sub-command"
     elif result.error_code == ERROR_NO_CALLBACK:
         detail = "NoCallback: the board does not provide this feature"
-    return Absent(
-        reason=AbsenceReason.UNSUPPORTED, error_code=result.error_code, detail=detail
-    )
+    return Absent(reason=AbsenceReason.UNSUPPORTED, error_code=result.error_code, detail=detail)
 
 
 async def _probe[T](
@@ -214,6 +213,27 @@ def _parse_mcu_temp(data: bytes) -> int:
 def _parse_sensors(data: bytes) -> bytes:
     """CayenneLPP, kept raw: its shape follows build flags (§4.1, design D4)."""
     return data
+
+
+def _parse_airtime(data: bytes) -> int:
+    """`Airtime` (0x8F): uint32 milliseconds, little-endian."""
+    if len(data) < 4:
+        raise ValueError(f"Airtime response needs 4 bytes, got {len(data)}")
+    return int.from_bytes(data[:4], "little")
+
+
+async def probe_airtime(requester: Requester, payload_len: int) -> Probed[int]:
+    """Ask the board its own airtime estimate, in milliseconds, for a length.
+
+    The answer is the firmware's `getEstAirtimeFor` — RadioLib's `getTimeOnAir`
+    divided by 1000, so truncated to whole milliseconds. It exists here to
+    cross-check our own computation (design D2), never to be used in its place:
+    it costs a round-trip, it is a millisecond coarse, and it is unavailable in
+    replay, where most of the scheduler's tests run.
+    """
+    if not 0 <= payload_len <= 0xFF:
+        raise ValueError(f"payload length {payload_len} does not fit the 1-byte request")
+    return await _probe(requester, SUB_GET_AIRTIME, _parse_airtime, bytes((payload_len,)))
 
 
 async def run_probe(

@@ -45,6 +45,7 @@ TYPE_SET_HARDWARE = 0x06
 SUB_SET_RADIO = 0x09
 SUB_GET_RADIO = 0x0B
 SUB_GET_TX_POWER = 0x0C
+SUB_GET_AIRTIME = 0x0F
 SUB_GET_VERSION = 0x11
 SUB_GET_BATTERY = 0x13
 SUB_GET_MCU_TEMP = 0x14
@@ -56,6 +57,7 @@ SUB_GET_DEVICE_NAME = 0x16
 RESPONSE_BIT = 0x80
 SUB_RESP_RADIO = 0x8B
 SUB_RESP_TX_POWER = 0x8C
+SUB_RESP_AIRTIME = 0x8F
 SUB_RESP_VERSION = 0x91
 SUB_RESP_BATTERY = 0x93
 SUB_RESP_MCU_TEMP = 0x94
@@ -64,12 +66,23 @@ SUB_RESP_DEVICE_NAME = 0x96
 
 SUB_OK = 0xF0
 SUB_ERROR = 0xF1
+SUB_TX_DONE = 0xF8
 SUB_RXMETA = 0xF9
+
+# `TxDone` (0xF8) carries one result byte: `examples/kiss_modem/KissModem.cpp`
+# calls `setTxDonePending(0x01)` when the radio reports the send complete and
+# `0x00` when `startSendRaw` fails or its own timeout fires.
+TX_DONE_SUCCESS = 0x01
 
 # Error codes, `kiss_modem_protocol.md` "Error Codes". The two that mean "this
 # board does not do that" rather than "you asked wrongly".
 ERROR_NO_CALLBACK = 0x03
 ERROR_UNKNOWN_CMD = 0x05
+ERROR_TX_BUSY = 0x07
+
+# `KISS_MAX_PACKET_SIZE`. The firmware copies into a fixed buffer of this size
+# and rejects anything longer, so a larger packet is a programming error here.
+MAX_PACKET_BYTES = 255
 
 # GetSensors takes a permissions byte: base | location | environment.
 SENSOR_PERMISSIONS_ALL = 0x07
@@ -84,6 +97,14 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 2.0
 # DTR/RTS explanation is wrong.)
 HANDSHAKE_TIMEOUT_SECONDS = 5.0
 HANDSHAKE_ATTEMPTS = 3
+
+# A deliberately generous fallback. The scheduler passes a timeout derived from
+# the packet's own time on air, because that is the only figure that means
+# anything: the firmware waits `txdelay` (500 ms by default) plus p-persistent
+# CSMA slots before it even starts transmitting, and then gives itself
+# 1.5 x airtime. Timing out earlier than the board does would desynchronise us
+# from a modem that is still going to answer.
+DEFAULT_TX_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +199,51 @@ class RequestTimedOut:
 RequestResult = RequestOk | RequestRejected | RequestTimedOut
 
 
+@dataclass(frozen=True, slots=True)
+class TransmitDone:
+    """The modem answered `TxDone`. `success` is its result byte."""
+
+    success: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TransmitBusy:
+    """The modem already had a packet pending and rejected this one.
+
+    A lost race, not a failure of the packet: DESIGN.md §4.3 requires the
+    caller to requeue at the head rather than busy-loop.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class TransmitTimedOut:
+    """Neither `TxDone` nor an error arrived in time.
+
+    The modem resolves its own send after `getEstAirtimeFor(len) * 1.5`, so a
+    timeout here means either the board stopped answering or our budget was set
+    below its own — which is why the caller's timeout must exceed the
+    firmware's, CSMA delay included.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class TransmitFailed:
+    """The transmission could not be resolved at all: the link went away."""
+
+    reason: str
+
+
+TransmitResult = TransmitDone | TransmitBusy | TransmitTimedOut | TransmitFailed
+
+
+class PacketTooLarge(ValueError):
+    """A packet longer than the modem's frame size, rejected before sending.
+
+    Caught here rather than at the transport, where the firmware would copy
+    what fits and put a truncated packet on the air.
+    """
+
+
 class ModemError(RuntimeError):
     """The modem rejected a SetHardware request (Error 0xF1 response)."""
 
@@ -196,6 +262,12 @@ class _PendingRequest:
     sub_command: int
     response_code: int
     future: asyncio.Future[RequestResult]
+
+
+@dataclass(slots=True)
+class _PendingTransmission:
+    packet_len: int
+    future: asyncio.Future[TransmitResult]
 
 
 class _StreamEnded:
@@ -264,6 +336,11 @@ class Modem:
         self._next_frame_task: asyncio.Future[FrameEvent] | None = None
         self._pending_data: KissFrame | None = None
         self._pending_request: _PendingRequest | None = None
+        self._pending_tx: _PendingTransmission | None = None
+        # The one-in-flight invariant belongs to the radio, not to whoever
+        # happens to be its only caller today (design D8).
+        self._tx_lock = asyncio.Lock()
+        self.transmit_count = 0
         self._buffered: list[ModemEvent] = []
         self._consumer_driving = False
         self._probe_task: asyncio.Task[None] | None = None
@@ -297,6 +374,7 @@ class Modem:
                     assert frame is not None  # only a timeout yields None
                     if isinstance(frame, Reconnected):
                         self.reconnect_count += 1
+                        self._fail_pending_transmission("transport reconnected")
                         await self._cancel_probe()
                         for event in self._flush_pending_data():
                             yield event
@@ -305,6 +383,7 @@ class Modem:
                     for event in self._handle_frame(frame):
                         yield event
                     if self._device_restarted:
+                        self._fail_pending_transmission("device rebooted")
                         # The board rebooted underneath us without the USB
                         # bridge ever dropping, so nothing else would have
                         # told us. Redo the handshake: it came back on the
@@ -319,6 +398,7 @@ class Modem:
             for event in self._flush_pending_data():
                 yield event
         finally:
+            self._fail_pending_transmission("modem stopped")
             await self._cancel_probe()
             self._cancel_next_frame()
 
@@ -350,9 +430,7 @@ class Modem:
             future=future,
         )
         try:
-            await self._transport.send(
-                TYPE_SET_HARDWARE, bytes((sub_command,)) + data
-            )
+            await self._transport.send(TYPE_SET_HARDWARE, bytes((sub_command,)) + data)
             if self._consumer_driving:
                 try:
                     return await asyncio.wait_for(future, wait)
@@ -362,6 +440,43 @@ class Modem:
             return resolved if resolved is not None else RequestTimedOut(sub_command)
         finally:
             self._pending_request = None
+
+    async def send_packet(
+        self, packet: bytes, *, timeout: float = DEFAULT_TX_TIMEOUT_SECONDS
+    ) -> TransmitResult:
+        """Transmit one packet and resolve against `TxDone`, busy or a timeout.
+
+        Holds the transmit lock for the whole exchange, so a second caller waits
+        rather than putting a second `Data` frame on a modem that can only hold
+        one (design D8). Never raises for a modem-side outcome — busy, failure
+        and timeout are all values — but does raise `PacketTooLarge` for a
+        packet this link cannot carry, which is a caller bug and not a radio
+        condition.
+
+        This is the only method in `radio/` that sends a `Data` frame. Whether
+        it may be called at all is the scheduler's receive-only gate, one layer
+        up: nothing here decides policy.
+        """
+        if len(packet) > MAX_PACKET_BYTES:
+            raise PacketTooLarge(
+                f"packet of {len(packet)} bytes exceeds the modem's {MAX_PACKET_BYTES}-byte frame"
+            )
+
+        async with self._tx_lock:
+            future: asyncio.Future[TransmitResult] = asyncio.get_running_loop().create_future()
+            self._pending_tx = _PendingTransmission(packet_len=len(packet), future=future)
+            try:
+                await self._transport.send(TYPE_DATA, packet)
+                self.transmit_count += 1
+                if self._consumer_driving:
+                    try:
+                        return await asyncio.wait_for(asyncio.shield(future), timeout)
+                    except TimeoutError:
+                        return TransmitTimedOut()
+                resolved = await self._pump_until_resolved(future, timeout)
+                return resolved if resolved is not None else TransmitTimedOut()
+            finally:
+                self._pending_tx = None
 
     # --- Link startup ------------------------------------------------------
 
@@ -431,9 +546,7 @@ class Modem:
         from sighop.radio.probe import run_probe
 
         try:
-            self.probe_result = await run_probe(
-                self, self._radio_params, logger=self._logger
-            )
+            self.probe_result = await run_probe(self, self._radio_params, logger=self._logger)
         finally:
             self.probe_ready.set()
 
@@ -477,6 +590,10 @@ class Modem:
             sub_command, sub_data = frame.data[0], frame.data[1:]
             if sub_command == SUB_RXMETA:
                 return self._handle_rx_meta(frame, sub_data)
+            if self._resolve_pending_transmission(sub_command, sub_data):
+                # Same reasoning as design D3 below: resolving a transmission
+                # must not cost a pending Data frame its RxMeta.
+                return []
             if self._resolve_pending_request(sub_command, sub_data):
                 # Design D3: a routed response must not disturb correlation.
                 # Flushing here would silently cost the pending Data frame its
@@ -509,10 +626,7 @@ class Modem:
             "modem_rebooted",
             reset_reason=reset_reason,
             reboot_count=self.reboot_count,
-            detail=(
-                "the board restarted and lost its radio configuration; "
-                "re-applying SetRadio"
-            ),
+            detail=("the board restarted and lost its radio configuration; re-applying SetRadio"),
         )
         return [UnparsedEvent(raw=raw, reason=f"{DEVICE_REBOOT_REASON}: {reset_reason}")]
 
@@ -557,6 +671,43 @@ class Modem:
             return True
         return False
 
+    def _resolve_pending_transmission(self, sub_command: int, sub_data: bytes) -> bool:
+        """Route `TxDone` — or a busy error — to the outstanding transmission.
+
+        Returns False when nothing is outstanding, so an unsolicited `TxDone` is
+        reported as an unparsed frame: a completion we did not initiate is
+        evidence of a state we did not expect, and this layer is the radio's
+        only observability (§4.1).
+
+        The busy error is the one genuinely ambiguous frame on this link —
+        `Error 0x07` looks the same whoever it is for. A transmission takes
+        precedence over a request because `TxBusy` is only ever raised in answer
+        to a `Data` frame (`KissModem.cpp` `queuePendingBusyError`), while a
+        rejected `SetHardware` request answers with a different code.
+        """
+        pending = self._pending_tx
+        if pending is None or pending.future.done():
+            return False
+        if sub_command == SUB_TX_DONE:
+            success = bool(sub_data) and sub_data[0] == TX_DONE_SUCCESS
+            pending.future.set_result(TransmitDone(success=success))
+            return True
+        if sub_command == SUB_ERROR and sub_data and sub_data[0] == ERROR_TX_BUSY:
+            pending.future.set_result(TransmitBusy())
+            return True
+        return False
+
+    def _fail_pending_transmission(self, reason: str) -> None:
+        """Resolve an outstanding transmission that can no longer complete.
+
+        A `TxDone` cannot arrive across a reconnect — the board that was going
+        to send it has restarted — so waiting for one would hold the
+        one-in-flight lock until the timeout for no reason.
+        """
+        pending = self._pending_tx
+        if pending is not None and not pending.future.done():
+            pending.future.set_result(TransmitFailed(reason=reason))
+
     def _flush_pending_data(self) -> list[ModemEvent]:
         if self._pending_data is None:
             return []
@@ -569,13 +720,13 @@ class Modem:
 
     # --- Frame pumping -----------------------------------------------------
 
-    async def _pump_until_resolved(
-        self, future: asyncio.Future[RequestResult], timeout: float
-    ) -> RequestResult | None:
+    async def _pump_until_resolved[T](self, future: asyncio.Future[T], timeout: float) -> T | None:
         """Drive the frame iterator until `future` resolves or time runs out.
 
-        Used only before the `events()` loop is running. Events decoded on the
-        way are buffered, never dropped.
+        Used only before the `events()` loop is running — by the handshake, and
+        by a transmission submitted outside a running link, which is a shape
+        only tests produce. Events decoded on the way are buffered, never
+        dropped.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -590,14 +741,13 @@ class Modem:
                 # The link dropped mid-request. Give up on the response; the
                 # `events()` loop redoes the handshake when it sees this.
                 self.reconnect_count += 1
+                self._fail_pending_transmission("transport reconnected")
                 self._buffered.extend(self._flush_pending_data())
                 break
             self._buffered.extend(self._handle_frame(frame))
         return future.result() if future.done() else None
 
-    async def _next_frame(
-        self, timeout: float | None
-    ) -> FrameEvent | _StreamEnded | None:
+    async def _next_frame(self, timeout: float | None) -> FrameEvent | _StreamEnded | None:
         """Await the next frame, returning None if `timeout` elapses first.
 
         The in-flight `__anext__` is kept as a task across a timeout rather

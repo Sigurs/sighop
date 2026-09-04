@@ -259,11 +259,33 @@ On `TxBusy`, treat it as a lost race and requeue at the head — never busy-loop
 | 2 | Originated messages (room broadcast, bot DMs) | Normal traffic. |
 | 3 | Adverts | Purely periodic; always yields. |
 
-**Airtime budget.** A token bucket over a rolling window, computed from LoRa time-on-air for
-the configured SF/BW/CR — not packet count, since airtime varies by an order of magnitude
-across presets. Time-on-air is calculated from the *live* radio configuration read back via
-`GetRadio`, never from an assumed preset: the EU narrow preset and the legacy 250 kHz/SF11
-preset differ by more than an order of magnitude per packet.
+**Airtime budget.** A **sliding window** of `(charged_at, airtime_ms)` covering the preceding
+3600 s — not a token bucket, which only approximates it. The regulation says no more than
+360 s of transmission in any hour, and a window is that sentence; the test asserts it verbatim
+(milestone 3, design D4). Airtime, not packet count: time-on-air varies several-fold across
+presets.
+
+Time-on-air is calculated from the *live* radio configuration read back via `GetRadio`, never
+from an assumed preset — a board that resets silently reverts to its build defaults, and
+`SetRadio` is not persisted. Two corrections to what this section used to claim, both from
+milestone 3:
+
+- The EU narrow and legacy 250 kHz/SF11 presets do **not** "differ by more than an order of
+  magnitude": they are within ~7% across the payload range, and legacy is marginally the
+  *faster* of the two above 32 B. Four times the bandwidth against eight times the symbol time
+  nearly cancels. The reason for reading parameters back survives — SF12/125 kHz really is
+  over four times the narrow preset, and a wrong preset receives nothing — but the arithmetic
+  offered for it did not.
+- The firmware's preamble is **spreading-factor-dependent**: 32 symbols at SF ≤ 8, 16 above
+  (`RadioLibWrappers.h:56`), not RadioLib's default of 8. Every time-on-air figure below was
+  computed with the wrong preamble and understated the cost by ~15%.
+
+Both are now checked against the board itself: `GetAirtime` (0x0F) returns the firmware's own
+estimate for a given length, and sighop compares it against its computation at startup over a
+ladder of lengths. Measured live on the V4, 2026-09-04: agreement to **sub-millisecond** at
+16/64/128/255 B (deltas 0.09-0.59 ms, which is the firmware's truncation to whole
+milliseconds). A disagreement is an error-level wide event and changes nothing — the computed
+value is what the budget uses.
 
 On EU 868 this ceiling is a **regulatory limit, not a tuning knob**. The 869.4–869.65 MHz
 sub-band permits 500 mW e.r.p. conditional on ≤10% duty cycle — 360 s of transmit time per
@@ -312,8 +334,11 @@ default preset (BW 62.5 kHz, SF8, CR 4/8) a single packet is a long time to be d
 
 | Packet size | Time on air ≈ deaf window |
 |---|---|
-| 64 B (typical) | ~0.64 s |
-| 255 B (maximum) | ~2.2 s |
+| 64 B (typical) | **~0.74 s** |
+| 255 B (maximum) | **~2.31 s** |
+
+(These were ~0.64 s and ~2.2 s until milestone 3, computed with an 8-symbol preamble the
+firmware does not use. The figures above are the board's own, confirmed by `GetAirtime`.)
 
 The duty-cycle ceiling bounds the total: at 10% the receiver is deaf **at most 360 s/hour by
 construction**, and the design's own defaults — 2–5 entities, a 24 h advert floor, zero-hop
@@ -634,10 +659,12 @@ vulnerability scan of the result.
 ```
 sighop/
 ├── src/sighop/
-│   ├── radio/          kiss transport, modem, probe, capture, replay
-│   ├── protocol/       packet codec, payloads, crypto, path learning
-│   ├── net/            rx.py (decode stage), bus, tx scheduler, airtime
+│   ├── radio/          kiss transport, modem (rx + tx), probe, capture, replay
+│   ├── protocol/       packet codec, payloads, crypto
+│   ├── net/            rx.py (decode stage), dedup.py, paths.py, bus.py,
+│   │                   tx.py (scheduler), airtime.py, adverts.py
 │   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
+│   ├── runtime.py      the whole pipeline wired together (`sighop run`)
 │   ├── entities/       base, room server, companion, bot runtime
 │   │   └── bots/       greeter
 │   ├── db/             models, repositories
@@ -684,10 +711,13 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    decryption**. Ciphertext handling is verifiable here only by round-trip and by fixed
    known-answer vectors against the firmware source; milestone 4 is what actually closes it.
    *The corpus is not frozen:* milestone 2's live session added `captures/2026-09-04.jsonl`,
-   `-02` and `-03` (91 frames), taking it to **442 frames across five files**. A session is
-   appended when it carries a shape the corpus lacks — that one brought the first
-   `TRANSPORT_FLOOD` frame and the first CONTROL payloads — and is appended whole, because a
-   corpus of hand-picked interesting frames stops being a sample of the mesh.
+   `-02` and `-03` (91 frames), taking it to 442 frames across five files, and milestone 3's
+   long receive-only run added `captures/2026-09-05.jsonl` (555 frames), taking it to **997
+   frames across six files**. A session is appended when it carries a shape the corpus lacks —
+   the first brought the first `TRANSPORT_FLOOD` frame and the first CONTROL payloads, the
+   second a located CHAT advert (`0x91`), a 10-byte TRACE, and the duplicate-timing tail that
+   sizes the dedup TTL — and is appended whole, because a corpus of hand-picked interesting
+   frames stops being a sample of the mesh.
 2. **Live decode.** Point the decoder at the live link. Adverts, names, paths and SNR
    printing in real time. *This is where the design is proven or isn't* — and it is still
    entirely receive-only.
@@ -756,6 +786,71 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
 3. **Bus and scheduler.** RX fan-out with dedup, TX scheduler with airtime budget and the
    duty-cycle ceiling under test. Transmit still disabled; verify the budget accounting
    against what *would* have been sent.
+   *Done:* `net/airtime.py`, `net/dedup.py`, `net/paths.py`, `net/bus.py`, `net/tx.py`,
+   `net/adverts.py`, `runtime.py` and `sighop run` (live or `--replay`). The modem gained its
+   transmit path — `Data` submission with `TxDone`/`TxBusy` correlation — built and tested now
+   so milestone 4 is a flag flip rather than new code written on the air. The gate stayed
+   closed throughout, and that is asserted rather than asserted-in-prose: `radio/` has exactly
+   one `Data` send, and a test drives every priority class under load with transmit disabled
+   and checks that nothing reaches the transport. Findings:
+   - **The deaf-window table was wrong, and the board proved it.** §4.3's figures assumed an
+     8-symbol preamble; the firmware uses 32 at SF ≤ 8. `GetAirtime` (0x0F) — which nothing
+     had asked for until now — returns the firmware's own estimate, and it agrees with the
+     corrected computation to **sub-millisecond** at 16/64/128/255 B on the V4. That is a
+     cross-check against an independent implementation of the one number the duty-cycle
+     ceiling rests on, for the cost of four queries at startup.
+   - **This section's own "order of magnitude" claim was also wrong.** The EU narrow and
+     legacy 250 kHz/SF11 presets are within ~7% per packet. Corrected in §4.3, and kept as a
+     test because it is counter-intuitive enough to be re-derived wrongly.
+   - **Learning paths only from flood packets discards the best evidence there is.** MeshCore's
+     zero-hop adverts arrive as `DIRECT` with an empty path — direct RF contact, the most
+     useful route a node can have. Replaying one capture learned 2 destinations under the
+     flood-only rule and 5 once empty-path DIRECT receptions counted. A DIRECT packet *with* a
+     path is still ignored: that route was someone else's choice, not a route back.
+   - **Duty cycle is cheap to test properly.** With an injected clock a simulated 24 hours of
+     sustained overload runs in 0.7 s, and asserts the regulation's own sentence: no 3600 s
+     interval carries more than 360 s. Offered 664 s/hour, it transmitted 323 s/hour and
+     dropped the rest on their deadlines.
+   - **Repetition rate, measured over the whole 442-frame corpus:** 35.7% of receptions were
+     duplicates, and the widest gap between copies was **31.1 s** — six times the 4.6 s the
+     milestone 2 session suggested. Per-file it ranges from 5.4% to 45.7%, which is the same
+     lesson as before: repetition is a property of the session, not of the mesh.
+   - **The sliding window only becomes observable after an hour on the air, and the long V4
+     session is what showed it.** Across 2 h 54 min receive-only (2026-09-04 17:06–20:00 UTC,
+     `captures/2026-09-05`), with a 15-minute advert override on two stub entities so the
+     scheduler carried real load, remaining budget fell 99.70% → 98.22% over the first six
+     adverts and then **held at 98.22% for the remaining ten**: charges ageing out of the
+     window at exactly the rate new ones entered it. That plateau is the sliding window
+     working, and it is not reachable in a short run — the 2.5-minute session before it saw
+     only the monotonic decline, which a leaky bucket would have produced too. Peak load was
+     **6.40 s in any 3600 s, 0.178% duty against a 10% ceiling**. All 16 adverts were charged
+     and suppressed at the closed gate, none dropped, none busy, longest queue wait **0.46
+     ms**, every one admitted on its first attempt. The inter-entity gap deferred the second
+     entity 16 times, by 80–530 s.
+   - **The dedup TTL is bounded from both sides, which nothing before this run showed.** The
+     session saw 555 receptions, 33.3% of them duplicates, a median gap between copies of
+     0.99 s — and two outliers that turn out to be different phenomena. One is a flood copy of
+     an ANON_REQ arriving **200.7 s** late by a *different* path (`23` against `be`, SNR
+     −10.25 against 14.25): a real late echo, and six times the 31.1 s the 442-frame corpus
+     called its worst case. The other is a pair of **byte-for-byte identical** zero-hop DIRECT
+     TXT_MSG frames **3158 s (52.6 min)** apart — same ciphertext, same path, same SNR, which
+     is not a copy of one transmission but the sender **retransmitting an unacked DM**. So the
+     TTL cannot simply be raised for safety: shorter than ~200 s it discards genuine flood
+     copies, longer than ~50 min it starts silently swallowing real retries, which are events
+     a user is entitled to see. 300 s sits inside that window with **1.5× margin over the
+     worst real duplicate**, not the ten times the corpus alone implied. Peak occupancy was 49
+     entries against the 4096 cap, unchanged. Both defaults stand; the argument for the TTL
+     is replaced, and §13 is corrected.
+   - **CONTROL is ordinary traffic, not a curiosity.** The corpus held six CONTROL frames and
+     the milestone 2 finding treated them as a rarity; this session alone carried **162**, 154
+     of them at 38 bytes. Nothing decodes them and nothing should — they are preserved
+     uninterpreted, which is now a path taken by 29% of receptions rather than by six frames.
+   - **555 receptions, zero decode failures, zero unparsed frames, all 17 adverts verifying.**
+     The session also brought three shapes the corpus lacked: advert flags **`0x91`** — a
+     **CHAT node carrying a location**, where all seven chat adverts recorded before it were
+     `0x81`, named with no location, so the two bits had never been seen set together on a
+     non-repeater — a **10-byte TRACE** against the corpus's 13 and 21, and two new nodes.
+     Appended whole, per this section's rule.
 4. **First transmit.** Enable TX. One hardcoded companion entity exchanges a DM with the
    second board, running stock MeshCore firmware as the reference peer. The first packet
    sighop puts on the air should be a deliberate, watched event. A dedicated peer board
@@ -837,10 +932,27 @@ something and forgetting, which is exactly the behaviour the floor exists to pre
 These need real hardware or real traffic to answer, and are cheap to resolve in-flight:
 
 1. Sensible default retention policy per room — depends on observed message volume.
-2. Whether the dedup cache should be sized by entries or by time, once we have seen real
-   flood-repetition rates in the milestone 0 capture.
+2. ~~Whether the dedup cache should be sized by entries or by time~~ — **settled in milestone
+   3, and the question was a false choice.** It needs both, because they bound different
+   things. *Time* governs correctness, and it is bounded from **both** sides. The widest gap
+   between genuine copies of one transmission is **200.7 s** — a flood copy arriving by a
+   different path in the 2 h 54 min live session, against the 31.1 s the 442-frame corpus had
+   suggested — so a TTL much under 300 s discards real duplicates. But the same session also
+   caught two byte-identical DIRECT frames **3158 s** apart, which is a sender retransmitting
+   an unacked message rather than a copy of one, so a TTL stretched much further starts hiding
+   retries the user should see. 300 s sits between those bounds with 1.5× margin over the
+   worst real duplicate — not the ten times the corpus alone implied, and the lesson is that
+   a duration bound cannot be sized from a capture shorter than the bound. *Entries*
+   governs memory: peak occupancy at that TTL
+   is 49 entries against a 4096 cap on both the corpus and the live session, and nothing
+   about observed traffic bounds the
+   distinct-packet count — per-file repetition ranges from 5.4% to 45.7%, so the cap is what
+   makes the cache safe on a mesh busier than any we have recorded. Both defaults stand, now
+   measured rather than assumed, and both are reported in `sighop run`'s status line so the
+   next sizing decision is made from data too.
 3. Whether path scoring needs more than "most recently confirmed wins" — only observable
-   once multiple routes to the same peer exist.
+   once multiple routes to the same peer exist. Still open: milestone 3 records every
+   candidate route with its hop count and SNR, and deliberately scores none of them.
 
 **Telemetry sub-command availability**, previously unknown #1, is settled from the firmware
 source: `getMCUTemperature()` comes from the shared `src/helpers/ESP32Board.h` and both the

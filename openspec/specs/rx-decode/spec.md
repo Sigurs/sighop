@@ -1,3 +1,10 @@
+# rx-decode Specification
+
+## Purpose
+The stateless stage that composes packet, payload and crypto decoding into one structured record
+per received frame: every frame yields an outcome, adverts are verified before their content is
+exposed, and an encrypted payload we hold no key for is reported as un-openable rather than as a
+failure.
 ## Requirements
 
 > Reference: DESIGN.md §4.2 (RX pipeline), §5 (advert verification), §9 (the *Packet RX* wide

@@ -1,3 +1,9 @@
+# capture-replay Specification
+
+## Purpose
+Reading a capture file back as a stream of modem events — the inverse of `capture-cli` — so
+recorded traffic drives the same pipeline the radio does, surfacing provenance without decoding
+it and reporting malformed lines rather than skipping them.
 ## Requirements
 
 > Reference: the `capture-cli` capability defines the record format this capability reads back.

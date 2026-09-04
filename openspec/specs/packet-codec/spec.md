@@ -1,3 +1,9 @@
+# packet-codec Specification
+
+## Purpose
+Decoding and encoding the MeshCore packet frame — header, transport codes, path length encoding
+and size limits — losslessly in both directions. What comes out is inert data: this layer reads
+the wire format and acts on nothing.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/docs/packet_format.md` is the authoritative packet format

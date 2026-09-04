@@ -1,6 +1,6 @@
 """The regression corpus, replayed through the *live* pipeline.
 
-`tests/protocol/test_corpus.py` runs the same 442 frames through the protocol
+`tests/protocol/test_corpus.py` runs the same 997 frames through the protocol
 functions directly and stays exactly as it is. This is a second, higher-level
 check over the same evidence: capture file → replay source → `net/rx.py`,
 which is the path a live link takes, with only the source swapped (design D1).

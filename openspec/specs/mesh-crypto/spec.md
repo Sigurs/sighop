@@ -1,3 +1,9 @@
+# mesh-crypto Specification
+
+## Purpose
+The cryptography MeshCore actually uses on the wire — identity keys and node hashes, shared
+secret derivation, cipher, MAC, channel keys, advert signing — and, just as importantly, the
+limit of what each one proves. The layer is pure and offline: it decides nothing about the mesh.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/src/Utils.cpp`, `src/Identity.cpp`,

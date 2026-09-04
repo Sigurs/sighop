@@ -12,9 +12,11 @@ formatter (design D8).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from sighop.net.adverts import EntityStub
+from sighop.net.dedup import DedupStats
 from sighop.net.rx import (
     AdvertOutcome,
     ModemUnparsed,
@@ -24,6 +26,7 @@ from sighop.net.rx import (
     StructuralFailure,
     Uninterpreted,
 )
+from sighop.net.tx import SchedulerStatus
 from sighop.protocol.crypto import AdvertVerification, VerifiedAdvert
 from sighop.protocol.packet import RouteType
 from sighop.protocol.payloads import (
@@ -230,6 +233,81 @@ def render_summary(summary: Summary) -> str:
         f"nodes_heard={summary.node_hashes} reconnects={summary.reconnects} "
         f"reboots={summary.reboots}"
     )
+
+
+# --- The runtime's status line (milestone 3) -------------------------------
+
+
+def render_gate(transmit_enabled: bool) -> str:
+    """The one field an operator must never be uncertain about."""
+    return "TX=ENABLED" if transmit_enabled else "TX=disabled"
+
+
+def render_run_startup(
+    source_text: str,
+    *,
+    transmit_enabled: bool,
+    ceiling_pct: float,
+    above_regulatory_default: bool,
+) -> str:
+    lines = [source_text]
+    if transmit_enabled:
+        lines.append(
+            f"** TRANSMIT ENABLED ** duty-cycle ceiling {ceiling_pct:.1f}% "
+            f"({ceiling_pct * 36:.0f} s/hour)"
+        )
+    else:
+        lines.append(
+            f"transmit disabled — nothing will be sent; "
+            f"duty-cycle ceiling {ceiling_pct:.1f}% would apply"
+        )
+    if above_regulatory_default:
+        lines.append(
+            "!! duty-cycle ceiling is configured above the EU 868 10% limit; "
+            "sighop will permit more airtime than the sub-band allows"
+        )
+    return "\n".join(lines)
+
+
+def render_status(
+    status: SchedulerStatus,
+    *,
+    dedup: DedupStats,
+    learned_paths: int,
+    active_overrides: int = 0,
+) -> str:
+    """The periodic status line. Duty cycle first — it is the limit that binds."""
+    queues = "/".join(str(status.queue_depths.get(index, 0)) for index in range(4))
+    budget = (
+        f"duty={status.duty_cycle_pct:5.1f}% "
+        f"({status.duty_cycle_used_ms / 1000:.0f}/{status.duty_cycle_ceiling_ms / 1000:.0f}s)"
+    )
+    if status.reserve_reached:
+        budget += " RESERVE(classes 2-3 stalled)"
+    if status.above_regulatory_default:
+        budget += " ABOVE-10%"
+    line = (
+        f"== {render_gate(status.transmit_enabled)} {budget} "
+        f"q={queues} tx={status.stats.transmitted} sup={status.stats.suppressed} "
+        f"drop={status.stats.dropped} fail={status.stats.failed} "
+        f"dup={dedup.hit_rate * 100:.1f}% "
+        f"cache={dedup.entries}/{dedup.max_entries} paths={learned_paths}"
+    )
+    if active_overrides:
+        line += f" overrides={active_overrides}"
+    return line
+
+
+def render_stubs(stubs: Sequence[EntityStub]) -> str:
+    """Stub entities, marked ephemeral so they are never read as identities."""
+    if not stubs:
+        return "stubs: none"
+    rendered = ", ".join(
+        f"{stub.name}[{stub.node_hash:02x}]"
+        f"(ephemeral, advert {stub.flood_interval_seconds / 3600:.0f}h)"
+        for stub in stubs
+    )
+    return f"stubs: {rendered}"
 
 
 # --- Helpers ---------------------------------------------------------------

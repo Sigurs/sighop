@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
 
 import structlog
@@ -304,15 +304,24 @@ def outcome_fields(record: RxRecord) -> dict[str, object]:
             return {"outcome": "parsed", "decrypt_outcome": "no_key_held"}
 
 
-def emit_packet_rx(record: RxRecord, *, logger: structlog.stdlib.BoundLogger) -> None:
+def emit_packet_rx(
+    record: RxRecord,
+    *,
+    logger: structlog.stdlib.BoundLogger,
+    extra: Mapping[str, object] | None = None,
+) -> None:
     """The DESIGN.md §9 *Packet RX* wide event, once per frame.
 
-    `dup`, `matched_entities` and `airtime_ms` are omitted rather than filled
-    with placeholders: dedup and fan-out arrive in milestone 3, airtime in
-    milestone 3's budget accounting, and a field that always says `false` is
-    worse than an absent one.
+    `extra` carries the fields this stage cannot know on its own, because it is
+    stateless by design: `dup` and the duplicate's join fields, the learned path,
+    `matched_entities`, `airtime_ms`. Milestone 3's `IngressPipeline` supplies
+    them. They stay absent rather than being filled with placeholders when
+    nothing supplies them — a field that always says `false` is worse than one
+    that is not there.
     """
     fields = outcome_fields(record)
+    if extra:
+        fields.update(extra)
     outcome = fields.pop("outcome")
     emit = logger.error if record.failed else logger.info
     emit(

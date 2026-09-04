@@ -1,3 +1,9 @@
+# monitor-cli Specification
+
+## Purpose
+The `sighop monitor` command that renders live mesh traffic — adverts, names, paths, SNR — as it
+arrives, with rendering kept separable from I/O, wide events continuing underneath, and the hard
+rule that unverified content is never presented as verified.
 ## Requirements
 
 > Reference: DESIGN.md §8's hard rule that unverified data is never presented as verified, and

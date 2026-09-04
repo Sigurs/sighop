@@ -11,11 +11,15 @@ from typing import IO
 from sighop.logging import configure_logging, get_logger
 from sighop.monitor.render import render_replay_startup, render_startup
 from sighop.monitor.run import MonitorRun
+from sighop.net.airtime import cross_check_airtime
+from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
+from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.radio.capture import CaptureRun, CaptureWriter
 from sighop.radio.kiss import KissTransport, serial_connector
-from sighop.radio.modem import EU868_NARROW, Modem
+from sighop.radio.modem import EU868_NARROW, Modem, RadioParams
 from sighop.radio.probe import ProbeResult
 from sighop.radio.replay import CaptureReplay
+from sighop.runtime import DEFAULT_STATUS_INTERVAL_SECONDS, Runtime, RuntimeConfig
 
 RADIO_PRESETS = {"eu868-narrow": EU868_NARROW}
 
@@ -65,6 +69,99 @@ def build_parser() -> argparse.ArgumentParser:
         help="also write the monitored frames to this capture file (JSONL)",
     )
     monitor.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="append wide-event logs here instead of standard output",
+    )
+
+    run = subparsers.add_parser(
+        "run",
+        help="run the platform: decode, dedup, learn paths, and schedule transmissions",
+    )
+    run_source = run.add_mutually_exclusive_group(required=True)
+    run_source.add_argument("--device", help="stable serial device path (/dev/serial/by-id/...)")
+    run_source.add_argument(
+        "--replay", type=Path, help="capture file to replay through the same pipeline"
+    )
+    run.add_argument(
+        "--radio-preset",
+        default="eu868-narrow",
+        choices=sorted(RADIO_PRESETS),
+        help="radio parameters to apply via SetRadio, live only (default: %(default)s)",
+    )
+    run.add_argument(
+        "--enable-transmit",
+        action="store_true",
+        help=(
+            "open the receive-only gate. WITHOUT THIS FLAG NOTHING IS TRANSMITTED: "
+            "packets are scheduled, charged against the duty-cycle budget and "
+            "logged, then dropped at the hand-off to the modem"
+        ),
+    )
+    run.add_argument(
+        "--duty-cycle-ceiling",
+        type=float,
+        default=DEFAULT_CEILING_FRACTION,
+        help=(
+            "fraction of an hour sighop may transmit for (default: %(default)s). "
+            "On EU 868 the 10%% default is a regulatory limit, not a tuning knob"
+        ),
+    )
+    run.add_argument(
+        "--status-interval",
+        type=float,
+        default=DEFAULT_STATUS_INTERVAL_SECONDS,
+        help="seconds between status lines (default: %(default)s)",
+    )
+    run.add_argument(
+        "--stub",
+        action="append",
+        default=[],
+        metavar="NAME",
+        dest="stubs",
+        help=(
+            "add an in-memory advert stub with this name; repeatable. Keys are "
+            "generated per process and are never persisted"
+        ),
+    )
+    run.add_argument(
+        "--advert-override-seconds",
+        type=float,
+        default=None,
+        help=(
+            "advert faster than the 24 h floor, for a dry run. Requires "
+            "--advert-override-expires-in, which is capped at 24 h"
+        ),
+    )
+    run.add_argument(
+        "--advert-override-expires-in",
+        type=float,
+        default=None,
+        help="seconds until the advert override auto-reverts to the 24 h floor",
+    )
+    run.add_argument(
+        "--dedup-ttl",
+        type=float,
+        default=DEFAULT_TTL_SECONDS,
+        help="duplicate cache time-to-live in seconds (default: %(default)s)",
+    )
+    run.add_argument(
+        "--dedup-max-entries",
+        type=int,
+        default=DEFAULT_MAX_ENTRIES,
+        help="duplicate cache entry cap (default: %(default)s)",
+    )
+    run.add_argument(
+        "--capture",
+        type=Path,
+        default=None,
+        help=(
+            "also write the received frames to this capture file (JSONL), with the "
+            "same provenance header `sighop capture` writes. Live sources only"
+        ),
+    )
+    run.add_argument(
         "--log-file",
         type=Path,
         default=None,
@@ -155,6 +252,110 @@ async def _run_monitor_replay(path: Path, out: IO[str] | None = None) -> int:
     return 0
 
 
+def _run_config(args: argparse.Namespace) -> RuntimeConfig:
+    return RuntimeConfig(
+        transmit_enabled=args.enable_transmit,
+        status_interval=args.status_interval,
+        dedup_ttl_seconds=args.dedup_ttl,
+        dedup_max_entries=args.dedup_max_entries,
+        ceiling_fraction=args.duty_cycle_ceiling,
+        stub_names=tuple(args.stubs),
+        advert_override_seconds=args.advert_override_seconds,
+        advert_override_expires_in=args.advert_override_expires_in,
+    )
+
+
+async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:
+    """The platform against a live link. The gate is closed unless asked for."""
+    transport = KissTransport(serial_connector(args.device))
+    modem = Modem(transport, radio_params=RADIO_PRESETS[args.radio_preset])
+    events = modem.events()
+
+    async def probe_result() -> ProbeResult | None:
+        await modem.probe_ready.wait()
+        return modem.probe_result
+
+    writer = CaptureWriter(args.capture) if args.capture is not None else None
+    if writer is not None:
+        writer.open()
+    try:
+        runtime = Runtime(
+            source=events,
+            startup=lambda: _live_startup(modem, runtime),
+            config=_run_config(args),
+            sender=modem,
+            out=out,
+            capture_writer=writer,
+            capture_probe=probe_result,
+        )
+        runtime.install_signal_handlers()
+        await runtime.run()
+    finally:
+        if writer is not None:
+            writer.close()
+    return 0
+
+
+async def _live_startup(modem: Modem, runtime: Runtime) -> str:
+    """Wait for the probe, then adopt the board's own radio readback.
+
+    The readback rather than the configured preset: the budget is enforced
+    against what the radio is actually doing, and refuses to guess when the
+    board answered nothing.
+    """
+    await modem.probe_ready.wait()
+    probe_result = modem.probe_result
+    runtime.set_radio(probe_result.observed_radio if probe_result is not None else None)
+    if probe_result is not None:
+        await cross_check_airtime(modem, runtime.radio or modem.radio_params)
+    return render_startup(probe_result)
+
+
+async def _run_replay(args: argparse.Namespace, out: IO[str] | None = None) -> int:
+    """The same pipeline over recorded frames — no device, no transmission."""
+    replay = CaptureReplay.open(args.replay)
+    config = _run_config(args)
+    radio = _replay_radio(replay.provenance) or RADIO_PRESETS[args.radio_preset]
+
+    runtime = Runtime(
+        source=replay.events(),
+        startup=lambda: _replay_startup(replay, args.replay),
+        config=config,
+        radio=radio,
+        out=out,
+    )
+    runtime.install_signal_handlers()
+    await runtime.run()
+    return 0
+
+
+async def _replay_startup(replay: CaptureReplay, path: Path) -> str:
+    return render_replay_startup(replay.provenance, str(path))
+
+
+def _replay_radio(provenance: dict | None) -> RadioParams | None:
+    """The radio the capture was recorded on, when its header says.
+
+    A replayed run computes airtime against the parameters the frames were
+    actually received under, not against today's configuration.
+    """
+    if not provenance:
+        return None
+    radio = provenance.get("radio")
+    value = radio.get("value") if isinstance(radio, dict) else None
+    if not isinstance(value, dict):
+        return None
+    try:
+        return RadioParams(
+            freq_hz=int(value["freq_hz"]),
+            bw_hz=int(value["bw_hz"]),
+            sf=int(value["sf"]),
+            cr=int(value["cr"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -174,6 +375,14 @@ def main(argv: list[str] | None = None) -> int:
         configure_logging(stream=sys.stderr)
         return asyncio.run(_monitor(args))
 
+    if args.command == "run":
+        if args.log_file is not None:
+            with args.log_file.open("a", encoding="utf-8") as log_stream:
+                configure_logging(log_stream, stream=sys.stderr)
+                return asyncio.run(_run(args))
+        configure_logging(stream=sys.stderr)
+        return asyncio.run(_run(args))
+
     return 0
 
 
@@ -181,6 +390,21 @@ async def _monitor(args: argparse.Namespace) -> int:
     if args.replay is not None:
         return await _run_monitor_replay(args.replay)
     return await _run_monitor_live(args.device, args.radio_preset, args.capture)
+
+
+async def _run(args: argparse.Namespace) -> int:
+    if args.replay is not None:
+        if args.capture is not None:
+            # Re-recording a replay would produce a capture whose header
+            # describes a probe that never happened. A capture is evidence of a
+            # session on the air (DESIGN.md §12), not a copy of a file.
+            print(
+                "--capture records a live session; it cannot be combined with --replay",
+                file=sys.stderr,
+            )
+            return 2
+        return await _run_replay(args)
+    return await _run_live(args)
 
 
 if __name__ == "__main__":

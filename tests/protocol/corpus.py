@@ -24,21 +24,23 @@ CAPTURE_FILES = (
     "2026-09-04.jsonl",
     "2026-09-04-02.jsonl",
     "2026-09-04-03.jsonl",
+    "2026-09-05.jsonl",
 )
 
-# The milestone 2 files carry their provenance in-band, as a `capture_meta`
-# first line; the two milestone 0 files predate that record and carry theirs in
-# a paired `.meta.json` sidecar (DESIGN.md §12).
+# Files from milestone 2 onward carry their provenance in-band, as a
+# `capture_meta` first line; the two milestone 0 files predate that record and
+# carry theirs in a paired `.meta.json` sidecar (DESIGN.md §12).
 SIDECAR_PROVENANCE_FILES = ("2026-09-02.jsonl", "2026-09-03.jsonl")
 
 # Recorded expectations. Asserted, never regenerated from a failing run.
-EXPECTED_FRAME_COUNT = 442
+EXPECTED_FRAME_COUNT = 997
 EXPECTED_FRAMES_PER_FILE = {
     "2026-09-02.jsonl": 152,
     "2026-09-03.jsonl": 199,
     "2026-09-04.jsonl": 56,
     "2026-09-04-02.jsonl": 2,
     "2026-09-04-03.jsonl": 33,
+    "2026-09-05.jsonl": 555,
 }
 
 

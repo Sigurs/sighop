@@ -1,12 +1,21 @@
+# protocol-corpus Specification
+
+## Purpose
+The captured-frame regression corpus: how recorded live traffic is replayed through the packet
+and payload codecs, what aggregate properties are asserted over it, and how its provenance and
+its known gaps are kept on the record as the corpus grows.
 ## Requirements
 
-> The corpus grows from 351 frames to 442: the two milestone 0 files
-> (`captures/2026-09-02.jsonl` 152, `captures/2026-09-03.jsonl` 199) plus the milestone 2 live
+> The corpus stands at 997 frames across six files: the two milestone 0 files
+> (`captures/2026-09-02.jsonl` 152, `captures/2026-09-03.jsonl` 199), the milestone 2 live
 > session (`captures/2026-09-04.jsonl` 56, `captures/2026-09-04-02.jsonl` 2,
-> `captures/2026-09-04-03.jsonl` 33). The new files carry their provenance in-band as the
-> `capture_meta` header this change introduced, rather than in a `.meta.json` sidecar. The
-> session brought the first live `ROUTE_TYPE_TRANSPORT_FLOOD` frame and the first CONTROL
-> payloads, which moves them out of the recorded-gap list.
+> `captures/2026-09-04-03.jsonl` 33) and the milestone 3 long receive-only run
+> (`captures/2026-09-05.jsonl` 555, 2 h 54 min on the Heltec V4). Every file from milestone 2
+> onward carries its provenance in-band as a `capture_meta` header rather than a `.meta.json`
+> sidecar. Milestone 2 brought the first live `ROUTE_TYPE_TRANSPORT_FLOOD` frame and the first
+> CONTROL payloads, moving them out of the recorded-gap list; milestone 3 brought a located
+> CHAT advert (flags `0x91`), a 10-byte TRACE, the duplicate-timing tail that sizes the dedup
+> TTL, and enough CONTROL traffic (168 frames) to show it is ordinary rather than a curiosity.
 
 ### Requirement: Corpus replay
 The system SHALL provide a test harness that reads every `rx_frame` record from each capture
@@ -15,7 +24,7 @@ frame fails to decode.
 
 #### Scenario: All corpus frames decode
 - **WHEN** the corpus replay test runs
-- **THEN** all 442 `rx_frame` records decode without error and the test passes
+- **THEN** all 997 `rx_frame` records decode without error and the test passes
 
 #### Scenario: A regression breaks decoding of one frame
 - **WHEN** a code change causes any single corpus frame to fail decoding
@@ -37,11 +46,11 @@ frame still decodes.
 
 #### Scenario: Payload type distribution holds
 - **WHEN** the corpus is decoded and payload types are counted
-- **THEN** the counts match the recorded expectation: GRP_TXT 118, TXT_MSG 118, ADVERT 75, ACK 44, RESPONSE 23, ANON_REQ 22, PATH 15, REQ 12, CONTROL 6, GRP_DATA 5, TRACE 4
+- **THEN** the counts match the recorded expectation: GRP_TXT 341, TXT_MSG 191, CONTROL 168, ADVERT 92, ACK 67, ANON_REQ 42, PATH 38, RESPONSE 36, REQ 12, GRP_DATA 5, TRACE 5
 
 #### Scenario: Path hash size distribution holds
 - **WHEN** the corpus is decoded and path hash sizes are counted
-- **THEN** the counts match the recorded expectation of 197 frames with 1-byte hashes, 108 with 2-byte and 137 with 3-byte, which is the evidence that multi-byte path hashes are live on this mesh
+- **THEN** the counts match the recorded expectation of 487 frames with 1-byte hashes, 109 with 2-byte and 401 with 3-byte, which is the evidence that multi-byte path hashes are live on this mesh
 
 #### Scenario: A misread header shifts the distribution
 - **WHEN** a change causes payload types to be extracted from the wrong header bits
@@ -78,11 +87,11 @@ the test run, and SHALL fail if any does not verify.
 
 #### Scenario: All corpus adverts verify
 - **WHEN** the corpus replay verifies advert signatures
-- **THEN** all 75 ADVERT frames pass verification
+- **THEN** all 92 ADVERT frames pass verification
 
 #### Scenario: Named nodes decode consistently
 - **WHEN** the corpus adverts are parsed for appdata
-- **THEN** the recovered node names and types match the recorded expectation, including multi-hop adverts whose names decode correctly only under the multi-byte path hash encoding, and the CHAT-type adverts the live session added alongside the repeater and room-server ones
+- **THEN** the recovered node names and types match the recorded expectation, including multi-hop adverts whose names decode correctly only under the multi-byte path hash encoding, the CHAT-type adverts the milestone 2 session added alongside the repeater and room-server ones, and the located CHAT advert (`0x91`) the milestone 3 session added — the first live frame setting the location bit on a node that is not a repeater or room server
 
 ### Requirement: Corpus coverage is recorded, including its gaps
 The system SHALL record, alongside the corpus, which packet and payload shapes it does and
@@ -115,3 +124,4 @@ sidecar.
 #### Scenario: A corpus file states no recording conditions
 - **WHEN** a capture file in the corpus has neither a `capture_meta` first line nor a `.meta.json` sidecar
 - **THEN** the test run fails, because a capture of unrecorded origin is a fixture rather than evidence
+

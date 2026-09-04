@@ -1,3 +1,9 @@
+# capture-cli Specification
+
+## Purpose
+The `sighop capture` command that records raw modem RX events to an append-only, crash-safe
+JSONL file with its recording conditions observed — never inferred — in an in-band header, so
+that live traffic becomes reusable evidence rather than a one-off observation.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/docs/kiss_modem_protocol.md` is the authoritative KISS

@@ -1,3 +1,10 @@
+# payload-codec Specification
+
+## Purpose
+Parsing and building each MeshCore payload type — adverts and their appdata, encrypted
+envelopes, text and group messages, acknowledgements, returned paths, traces — while preserving
+uninterpreted anything it does not understand, so an unsupported type is carried rather than
+dropped.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/docs/payloads.md` is the authoritative payload document.

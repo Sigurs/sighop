@@ -1,3 +1,9 @@
+# kiss-transport Specification
+
+## Purpose
+The serial link to the modem: KISS frame decoding and encoding with their escaping rules, what
+happens to a frame that will not decode, and reconnect with backoff against a device path that
+stays stable across replug.
 ## Requirements
 
 > Reference: `related-repos/MeshCore/docs/kiss_modem_protocol.md` is the authoritative KISS

@@ -1,9 +1,10 @@
 """Corpus replay: the protocol layer verified against recorded reality.
 
-442 frames captured off the live mesh over three nights (DESIGN.md §12) — the
-351 milestone 0 frames plus the 91 the milestone 2 live runs recorded, which is
+997 frames captured off the live mesh over four sessions (DESIGN.md §12) — the
+351 milestone 0 frames, the 91 the milestone 2 live runs recorded, which is
 where the first `ROUTE_TYPE_TRANSPORT_FLOOD` and the first CONTROL payloads
-came from. What this proves and — just as importantly — what it does not, is
+came from, and the 555 from milestone 3's long receive-only session. What this
+proves and — just as importantly — what it does not, is
 written down in `CORPUS.md`. In short: it proves framing, adverts and signature
 verification; it cannot prove decryption, because every encrypted payload in it
 is addressed to a third party.
@@ -40,26 +41,26 @@ from tests.protocol.golden import render_corpus
 # Recorded expectations, spot-checked against the independent analysis in the
 # proposal before being committed as fixtures (design D10).
 EXPECTED_PAYLOAD_TYPES = {
-    PayloadType.GRP_TXT: 118,
-    PayloadType.TXT_MSG: 118,
-    PayloadType.ADVERT: 75,
-    PayloadType.ACK: 44,
-    PayloadType.RESPONSE: 23,
-    PayloadType.ANON_REQ: 22,
-    PayloadType.PATH: 15,
+    PayloadType.GRP_TXT: 341,
+    PayloadType.TXT_MSG: 191,
+    PayloadType.CONTROL: 168,
+    PayloadType.ADVERT: 92,
+    PayloadType.ACK: 67,
+    PayloadType.ANON_REQ: 42,
+    PayloadType.PATH: 38,
+    PayloadType.RESPONSE: 36,
     PayloadType.REQ: 12,
-    PayloadType.CONTROL: 6,
     PayloadType.GRP_DATA: 5,
-    PayloadType.TRACE: 4,
+    PayloadType.TRACE: 5,
 }
 EXPECTED_ROUTE_TYPES = {
-    RouteType.DIRECT: 237,
-    RouteType.FLOOD: 204,
+    RouteType.FLOOD: 502,
+    RouteType.DIRECT: 494,
     RouteType.TRANSPORT_FLOOD: 1,
 }
-EXPECTED_HOP_COUNTS = {0: 187, 1: 76, 2: 105, 3: 67, 4: 5, 5: 2}
-EXPECTED_HASH_SIZES = {1: 197, 2: 108, 3: 137}
-EXPECTED_ADVERT_COUNT = 75
+EXPECTED_HOP_COUNTS = {0: 418, 1: 326, 2: 177, 3: 69, 4: 5, 5: 2}
+EXPECTED_HASH_SIZES = {1: 487, 2: 109, 3: 401}
+EXPECTED_ADVERT_COUNT = 92
 # The one transport-routed frame in the corpus, sighted on 2026-09-04: a
 # TRANSPORT_FLOOD advert. Its codes are recorded here so a codec change that
 # stops reading them fails on evidence rather than on a synthetic fixture.
