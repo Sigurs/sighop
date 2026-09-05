@@ -18,13 +18,14 @@ its known gaps are kept on the record as the corpus grows.
 > TTL, and enough CONTROL traffic (168 frames) to show it is ordinary rather than a curiosity.
 
 ### Requirement: Corpus replay
-The system SHALL provide a test harness that reads every `rx_frame` record from each capture
-file, decodes the frame through the packet and payload codecs, and fails the test run if any
-frame fails to decode.
+The system SHALL provide a test harness that reads every frame record from each capture file,
+decodes the frame through the packet and payload codecs, and fails the test run if any frame
+fails to decode. Frames sighop transmitted SHALL be replayed through the same decoders as
+frames it received.
 
 #### Scenario: All corpus frames decode
 - **WHEN** the corpus replay test runs
-- **THEN** all 997 `rx_frame` records decode without error and the test passes
+- **THEN** all 1003 frame records decode without error and the test passes
 
 #### Scenario: A regression breaks decoding of one frame
 - **WHEN** a code change causes any single corpus frame to fail decoding
@@ -38,6 +39,10 @@ frame fails to decode.
 - **WHEN** a corpus file whose first line is a `capture_meta` record is read by the harness
 - **THEN** the header is consumed as provenance and never counted or decoded as a frame
 
+#### Scenario: A transmitted frame is replayed
+- **WHEN** a record the runtime wrote for a frame it transmitted is read by the harness
+- **THEN** it decodes through the same packet and payload codecs as a received frame, and is counted separately from receptions
+
 ### Requirement: Corpus distribution assertions
 The system SHALL assert the aggregate composition of the decoded corpus — counts by payload
 type, by route type, by hop count and by path hash size — against recorded expected values, so
@@ -46,11 +51,11 @@ frame still decodes.
 
 #### Scenario: Payload type distribution holds
 - **WHEN** the corpus is decoded and payload types are counted
-- **THEN** the counts match the recorded expectation: GRP_TXT 341, TXT_MSG 191, CONTROL 168, ADVERT 92, ACK 67, ANON_REQ 42, PATH 38, RESPONSE 36, REQ 12, GRP_DATA 5, TRACE 5
+- **THEN** the counts match the recorded expectation, updated by this change to include the first-transmit session's frames
 
 #### Scenario: Path hash size distribution holds
 - **WHEN** the corpus is decoded and path hash sizes are counted
-- **THEN** the counts match the recorded expectation of 487 frames with 1-byte hashes, 109 with 2-byte and 401 with 3-byte, which is the evidence that multi-byte path hashes are live on this mesh
+- **THEN** the counts match the recorded expectation, which continues to show multi-byte path hashes live on this mesh
 
 #### Scenario: A misread header shifts the distribution
 - **WHEN** a change causes payload types to be extracted from the wrong header bits
@@ -107,9 +112,9 @@ recorded frames rather than leaving it to a synthetic fixture alone.
 - **WHEN** a live capture appended to the corpus contains a `ROUTE_TYPE_TRANSPORT_FLOOD` frame or a CONTROL payload
 - **THEN** the harness asserts that frame's decoded fields — the transport codes for the transport-routed frame, preservation of the uninterpreted bytes for CONTROL — and the corpus documentation moves the shape out of its recorded-gap list while keeping the synthetic fixture
 
-#### Scenario: Decryption is not claimed to be corpus-verified
-- **WHEN** the corpus documentation describes what the corpus proves
-- **THEN** it states explicitly that sighop holds no key for any encrypted payload in it, so ciphertext handling is verified only by round-trip and by fixed known-answer vectors, and is not confirmed against live MeshCore traffic until the milestone 4 peer exchange
+#### Scenario: Decryption is corpus-verified for exactly one exchange
+- **WHEN** the corpus documentation describes what the corpus proves about ciphertext
+- **THEN** it states that sighop holds the key for the first-transmit session's direct messages and for no other encrypted payload in the corpus, so decryption is confirmed against live MeshCore traffic for that exchange while every other ciphertext remains verified only by round-trip and by fixed known-answer vectors
 
 ### Requirement: Corpus provenance is preserved
 The system SHALL leave the capture files and their provenance unmodified by the test harness,
@@ -124,4 +129,27 @@ sidecar.
 #### Scenario: A corpus file states no recording conditions
 - **WHEN** a capture file in the corpus has neither a `capture_meta` first line nor a `.meta.json` sidecar
 - **THEN** the test run fails, because a capture of unrecorded origin is a fixture rather than evidence
+
+### Requirement: The corpus admits frames sighop transmitted
+The system SHALL allow a capture to contain records of frames sighop transmitted alongside the
+frames it received, SHALL distinguish the two by record kind, and SHALL keep transmitted frames
+out of any assertion whose subject is what the mesh sent us.
+
+#### Scenario: A session containing our own transmissions is appended
+- **WHEN** a capture from a run with transmission enabled is appended to the corpus
+- **THEN** its transmitted frames are recorded with a distinct record kind, decode through the same codecs, and are excluded from reception-derived measurements such as duplicate rate
+
+### Requirement: The first-transmit session is appended whole and its decrypt vector extracted
+The system SHALL append the first-transmit session to the corpus in its entirety, per the rule
+that a session is appended whole rather than as hand-picked frames, and SHALL identify within it
+the specific records that constitute the first decryptable direct message, the acknowledgement
+it produced, and the message sighop sent that the peer acknowledged.
+
+#### Scenario: Session appended
+- **WHEN** the first-transmit session is added to the corpus
+- **THEN** every frame of the session is included, its `capture_meta` header records the provenance of both boards involved, and the counts and coverage notes are updated to the measured figures
+
+#### Scenario: The decrypt vector is locatable
+- **WHEN** the known-answer test for foreign-implementation decryption is read
+- **THEN** it names the capture file and record index of the ciphertext it decrypts, so the vector and its provenance cannot drift apart
 

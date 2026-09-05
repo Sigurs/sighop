@@ -32,6 +32,7 @@ import asyncio
 import contextlib
 import datetime as dt
 from collections import OrderedDict, deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -359,8 +360,15 @@ class TxScheduler:
         queue_cap: int = DEFAULT_QUEUE_CAP,
         busy_attempts: int = DEFAULT_BUSY_ATTEMPTS,
         busy_delay: float = DEFAULT_BUSY_DELAY_SECONDS,
+        on_transmitted: Callable[[bytes, TxOutcome], None] | None = None,
         logger: structlog.stdlib.BoundLogger | None = None,
     ) -> None:
+        self.on_transmitted = on_transmitted
+        """Called with the bytes of every packet that actually reached the air.
+        The capture writer uses it, so a transmitting run records both
+        directions; a suppressed packet never fires it, because nothing was
+        transmitted."""
+
         self._sender = sender
         self._radio = radio
         self._clock = clock or SystemClock()
@@ -528,6 +536,17 @@ class TxScheduler:
             case TransmitDone(success=True):
                 self.stats.transmitted += 1
                 self._resolve(item, TxResult.TRANSMITTED, airtime, finished)
+                if self.on_transmitted is not None:
+                    self.on_transmitted(
+                        item.submission.packet,
+                        TxOutcome(
+                            result=TxResult.TRANSMITTED,
+                            packet_id=item.packet_id,
+                            airtime_ms=airtime,
+                            queue_wait_ms=(finished - item.queued_at).total_seconds() * 1000.0,
+                            attempts=item.attempts,
+                        ),
+                    )
             case TransmitDone(success=False):
                 self.stats.failed += 1
                 self._resolve(

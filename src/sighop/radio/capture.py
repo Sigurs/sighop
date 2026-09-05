@@ -47,6 +47,13 @@ class ModemSource(Protocol):
 
 CAPTURE_META_KIND = "capture_meta"
 
+TX_FRAME_KIND = "tx_frame"
+"""Frames sighop transmitted, kept distinct from the `rx_frame` records the mesh
+sent us (milestone 4, `protocol-corpus`). They decode through the same codecs and
+belong in the corpus; they must stay out of any measurement whose subject is what
+the mesh sent — a duplicate rate computed over our own transmissions would be
+measuring the wrong thing."""
+
 
 def _sighop_provenance() -> dict[str, str]:
     return {"version": package_version(), "commit_hash": commit_hash()}
@@ -100,9 +107,14 @@ class CaptureWriter:
         self._file: IO[str] | None = None
         self._append_only = False
         self._started = False
-        self._held: list[ModemEvent] = []
+        self._held: list[ModemEvent | dict] = []
+        """Receptions and transmissions in one list, so the order they happened
+        in is the order the file records — a capture whose own frames arrived
+        interleaved is what makes an exchange readable afterwards."""
+
         self.rx_count = 0
         self.unparsed_count = 0
+        self.tx_count = 0
 
     @property
     def started(self) -> bool:
@@ -127,18 +139,48 @@ class CaptureWriter:
         if not self._append_only:
             self._write(capture_meta_record(probe_result))
         held, self._held = self._held, []
-        for event in held:
-            self._write_event(event)
+        for item in held:
+            self._write_item(item)
 
     def write(self, event: ModemEvent) -> None:
         if not self._started:
             self._held.append(event)
             return
-        self._write_event(event)
+        self._write_item(event)
 
-    def _write_event(self, event: ModemEvent) -> None:
-        self._write(_record_for(event))
-        if isinstance(event, RxEvent):
+    def write_transmitted(
+        self,
+        packet: bytes,
+        *,
+        at: dt.datetime | None = None,
+        packet_id: str | None = None,
+        airtime_ms: float | None = None,
+    ) -> None:
+        """Record a frame sighop put on the air.
+
+        A run with transmission enabled produces a capture holding both
+        directions, which is the first time the corpus can contain a packet
+        whose plaintext we know (milestone 4, `protocol-corpus`).
+        """
+        record: dict = {
+            "ts": (at or dt.datetime.now(dt.UTC)).isoformat(),
+            "kind": TX_FRAME_KIND,
+            "raw_hex": packet.hex(),
+            "packet_id": packet_id,
+            "airtime_ms": None if airtime_ms is None else round(airtime_ms, 3),
+        }
+        if not self._started:
+            self._held.append(record)
+            return
+        self._write_item(record)
+
+    def _write_item(self, item: ModemEvent | dict) -> None:
+        if isinstance(item, dict):
+            self._write(item)
+            self.tx_count += 1
+            return
+        self._write(_record_for(item))
+        if isinstance(item, RxEvent):
             self.rx_count += 1
         else:
             self.unparsed_count += 1

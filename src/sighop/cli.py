@@ -8,18 +8,25 @@ import sys
 from pathlib import Path
 from typing import IO
 
+from sighop.keystore import KeyfileError, create_keyfile, load_keyfile
 from sighop.logging import configure_logging, get_logger
 from sighop.monitor.render import render_replay_startup, render_startup
 from sighop.monitor.run import MonitorRun
 from sighop.net.airtime import cross_check_airtime
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
+from sighop.protocol.payloads import NodeType
 from sighop.radio.capture import CaptureRun, CaptureWriter
 from sighop.radio.kiss import KissTransport, serial_connector
 from sighop.radio.modem import EU868_NARROW, Modem, RadioParams
 from sighop.radio.probe import ProbeResult
 from sighop.radio.replay import CaptureReplay
-from sighop.runtime import DEFAULT_STATUS_INTERVAL_SECONDS, Runtime, RuntimeConfig
+from sighop.runtime import (
+    DEFAULT_PEER_WAIT_SECONDS,
+    DEFAULT_STATUS_INTERVAL_SECONDS,
+    Runtime,
+    RuntimeConfig,
+)
 
 RADIO_PRESETS = {"eu868-narrow": EU868_NARROW}
 
@@ -126,6 +133,63 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run.add_argument(
+        "--entity",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="KEYFILE",
+        dest="entities",
+        help=(
+            "load a persistent entity identity from this keyfile; repeatable. "
+            "Two keyfiles whose public keys share a first byte fail startup"
+        ),
+    )
+    run.add_argument(
+        "--peer",
+        default=None,
+        metavar="NAME|HEX-PREFIX",
+        help="the contact to send --send to, by exact name or hex public key prefix",
+    )
+    run.add_argument(
+        "--send",
+        default=None,
+        metavar="TEXT",
+        dest="send_text",
+        help=(
+            "send this text to --peer once, then keep running. The outcome — "
+            "acknowledged, unacknowledged, or dropped — is always reported"
+        ),
+    )
+    run.add_argument(
+        "--allow-flood",
+        action="store_true",
+        help=(
+            "permit sending to a peer no route is known to. WITHOUT THIS FLAG a "
+            "send with no known route is refused: a flood is rebroadcast by every "
+            "repeater in the mesh, and must not be reachable by mistyping a name"
+        ),
+    )
+    run.add_argument(
+        "--advert-zero-hop",
+        default=None,
+        metavar="NAME",
+        dest="zero_hop_advert",
+        help=(
+            "emit exactly one zero-hop advert for this entity at startup. It "
+            "reaches direct neighbours and stops there, and creates no recurring "
+            "zero-hop schedule"
+        ),
+    )
+    run.add_argument(
+        "--peer-wait",
+        type=float,
+        default=DEFAULT_PEER_WAIT_SECONDS,
+        help=(
+            "seconds to wait for --peer's advert before reporting it unknown "
+            "(default: %(default)s). The run continues receiving either way"
+        ),
+    )
+    run.add_argument(
         "--advert-override-seconds",
         type=float,
         default=None,
@@ -167,6 +231,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="append wide-event logs here instead of standard output",
     )
+
+    keys = subparsers.add_parser(
+        "keys", help="create and inspect entity identity keyfiles"
+    )
+    key_actions = keys.add_subparsers(dest="keys_command", required=True)
+    keys_new = key_actions.add_parser(
+        "new", help="generate an entity keyfile and print its public key"
+    )
+    keys_new.add_argument("--name", required=True, help="the entity's advertised name")
+    keys_new.add_argument(
+        "--out", required=True, type=Path, help="keyfile to create (never overwritten)"
+    )
+    keys_new.add_argument(
+        "--node-type",
+        default=NodeType.CHAT.name,
+        choices=[node_type.name for node_type in NodeType],
+        help="the node type the entity adverts as (default: %(default)s)",
+    )
+    keys_new.add_argument(
+        "--burned",
+        action="store_true",
+        help=(
+            "mark the keyfile as a published test vector that must never be used "
+            "on air again. For an identity committed to the repository as a "
+            "fixture; a real entity generates its own"
+        ),
+    )
+    keys_show = key_actions.add_parser(
+        "show", help="print a keyfile's name, node type, public key and node hash"
+    )
+    keys_show.add_argument("keyfile", type=Path, help="the keyfile to inspect")
 
     return parser
 
@@ -262,7 +357,60 @@ def _run_config(args: argparse.Namespace) -> RuntimeConfig:
         stub_names=tuple(args.stubs),
         advert_override_seconds=args.advert_override_seconds,
         advert_override_expires_in=args.advert_override_expires_in,
+        entity_keyfiles=tuple(args.entities),
+        peer=args.peer,
+        send_text=args.send_text,
+        allow_flood=args.allow_flood,
+        zero_hop_advert=args.zero_hop_advert,
+        peer_wait_seconds=args.peer_wait,
     )
+
+
+# --- Key management (design D12) --------------------------------------------
+
+
+def _keys_new(args: argparse.Namespace, out: IO[str]) -> int:
+    """Create a keyfile and print the public key another node's contact list needs."""
+    try:
+        keyfile = create_keyfile(
+            args.out,
+            args.name,
+            node_type=NodeType[args.node_type],
+            burned=args.burned,
+        )
+    except KeyfileError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    print(f"created {keyfile.path}", file=out)
+    print(f"name       {keyfile.name}", file=out)
+    print(f"node_type  {NodeType(keyfile.node_type).name}", file=out)
+    print(f"public_key {keyfile.public_key.hex()}", file=out)
+    print(f"node_hash  0x{keyfile.node_hash:02x}", file=out)
+    for warning in keyfile.warnings:
+        print(f"!! {warning}", file=out)
+    return 0
+
+
+def _keys_show(args: argparse.Namespace, out: IO[str]) -> int:
+    """Inspect an identity. The seed is not printed, and there is no flag for it."""
+    try:
+        keyfile = load_keyfile(args.keyfile)
+    except KeyfileError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    node_type = (
+        keyfile.node_type.name
+        if isinstance(keyfile.node_type, NodeType)
+        else f"type_{keyfile.node_type}"
+    )
+    print(f"keyfile    {keyfile.path}", file=out)
+    print(f"name       {keyfile.name}", file=out)
+    print(f"node_type  {node_type}", file=out)
+    print(f"public_key {keyfile.public_key.hex()}", file=out)
+    print(f"node_hash  0x{keyfile.node_hash:02x}", file=out)
+    for warning in keyfile.warnings:
+        print(f"!! {warning}", file=out)
+    return 0
 
 
 async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:
@@ -356,9 +504,16 @@ def _replay_radio(provenance: dict | None) -> RadioParams | None:
         return None
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    stream = out if out is not None else sys.stdout
+
+    if args.command == "keys":
+        configure_logging(stream=sys.stderr)
+        if args.keys_command == "new":
+            return _keys_new(args, stream)
+        return _keys_show(args, stream)
 
     if args.command == "capture":
         log_file = args.log_file or args.out.with_name(args.out.stem + ".log")

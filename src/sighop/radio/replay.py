@@ -24,7 +24,7 @@ from pathlib import Path
 import structlog
 
 from sighop.logging import get_logger
-from sighop.radio.capture import CAPTURE_META_KIND
+from sighop.radio.capture import CAPTURE_META_KIND, TX_FRAME_KIND
 from sighop.radio.modem import ModemEvent, RxEvent, RxMeta, UnparsedEvent
 
 
@@ -56,6 +56,9 @@ class CaptureReplay:
     path: Path
     provenance: dict | None = None
     unreadable: list[UnreadableLine] = field(default_factory=list)
+    transmitted_skipped: int = 0
+    """`tx_frame` records passed over: frames sighop sent, not receptions."""
+
     _header_line: int | None = None
     _logger: structlog.stdlib.BoundLogger | None = None
 
@@ -96,6 +99,7 @@ class CaptureReplay:
     def read(self) -> Iterator[ModemEvent]:
         """The synchronous form, for callers with no event loop."""
         self.unreadable = []
+        self.transmitted_skipped = 0
         with self.path.open("r", encoding="utf-8") as handle:
             for line_number, line in enumerate(handle, start=1):
                 if not line.strip():
@@ -131,6 +135,16 @@ class CaptureReplay:
                     reason=record["reason"],
                     received_at=received_at,
                 )
+            if kind == TX_FRAME_KIND:
+                # A frame sighop transmitted, in a capture from a transmitting
+                # run. Skipped rather than yielded: replaying our own packets as
+                # receptions would invent traffic the radio never heard, and
+                # milestone 2's property is that a replay reproduces every
+                # *reception* exactly. Counted so a caller can say how many were
+                # passed over, and never reported as an unreadable line — it is a
+                # deliberate record kind, not a corrupt one.
+                self.transmitted_skipped += 1
+                return None
             if kind == CAPTURE_META_KIND:
                 return self._report_unreadable(
                     line_number,

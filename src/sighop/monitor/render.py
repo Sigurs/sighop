@@ -17,6 +17,16 @@ from dataclasses import dataclass
 
 from sighop.net.adverts import EntityStub
 from sighop.net.dedup import DedupStats
+from sighop.net.dm import (
+    AckMatched,
+    AckUnmatched,
+    DirectMessageEvent,
+    MessageReceived,
+    MessageSent,
+    MessageUndecryptable,
+    MessageUnparsable,
+    SendResolved,
+)
 from sighop.net.rx import (
     AdvertOutcome,
     ModemUnparsed,
@@ -249,13 +259,34 @@ def render_run_startup(
     transmit_enabled: bool,
     ceiling_pct: float,
     above_regulatory_default: bool,
+    entities: Sequence[EntityStub] = (),
 ) -> str:
+    """The banner. With the gate open it says what that now means.
+
+    Milestone 3's `--enable-transmit` reached a hand-off that dropped the
+    packet; milestone 4's keys a transmitter. The banner has to say the second
+    thing, name every identity that will originate traffic — a public key on the
+    air is what another node stores — and state the ceiling in force.
+    """
     lines = [source_text]
     if transmit_enabled:
         lines.append(
-            f"** TRANSMIT ENABLED ** duty-cycle ceiling {ceiling_pct:.1f}% "
-            f"({ceiling_pct * 36:.0f} s/hour)"
+            f"** TRANSMIT ENABLED ** packets WILL be transmitted on air. "
+            f"duty-cycle ceiling {ceiling_pct:.1f}% ({ceiling_pct * 36:.0f} s/hour)"
         )
+        if entities:
+            lines.append("originating identities:")
+            lines.extend(
+                f"  {entity.name}  key={entity.identity.public_key.hex()}  "
+                f"node_hash=0x{entity.node_hash:02x}  "
+                f"{'persistent' if entity.persistent else 'ephemeral'}"
+                for entity in entities
+            )
+        else:
+            lines.append(
+                "originating identities: none — nothing will originate traffic, "
+                "though replies still can"
+            )
     else:
         lines.append(
             f"transmit disabled — nothing will be sent; "
@@ -275,6 +306,7 @@ def render_status(
     dedup: DedupStats,
     learned_paths: int,
     active_overrides: int = 0,
+    contacts: int = 0,
 ) -> str:
     """The periodic status line. Duty cycle first — it is the limit that binds."""
     queues = "/".join(str(status.queue_depths.get(index, 0)) for index in range(4))
@@ -291,7 +323,8 @@ def render_status(
         f"q={queues} tx={status.stats.transmitted} sup={status.stats.suppressed} "
         f"drop={status.stats.dropped} fail={status.stats.failed} "
         f"dup={dedup.hit_rate * 100:.1f}% "
-        f"cache={dedup.entries}/{dedup.max_entries} paths={learned_paths}"
+        f"cache={dedup.entries}/{dedup.max_entries} paths={learned_paths} "
+        f"contacts={contacts}"
     )
     if active_overrides:
         line += f" overrides={active_overrides}"
@@ -299,15 +332,129 @@ def render_status(
 
 
 def render_stubs(stubs: Sequence[EntityStub]) -> str:
-    """Stub entities, marked ephemeral so they are never read as identities."""
+    """The entity listing, marking which keys outlive the process.
+
+    An ephemeral key is never read as an identity another node can keep; a
+    persistent one is exactly that, and the two must not look alike.
+    """
     if not stubs:
         return "stubs: none"
     rendered = ", ".join(
         f"{stub.name}[{stub.node_hash:02x}]"
-        f"(ephemeral, advert {stub.flood_interval_seconds / 3600:.0f}h)"
+        f"({'persistent' if stub.persistent else 'ephemeral'}, "
+        f"advert {stub.flood_interval_seconds / 3600:.0f}h)"
         for stub in stubs
     )
     return f"stubs: {rendered}"
+
+
+def render_contacts() -> str:
+    """Contacts are in memory only for this milestone, and the run says so.
+
+    Deliberately carries no count. The banner is printed once the board's probe
+    has answered, which is seconds after the radio started delivering frames, so
+    a count here is not "what we started with" — it is whatever had arrived by
+    then, and reads as state that survived the restart. The live count belongs
+    in the status line, where a moving number is what a reader expects.
+    """
+    return "contacts: in memory only — they do not survive the process"
+
+
+# --- Direct messages (milestone 4) -----------------------------------------
+#
+# Pure formatting, and one rule carried over from adverts: a decrypted direct
+# message's sender is a *claimed* contact. A 2-byte MAC match selects a key; it
+# is not a signature, and nothing here may render it in the shape reserved for
+# verified content (design D7).
+
+CLAIMED_MARK = UNVERIFIED_MARK
+
+
+def render_message_sent(event: MessageSent) -> str:
+    state = "sent" if event.transmitted else "not sent (gate closed)"
+    return (
+        f"{_INDENT}-> dm {state}  to {event.contact.display_name!r}  "
+        f"attempt {event.attempt}  {event.route.label}  {event.size_bytes}B  "
+        f"air={event.airtime_ms:.0f}ms  ack_by={event.ack_timeout_ms:.0f}ms  "
+        f"expect={event.expected_ack.hex()}  id={event.packet_id}"
+    )
+
+
+def render_ack_matched(event: AckMatched) -> str:
+    return (
+        f"{_INDENT}<- ack {event.checksum.hex()} ({event.payload_bytes}B) matched "
+        f"attempt {event.attempt} from {event.contact.display_name!r} after "
+        f"{event.latency_ms:.0f}ms  id={event.packet_id}"
+    )
+
+
+def render_ack_unmatched(event: AckUnmatched) -> str:
+    return (
+        f"{_INDENT}<- ack {event.checksum.hex()} matched none of "
+        f"{event.outstanding} outstanding sends  id={event.packet_id}"
+    )
+
+
+def render_send_resolved(event: SendResolved) -> str:
+    outcome = event.outcome
+    if outcome.acknowledged:
+        latency = "" if outcome.ack_latency_ms is None else f" in {outcome.ack_latency_ms:.0f}ms"
+        return (
+            f"{_INDENT}dm delivered to {event.contact.display_name!r} after "
+            f"{outcome.attempts} attempt(s){latency}  id={outcome.message_id}"
+        )
+    return (
+        f"{_INDENT}{FAILURE_MARK} dm {outcome.result} to "
+        f"{event.contact.display_name!r} after {outcome.attempts} attempt(s)"
+        + (f": {outcome.reason}" if outcome.reason else "")
+        + f"  id={outcome.message_id}"
+    )
+
+
+def render_message_received(event: MessageReceived) -> str:
+    """A decrypted message. The sender is claimed, and the line says so."""
+    acked = "acked" if event.acknowledged else "NOT acked"
+    return (
+        f"{_INDENT}{CLAIMED_MARK} dm from claimed {event.contact.display_name!r} "
+        f"(key={event.contact.public_key.hex()[:16]}) to {event.entity_name}: "
+        f"{event.body.text.text!r}  ts={event.body.timestamp} "
+        f"attempt={event.body.attempt} tried={event.candidates_tried} {acked}  "
+        f"id={event.packet_id}"
+    )
+
+
+def render_message_undecryptable(event: MessageUndecryptable) -> str:
+    return (
+        f"{_INDENT}encrypted dm  dest=0x{event.dest_hash:02x} "
+        f"src=0x{event.src_hash:02x}  not decrypted after "
+        f"{event.candidates_tried} candidate key(s)  id={event.packet_id}"
+    )
+
+
+def render_message_unparsable(event: MessageUnparsable) -> str:
+    return (
+        f"{_INDENT}{FAILURE_MARK} dm decrypted for {event.entity_name} but did not "
+        f"parse ({event.reason}); not acknowledged  id={event.packet_id}"
+    )
+
+
+def render_dm_event(event: DirectMessageEvent) -> str:
+    match event:
+        case MessageSent():
+            return render_message_sent(event)
+        case AckMatched():
+            return render_ack_matched(event)
+        case AckUnmatched():
+            return render_ack_unmatched(event)
+        case SendResolved():
+            return render_send_resolved(event)
+        case MessageReceived():
+            return render_message_received(event)
+        case MessageUndecryptable():
+            return render_message_undecryptable(event)
+        case MessageUnparsable():
+            return render_message_unparsable(event)
+    raise AssertionError(f"unhandled direct message event {event!r}")  # pragma: no cover
 
 
 # --- Helpers ---------------------------------------------------------------

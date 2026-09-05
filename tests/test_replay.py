@@ -175,7 +175,12 @@ async def test_every_corpus_capture_replays_with_the_provenance_it_has(tmp_path)
             assert replay.provenance["kind"] == "capture_meta"
         assert replay.unreadable == [], f"{name} has unreadable lines: {replay.unreadable}"
         rx_events = [event for event in events if isinstance(event, RxEvent)]
-        assert len(rx_events) == EXPECTED_FRAMES_PER_FILE[name]
+        # A file's frame records are its receptions plus, for a capture from a
+        # transmitting run, the frames sighop sent. Only the receptions are
+        # replayed; the rest are counted as passed over, never as unreadable.
+        assert (
+            len(rx_events) + replay.transmitted_skipped == EXPECTED_FRAMES_PER_FILE[name]
+        ), name
 
 
 async def test_replay_does_not_pace_itself(tmp_path):

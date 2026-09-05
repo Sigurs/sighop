@@ -998,3 +998,9 @@
 2026-09-05.jsonl[553] route=DIRECT type=ANON_REQ v1 tc=- hops=0x1 path=- | anon_req dest=98 sender=[redacted] mac=e105 len=16 sha=91afce8d56875d55
 2026-09-05.jsonl[554] route=DIRECT type=RESPONSE v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=aec0 len=16 sha=9b79de9860347fbd
 2026-09-05.jsonl[555] route=DIRECT type=RESPONSE v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=aec0 len=16 sha=9b79de9860347fbd
+2026-09-04-first-transmit.jsonl[001] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788558259 sig=ok flags=0x81 type=CHAT name='[redacted]'
+2026-09-04-first-transmit.jsonl[002] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=36 src=06 mac=d99e len=48 sha=26e261bdfabe7ba5
+2026-09-04-first-transmit.jsonl[003] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=06 src=36 mac=1283 len=48 sha=400f680205e52396
+2026-09-04-first-transmit.jsonl[004] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=2b03574b tail=0091
+2026-09-04-first-transmit.jsonl[005] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=1df0f21a tail=-
+2026-09-04-first-transmit.jsonl[006] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788558548 sig=ok flags=0x81 type=CHAT name='[redacted]'

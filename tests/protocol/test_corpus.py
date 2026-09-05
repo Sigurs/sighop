@@ -40,12 +40,17 @@ from tests.protocol.golden import render_corpus
 
 # Recorded expectations, spot-checked against the independent analysis in the
 # proposal before being committed as fixtures (design D10).
+#
+# Milestone 4 added the first-transmit session: 6 frames, every one DIRECT with
+# an empty path, of which 3 are frames sighop itself transmitted. The deltas
+# against milestone 3's figures are therefore TXT_MSG +2, ACK +2, ADVERT +2,
+# DIRECT +6, hop count 0 +6, hash size 1 +6 — and nothing else moved.
 EXPECTED_PAYLOAD_TYPES = {
     PayloadType.GRP_TXT: 341,
-    PayloadType.TXT_MSG: 191,
+    PayloadType.TXT_MSG: 193,
     PayloadType.CONTROL: 168,
-    PayloadType.ADVERT: 92,
-    PayloadType.ACK: 67,
+    PayloadType.ADVERT: 94,
+    PayloadType.ACK: 69,
     PayloadType.ANON_REQ: 42,
     PayloadType.PATH: 38,
     PayloadType.RESPONSE: 36,
@@ -55,12 +60,12 @@ EXPECTED_PAYLOAD_TYPES = {
 }
 EXPECTED_ROUTE_TYPES = {
     RouteType.FLOOD: 502,
-    RouteType.DIRECT: 494,
+    RouteType.DIRECT: 500,
     RouteType.TRANSPORT_FLOOD: 1,
 }
-EXPECTED_HOP_COUNTS = {0: 418, 1: 326, 2: 177, 3: 69, 4: 5, 5: 2}
-EXPECTED_HASH_SIZES = {1: 487, 2: 109, 3: 401}
-EXPECTED_ADVERT_COUNT = 92
+EXPECTED_HOP_COUNTS = {0: 424, 1: 326, 2: 177, 3: 69, 4: 5, 5: 2}
+EXPECTED_HASH_SIZES = {1: 493, 2: 109, 3: 401}
+EXPECTED_ADVERT_COUNT = 94
 # The one transport-routed frame in the corpus, sighted on 2026-09-04: a
 # TRANSPORT_FLOOD advert. Its codes are recorded here so a codec change that
 # stops reading them fails on evidence rather than on a synthetic fixture.

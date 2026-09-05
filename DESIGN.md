@@ -429,9 +429,22 @@ bit field (`0x10` location, `0x20`/`0x40` reserved features, `0x80` name). So `0
 **ACKs** are the **first 4 bytes of SHA-256** over `(4-byte timestamp ‖ txt_type/attempt byte
 ‖ text) ‖ sender public key` — see `BaseChatMesh.cpp:243`. **Not a CRC32**, as this section
 previously claimed; an implementation built on that reading would have produced ACKs no
-MeshCore node accepts. It remains a checksum rather than a cryptographic proof — it is
+MeshCore node accepts. A received ACK payload may be **4 or 6 bytes** and only its first 4 are
+compared (`:245`, `:740`); both forms are live, and the 6-byte one was observed acknowledging
+a message sighop sent. It remains a checksum rather than a cryptographic proof — it is
 unkeyed, so anyone who can read the plaintext can reproduce it. Treat an ACK as delivery
 evidence only, never as authentication.
+
+**This is no longer verified only against ourselves.** As of milestone 4 the shared-secret
+derivation, the AES-128-ECB key slice, the 2-byte HMAC truncation and both directions of the
+ACK construction are confirmed against a **foreign implementation**: a Heltec V3 running stock
+`companion_radio` v1.17.1-d929643 encrypted a DM to a key sighop holds, and
+`tests/protocol/test_foreign_decrypt.py` decrypts it on every commit from
+`captures/2026-09-04-first-transmit.jsonl`. The negative half of that vector is asserted too —
+the full 32-byte secret used as the cipher key, or the MAC keyed on only the first 16, must
+fail — so the two distinct key slices stay distinguishable by evidence rather than by comment.
+It confirms these constructions for one exchange with one firmware build, which is the whole
+of what one exchange can confirm.
 
 Group messages carry **no sender authentication** — the sender name is plain text inside the
 ciphertext (`<name>: <body>`). Anyone with the channel key can claim any name. The WebUI
@@ -662,8 +675,11 @@ sighop/
 │   ├── radio/          kiss transport, modem (rx + tx), probe, capture, replay
 │   ├── protocol/       packet codec, payloads, crypto
 │   ├── net/            rx.py (decode stage), dedup.py, paths.py, bus.py,
-│   │                   tx.py (scheduler), airtime.py, adverts.py
+│   │                   tx.py (scheduler), airtime.py, adverts.py,
+│   │                   contacts.py, dm.py (direct messages, both directions)
 │   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
+│   ├── keystore.py     entity keyfiles (`sighop keys`) — file I/O, so not
+│   │                   under protocol/
 │   ├── runtime.py      the whole pipeline wired together (`sighop run`)
 │   ├── entities/       base, room server, companion, bot runtime
 │   │   └── bots/       greeter
@@ -683,6 +699,16 @@ sighop/
 `protocol/` must have no dependency on `db/` or `net/` — it is pure functions over bytes.
 That is what makes it testable against captured packets, and it is the layer where
 correctness matters most.
+
+`keystore.py` sits at the top level rather than in `protocol/` for the same reason: reading a
+keyfile is I/O, and `protocol/` has none. The seed → identity step stays in
+`protocol/identity.py`, so the boundary test keeps passing and the split is the one the layer
+rule already implies.
+
+`net/dm.py` handles inbound direct messages as a **bus subscriber**, never inside `net/rx.py`.
+Decryption needs local keys and a contact table; the decode stage stays a pure function of one
+frame, which is what keeps a replayed capture reproducing every reception exactly. It reports
+its work as typed events that `monitor/render.py` formats, so `net/` never imports `monitor/`.
 
 `radio/replay.py` is the inverse of `radio/capture.py` and lives beside it deliberately:
 it re-hydrates a capture file into the same event stream the modem produces, so the live
@@ -706,10 +732,13 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
 1. **Protocol core.** Packet codec, crypto, advert parse/verify — developed against the real
    captured frames from milestone 0, not synthetic fixtures. Pure functions over bytes; no
    radio, no database. The capture file becomes the permanent regression corpus.
-   *Note the corpus's one hard limit:* every encrypted payload in it is addressed to a third
-   party, so it proves framing, adverts and signature verification but **cannot prove
-   decryption**. Ciphertext handling is verifiable here only by round-trip and by fixed
-   known-answer vectors against the firmware source; milestone 4 is what actually closes it.
+   *The corpus's one hard limit, and where it now stands:* every encrypted payload recorded
+   through milestone 3 is addressed to a third party, so the corpus proved framing, adverts
+   and signature verification but **could not prove decryption**. Milestone 4 closed that for
+   exactly one exchange — the two direct messages in
+   `captures/2026-09-04-first-transmit.jsonl`, whose key the repository holds — and for no
+   other ciphertext in the corpus, which stays verifiable only by round-trip and by fixed
+   known-answer vectors against the firmware source.
    *The corpus is not frozen:* milestone 2's live session added `captures/2026-09-04.jsonl`,
    `-02` and `-03` (91 frames), taking it to 442 frames across five files, and milestone 3's
    long receive-only run added `captures/2026-09-05.jsonl` (555 frames), taking it to **997
@@ -858,6 +887,60 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    people's networks. **Exit criterion: the first successful decrypt of a real MeshCore DM**
    — this is the first point at which the cipher, MAC and ECDH are confirmed against another
    implementation rather than against ourselves.
+   *Done, 2026-09-04 21:44 UTC.* `keystore.py`, `net/contacts.py` and `net/dm.py`, with
+   `sighop keys` and `--entity/--peer/--send/--allow-flood` on `sighop run`. The exit
+   criterion is met and is a **committed regression test**, not a log line:
+   `captures/2026-09-04-first-transmit.jsonl` holds the peer's DM and
+   `tests/fixtures/burned-first-transmit.json` holds the key that opens it, so
+   `tests/protocol/test_foreign_decrypt.py` decrypts a foreign implementation's ciphertext on
+   every commit. The corpus's "one hard limit" is removed for exactly that exchange.
+   The exercise ran as D13's runbook: key injected over the peer's USB link, so sighop's first
+   RF transmission was the DM itself and not an advert timer's side effect. Findings:
+   - **The first transmission worked on the first attempt, and every construction matched.**
+     A 54-byte zero-hop `DIRECT` TXT_MSG; the peer displayed it, and its acknowledgement
+     `2b03574b` was byte-identical to the checksum sighop had computed before sending. The
+     peer's DM back decrypted first try — `candidates_tried=1` — and the acknowledgement
+     sighop computed for it, `1df0f21a`, is exactly the value the peer reported as its
+     `expected_ack` and accepted as delivery. Both halves of `BaseChatMesh.cpp`'s ACK
+     construction are now confirmed against another implementation, in both directions.
+   - **The 6-byte acknowledgement is real, and the tail is what the source says.** The peer
+     answered with `2b03574b0091`: checksum, then the extended attempt byte `0x00`, then a
+     random `0x91`. Reading only the first 4 bytes (`:740`) is what makes it match. This is
+     the first time the 6-byte form has been seen acknowledging something sighop sent.
+   - **The retry formula is right and generous.** Predicted acknowledgement window
+     `500 + (6 x 640 + 250) = 4590 ms`; measured latency **2481 ms**, so no retry ever fired.
+     The peer reported its own `suggested_timeout` as 4782 ms for an equally sized packet,
+     which brackets our 4590 ms — `SEND_TIMEOUT_BASE_MILLIS` 500, `DIRECT_SEND_PERHOP_FACTOR`
+     6 and `DIRECT_SEND_PERHOP_EXTRA_MILLIS` 250 match this build (§13 open question 1
+     answered). The 192 ms difference is the two boards' own airtime estimates disagreeing by
+     ~5%, not the constants.
+   - **Milestone 3's `TxDone` timeout factor met a real transmission and had room to spare.**
+     Hand-off to `TxDone` took **1343 ms** for 640 ms of airtime, and 1336 ms for a 247 ms
+     ACK: roughly 700–1100 ms of CSMA before the radio keys, against a timeout of
+     `2 x airtime + 6 s`. The fixed 6 s term is what that overhead needed; the factor alone
+     would have been marginal.
+   - **The peer answers direct, not flood-scoped** (§13 open questions 2 and 5 answered).
+     Injecting the contact with `out_path` empty and length 0 was what bought that, and it
+     matters more than it looks: after sighop's own zero-hop advert, the peer re-learned the
+     contact with `out_path_len = -1` (**unknown**), because a zero-hop advert carries no
+     path. A node that learns us only from an advert will therefore **flood** its replies.
+     D2's choice to inject over USB rather than advert first is what kept this exercise off
+     other people's repeaters, and the reason is now measured rather than argued.
+   - **A one-shot advert queued before the radio readback arrived, and was dropped.** The
+     scheduler refused to compute airtime without a `GetRadio` answer and dropped the packet
+     with `no_radio_readback` — the correct refusal, reported rather than silent, but the
+     ordering was wrong: nothing may be queued before startup has adopted the board's own
+     parameters. Fixed by gating the one-shot paths on startup completion, with a regression
+     test. A `--send` had survived the same bug only by accident, having waited for its peer's
+     advert in the meantime.
+   - **Contacts being in-memory has an operational consequence worth stating.** The run that
+     sends must hear the peer's advert *in that same run*; a restart forgets every contact.
+     That is what `--peer-wait` exists for, and it is milestone 5's `contact` table that
+     removes the need.
+   - **Total cost on the air: 3 frames, 1.5 s, 0.2% of the hourly duty-cycle ceiling.** The
+     session is appended whole as `captures/2026-09-04-first-transmit.jsonl`, taking the
+     corpus to **1003 records — 1000 received and 3 transmitted**, and bringing it its first
+     frames sighop sent and its first decryptable payload.
 5. **Persistence.** Postgres, models, Alembic, entity identity storage with key encryption.
 6. **Room server.** Login/ACL, history storage and sync, retention.
 7. **Greeter bot** and the bot plugin interface.
@@ -952,7 +1035,17 @@ These need real hardware or real traffic to answer, and are cheap to resolve in-
    next sizing decision is made from data too.
 3. Whether path scoring needs more than "most recently confirmed wins" — only observable
    once multiple routes to the same peer exist. Still open: milestone 3 records every
-   candidate route with its hop count and SNR, and deliberately scores none of them.
+   candidate route with its hop count and SNR, and deliberately scores none of them, and
+   milestone 4 produced exactly one route to one peer, which is not the observation this
+   needs.
+4. Whether a peer that learns us **only from a zero-hop advert** will flood its replies.
+   Raised by milestone 4 rather than settled by it: a zero-hop advert carries no path, so the
+   peer recorded our contact with `out_path_len = -1` (unknown) after hearing one, where the
+   USB-injected contact had length 0. The exercise used the injected form throughout, so what
+   a node does with the advert-learned form is untested. It matters the first time sighop is
+   reachable by a node it has not been introduced to over a cable — milestone 5 or 6 —
+   and the answer decides whether an entity must solicit a path before it can be replied to
+   cheaply.
 
 **Telemetry sub-command availability**, previously unknown #1, is settled from the firmware
 source: `getMCUTemperature()` comes from the shared `src/helpers/ESP32Board.h` and both the

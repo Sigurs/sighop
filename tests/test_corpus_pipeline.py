@@ -1,13 +1,18 @@
 """The regression corpus, replayed through the *live* pipeline.
 
-`tests/protocol/test_corpus.py` runs the same 997 frames through the protocol
-functions directly and stays exactly as it is. This is a second, higher-level
+`tests/protocol/test_corpus.py` runs the corpus through the protocol functions
+directly and holds the recorded distributions. This is a second, higher-level
 check over the same evidence: capture file → replay source → `net/rx.py`,
 which is the path a live link takes, with only the source swapped (design D1).
 
-Its value is entirely in the cross-check. If the pipeline and the offline
+Its value is entirely in the cross-check, so it asserts *agreement* rather than
+re-recording numbers that live next door: if the pipeline and the offline
 harness ever disagree about what these frames are, one of them has drifted —
 and until this file existed, nothing would have said which.
+
+Both sides are the **receptions**. Milestone 4 added frames sighop transmitted
+to the corpus, and a replay does not yield them: replaying our own packets as
+receptions would invent traffic the radio never heard.
 """
 
 from __future__ import annotations
@@ -24,31 +29,35 @@ from sighop.radio.replay import CaptureReplay
 from tests.protocol.corpus import (
     CAPTURE_FILES,
     CAPTURES_DIR,
-    EXPECTED_FRAME_COUNT,
-    load_corpus,
+    EXPECTED_RECEIVED_COUNT,
+    EXPECTED_TRANSMITTED_COUNT,
+    received_frames,
 )
-from tests.protocol.test_corpus import (
-    EXPECTED_ADVERT_COUNT,
-    EXPECTED_HASH_SIZES,
-    EXPECTED_HOP_COUNTS,
-    EXPECTED_PAYLOAD_TYPES,
-    EXPECTED_ROUTE_TYPES,
-    EXPECTED_TRANSPORT_FRAMES,
-)
+from tests.protocol.test_corpus import EXPECTED_TRANSPORT_FRAMES
+
+
+def harness_packets():
+    """The offline harness's view of the same receptions."""
+    return [decode(frame.raw) for frame in received_frames()]
 
 
 @pytest.fixture(scope="module")
 def replayed() -> list[RxRecord]:
     records: list[RxRecord] = []
+    skipped = 0
     for name in CAPTURE_FILES:
         replay = CaptureReplay.open(CAPTURES_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
         assert replay.unreadable == [], f"{name}: {replay.unreadable}"
+        skipped += replay.transmitted_skipped
+    assert skipped == EXPECTED_TRANSMITTED_COUNT, (
+        "a transmitted frame was replayed as a reception, or one went missing"
+    )
     return records
 
 
 def test_every_corpus_frame_produces_an_outcome_through_the_live_pipeline(replayed):
-    assert len(replayed) == EXPECTED_FRAME_COUNT
+    assert len(replayed) == EXPECTED_RECEIVED_COUNT
     assert all(record.outcome is not None for record in replayed)
 
 
@@ -59,22 +68,26 @@ def test_the_aggregate_decode_failure_count_is_zero(replayed):
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_payload_types(replayed):
     counts = collections.Counter(record.payload_type for record in replayed)
-    assert dict(counts) == EXPECTED_PAYLOAD_TYPES
+    harness = collections.Counter(packet.payload_type for packet in harness_packets())
+    assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_route_types(replayed):
     counts = collections.Counter(record.route_type for record in replayed)
-    assert dict(counts) == EXPECTED_ROUTE_TYPES
+    harness = collections.Counter(packet.route_type for packet in harness_packets())
+    assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_hop_counts(replayed):
     counts = collections.Counter(record.hop_count for record in replayed)
-    assert dict(counts) == EXPECTED_HOP_COUNTS
+    harness = collections.Counter(packet.hop_count for packet in harness_packets())
+    assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_path_hash_sizes(replayed):
     counts = collections.Counter(record.hash_size for record in replayed)
-    assert dict(counts) == EXPECTED_HASH_SIZES
+    harness = collections.Counter(packet.hash_size for packet in harness_packets())
+    assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_verifies_exactly_the_adverts_the_harness_does(replayed):
@@ -87,8 +100,7 @@ def test_the_pipeline_verifies_exactly_the_adverts_the_harness_does(replayed):
     ]
 
     harness_names = []
-    for frame in load_corpus():
-        packet = decode(frame.raw)
+    for packet in harness_packets():
         if packet.payload_type is not PayloadType.ADVERT:
             continue
         parsed = parse_payload(packet.payload_type, packet.payload)
@@ -97,15 +109,13 @@ def test_the_pipeline_verifies_exactly_the_adverts_the_harness_does(replayed):
         assert isinstance(verified, VerifiedAdvert)
         harness_names.append(verified.appdata.name.text)
 
-    assert len(pipeline_names) == EXPECTED_ADVERT_COUNT
+    assert pipeline_names, "no adverts verified through the live pipeline"
     assert pipeline_names == harness_names
 
 
 def test_the_pipeline_carries_the_recorded_signal_values(replayed):
     """SNR and RSSI survive capture, replay and decode unchanged."""
-    from tests.protocol.corpus import load_corpus as frames
-
-    for record, frame in zip(replayed, frames(), strict=True):
+    for record, frame in zip(replayed, received_frames(), strict=True):
         assert record.snr_db == frame.snr_db
         assert record.rssi_dbm == frame.rssi_dbm
 

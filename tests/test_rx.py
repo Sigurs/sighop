@@ -31,17 +31,39 @@ from sighop.protocol.packet import PayloadType, RouteType
 from sighop.protocol.payloads import DirectEnvelope, GroupEnvelope
 from sighop.radio.modem import RxEvent, RxMeta, UnparsedEvent
 from sighop.radio.replay import CaptureReplay
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR, EXPECTED_FRAME_COUNT
-from tests.protocol.test_corpus import EXPECTED_ADVERT_COUNT
+from tests.protocol.corpus import (
+    CAPTURE_FILES,
+    CAPTURES_DIR,
+    EXPECTED_RECEIVED_COUNT,
+    EXPECTED_TRANSMITTED_COUNT,
+)
+
+EXPECTED_RECEIVED_ADVERT_COUNT = 93
+"""Adverts the mesh sent us. One fewer than the corpus holds: the corpus also
+carries the zero-hop advert sighop itself transmitted, and this stage only ever
+sees receptions."""
 
 
 @pytest.fixture(scope="module")
 def corpus_records() -> list[RxRecord]:
-    """Every corpus frame, decoded through the live pipeline."""
+    """Every corpus *reception*, decoded through the live pipeline.
+
+    A replay yields receptions only: the frames sighop transmitted are recorded
+    in the corpus but skipped here, because feeding our own packets back in as
+    receptions would invent traffic the radio never heard.
+    """
     records: list[RxRecord] = []
+    skipped = 0
     for name in CAPTURE_FILES:
         replay = CaptureReplay.open(CAPTURES_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
+        assert replay.unreadable == [], (
+            f"{name} has unreadable lines: {[str(u) for u in replay.unreadable]}"
+        )
+        skipped += replay.transmitted_skipped
+    assert skipped == EXPECTED_TRANSMITTED_COUNT, (
+        "the replay did not pass over exactly the frames sighop transmitted"
+    )
     return records
 
 
@@ -90,7 +112,7 @@ def test_replayed_timestamps_are_used_rather_than_the_wall_clock():
 
 
 def test_every_corpus_frame_produces_an_outcome_and_none_fail(corpus_records):
-    assert len(corpus_records) == EXPECTED_FRAME_COUNT
+    assert len(corpus_records) == EXPECTED_RECEIVED_COUNT
     failures = [r for r in corpus_records if r.failed]
     assert failures == [], [outcome_fields(r) for r in failures]
 
@@ -140,7 +162,7 @@ def test_a_modem_unparsed_frame_is_forwarded_with_its_reason():
 
 def test_a_verified_advert_carries_its_name_through_the_verification(corpus_records):
     adverts = [r for r in corpus_records if isinstance(r.outcome, AdvertOutcome)]
-    assert len(adverts) == EXPECTED_ADVERT_COUNT
+    assert len(adverts) == EXPECTED_RECEIVED_ADVERT_COUNT
 
     verified = [r.outcome.verified for r in adverts]
     assert all(isinstance(v, VerifiedAdvert) for v in verified)

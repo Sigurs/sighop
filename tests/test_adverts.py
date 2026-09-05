@@ -358,3 +358,106 @@ def test_stubs_are_marked_ephemeral_wherever_they_are_rendered() -> None:
 
     assert stub.as_json()["ephemeral"] is True
     assert stub.as_json()["entity_type"] == "stub"
+
+
+# --- Persistent identities and the one-shot zero-hop advert (milestone 4) ---
+
+
+async def test_a_loaded_identity_adverts_under_the_same_rules_as_a_stub() -> None:
+    from sighop.protocol.identity import generate_identity
+
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    identity = generate_identity()
+
+    stub = sched.add_identity("skogen", identity, keyfile="/tmp/skogen.json")
+
+    assert stub.persistent is True
+    assert stub.identity is identity
+    assert stub.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS
+    assert stub.next_flood_at is not None, "a loaded identity was not staggered"
+    assert stub.as_json()["ephemeral"] is False
+    assert stub.as_json()["entity_type"] == "entity"
+
+    # Its adverts are signed with the stored key and verify as any other do.
+    stub.next_flood_at = clock.now()
+    sched.tick()
+    payload = decode_packet(sink.submissions[0].packet).payload
+    verified = verify_advert(parse_advert(payload))
+    assert isinstance(verified, VerifiedAdvert)
+    assert verified.public_key == identity.public_key
+
+
+async def test_a_loaded_identity_and_a_stub_share_the_inter_entity_gap() -> None:
+    from sighop.protocol.identity import generate_identity
+
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    loaded = sched.add_identity("persistent-one", generate_identity())
+    stub = sched.add_stub("ephemeral-one")
+    loaded.next_flood_at = stub.next_flood_at = clock.now()
+
+    sched.tick()
+
+    assert len(sink.submissions) == 1, "two entities advertised in one tick"
+    assert sched.deferrals == 1
+
+
+def test_an_identity_colliding_with_a_registered_entity_is_refused() -> None:
+    from sighop.protocol.identity import generate_identity
+
+    clock = ManualClock()
+    sched = scheduler(clock)
+    first = sched.add_stub("skogen")
+    while True:
+        twin = generate_identity()
+        if twin.node_hash == first.node_hash:
+            break
+
+    with pytest.raises(AdvertPolicyError, match=f"0x{first.node_hash:02x}"):
+        sched.add_identity("twin", twin)
+
+
+async def test_a_one_shot_zero_hop_advert_is_direct_class_three_and_charged() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    stub = sched.add_stub("skogen")
+    scheduled_before = stub.next_flood_at
+    adverts_before = stub.adverts_sent
+
+    sched.request_zero_hop(stub)
+
+    assert len(sink.submissions) == 1
+    submission = sink.submissions[0]
+    packet = decode_packet(submission.packet)
+    assert submission.priority is PriorityClass.ADVERT
+    assert submission.origin == "advert_zero_hop"
+    # DIRECT rather than FLOOD: it reaches direct neighbours and stops there.
+    assert packet.route_type is RouteType.DIRECT
+    assert packet.payload_type is PayloadType.ADVERT
+    assert packet.hop_count == 0 and packet.path == b""
+    # And it changes nothing about the schedule it was not part of.
+    assert stub.next_flood_at == scheduled_before
+    assert stub.adverts_sent == adverts_before
+    assert stub.zero_hop_interval_seconds == 0.0
+    assert sched.last_global_flood_at is None, "a zero-hop advert consumed the flood gap"
+
+
+async def test_a_one_shot_zero_hop_advert_verifies_like_any_other() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    stub = sched.add_stub("skogen")
+
+    sched.request_zero_hop(stub)
+
+    payload = decode_packet(sink.submissions[0].packet).payload
+    parsed = parse_advert(payload)
+    assert not isinstance(parsed, DecodeFailure)
+    verified = verify_advert(parsed)
+    assert isinstance(verified, VerifiedAdvert)
+    assert verified.appdata.name is not None
+    assert verified.appdata.name.text == "skogen"

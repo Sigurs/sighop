@@ -341,11 +341,13 @@ def _dedup_stats(**overrides):
 def test_the_status_line_leads_with_the_gate_and_the_duty_cycle():
     from sighop.monitor.render import render_status
 
-    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=5)
+    line = render_status(
+        _status(), dedup=_dedup_stats(), learned_paths=5, contacts=3
+    )
 
     assert line == (
         "== TX=disabled duty= 12.5% (45/360s) q=0/0/2/1 tx=4 sup=7 drop=1 fail=2 "
-        "dup=11.0% cache=42/4096 paths=5"
+        "dup=11.0% cache=42/4096 paths=5 contacts=3"
     )
 
 
@@ -429,3 +431,241 @@ def test_stubs_are_rendered_as_ephemeral():
     assert "skogen" in text
     assert "ephemeral" in text
     assert render_stubs([]) == "stubs: none"
+
+
+# --- Direct messages (milestone 4) -----------------------------------------
+#
+# Pure formatting, asserted by string comparison. The rule under test is the one
+# §8 makes hard: a decrypted direct message's sender is *claimed*, and never
+# appears in the shape reserved for signature-verified content.
+
+
+def _contact(name: str = "peer"):
+    from sighop.net.contacts import Contact
+    from sighop.protocol.payloads import WireText
+
+    return Contact(
+        public_key=bytes(range(32)),
+        name=WireText.from_bytes(name.encode()),
+        advert_verified=True,
+    )
+
+
+def test_a_sent_message_line_names_its_route_attempt_and_expected_ack():
+    from sighop.monitor.render import render_message_sent
+    from sighop.net.dm import MessageSent, Route
+
+    line = render_message_sent(
+        MessageSent(
+            message_id="m1",
+            entity_name="skogen",
+            contact=_contact(),
+            text="hej",
+            attempt=1,
+            route=Route(flood=False),
+            packet_id="pkt1",
+            size_bytes=48,
+            airtime_ms=612.0,
+            ack_timeout_ms=4422.0,
+            expected_ack=b"\xde\xad\xbe\xef",
+            transmitted=True,
+        )
+    )
+
+    assert line == (
+        "          -> dm sent  to 'peer'  attempt 1  DIRECT h0  48B  "
+        "air=612ms  ack_by=4422ms  expect=deadbeef  id=pkt1"
+    )
+
+
+def test_a_suppressed_send_says_the_gate_was_closed():
+    from sighop.monitor.render import render_message_sent
+    from sighop.net.dm import MessageSent, Route
+
+    line = render_message_sent(
+        MessageSent(
+            message_id="m1",
+            entity_name="skogen",
+            contact=_contact(),
+            text="hej",
+            attempt=0,
+            route=Route(flood=True),
+            packet_id="pkt1",
+            size_bytes=48,
+            airtime_ms=612.0,
+            ack_timeout_ms=10292.0,
+            expected_ack=b"\xde\xad\xbe\xef",
+            transmitted=False,
+        )
+    )
+
+    assert "not sent (gate closed)" in line
+    assert "FLOOD" in line
+
+
+def test_a_matched_acknowledgement_names_the_attempt_and_latency():
+    from sighop.monitor.render import render_ack_matched
+    from sighop.net.dm import AckMatched
+
+    line = render_ack_matched(
+        AckMatched(
+            message_id="m1",
+            contact=_contact(),
+            checksum=b"\xde\xad\xbe\xef",
+            attempt=2,
+            latency_ms=812.0,
+            packet_id="pkt9",
+            payload_bytes=6,
+        )
+    )
+
+    assert line == (
+        "          <- ack deadbeef (6B) matched attempt 2 from 'peer' after "
+        "812ms  id=pkt9"
+    )
+
+
+def test_an_unmatched_acknowledgement_says_how_many_sends_were_outstanding():
+    from sighop.monitor.render import render_ack_unmatched
+    from sighop.net.dm import AckUnmatched
+
+    line = render_ack_unmatched(
+        AckUnmatched(checksum=b"\x01\x02\x03\x04", packet_id="pkt9", outstanding=2)
+    )
+
+    assert line == "          <- ack 01020304 matched none of 2 outstanding sends  id=pkt9"
+
+
+def test_a_delivered_send_and_an_unacknowledged_one_read_differently():
+    from sighop.monitor.render import render_send_resolved
+    from sighop.net.dm import Route, SendOutcome, SendResolved, SendResult
+
+    delivered = render_send_resolved(
+        SendResolved(
+            outcome=SendOutcome(
+                result=SendResult.ACKNOWLEDGED,
+                message_id="m1",
+                attempts=1,
+                route=Route(flood=False),
+                ack_latency_ms=812.0,
+            ),
+            contact=_contact(),
+            text="hej",
+        )
+    )
+    failed = render_send_resolved(
+        SendResolved(
+            outcome=SendOutcome(
+                result=SendResult.UNACKNOWLEDGED,
+                message_id="m2",
+                attempts=4,
+                route=Route(flood=False),
+                reason="no acknowledgement after 4 attempts",
+            ),
+            contact=_contact(),
+            text="hej",
+        )
+    )
+
+    assert delivered == (
+        "          dm delivered to 'peer' after 1 attempt(s) in 812ms  id=m1"
+    )
+    assert failed == (
+        "          ! dm unacknowledged to 'peer' after 4 attempt(s): "
+        "no acknowledgement after 4 attempts  id=m2"
+    )
+
+
+def test_a_received_message_marks_its_sender_as_claimed_and_never_verified():
+    from sighop.monitor.render import VERIFIED_MARK, render_message_received
+    from sighop.net.dm import MessageReceived
+    from sighop.protocol.payloads import TextMessageBody, TextType, WireText
+
+    line = render_message_received(
+        MessageReceived(
+            entity_name="skogen",
+            contact=_contact(),
+            body=TextMessageBody(
+                timestamp=1_700_000_000,
+                txt_type=TextType.PLAIN,
+                attempt=0,
+                text=WireText.from_bytes(b"hej"),
+            ),
+            packet_id="pkt3",
+            candidates_tried=2,
+            acknowledged=True,
+        )
+    )
+
+    assert "claimed 'peer'" in line
+    assert VERIFIED_MARK not in line, "a 2-byte MAC match was rendered as verified"
+    assert line == (
+        "          ✗ dm from claimed 'peer' (key=0001020304050607) to skogen: "
+        "'hej'  ts=1700000000 attempt=0 tried=2 acked  id=pkt3"
+    )
+
+
+def test_an_undecryptable_message_reports_the_candidate_count():
+    from sighop.monitor.render import render_message_undecryptable
+    from sighop.net.dm import MessageUndecryptable
+
+    line = render_message_undecryptable(
+        MessageUndecryptable(
+            packet_id="pkt4", dest_hash=0x2A, src_hash=0x91, candidates_tried=3
+        )
+    )
+
+    assert line == (
+        "          encrypted dm  dest=0x2a src=0x91  not decrypted after "
+        "3 candidate key(s)  id=pkt4"
+    )
+
+
+def test_a_message_that_did_not_parse_says_it_was_not_acknowledged():
+    from sighop.monitor.render import render_message_unparsable
+    from sighop.net.dm import MessageUnparsable
+
+    line = render_message_unparsable(
+        MessageUnparsable(
+            packet_id="pkt5",
+            entity_name="skogen",
+            contact=_contact(),
+            reason="truncated: body too short",
+        )
+    )
+
+    assert "not acknowledged" in line
+    assert "truncated" in line
+
+
+def test_persistent_entities_are_not_rendered_as_ephemeral():
+    from sighop.monitor.render import render_stubs
+    from sighop.net.adverts import EntityStub
+    from sighop.protocol.identity import generate_identity
+
+    stub = EntityStub(
+        entity_id="skogen",
+        name="skogen",
+        identity=generate_identity(),
+        persistent=True,
+        keyfile="/tmp/skogen.json",
+    )
+
+    text = render_stubs([stub])
+
+    assert "persistent" in text
+    assert "ephemeral" not in text
+
+
+def test_the_banner_with_the_gate_open_names_no_identity_when_there_is_none():
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=True,
+        ceiling_pct=10.0,
+        above_regulatory_default=False,
+    )
+
+    assert "packets WILL be transmitted on air" in text
+    assert "originating identities: none" in text

@@ -25,6 +25,7 @@ CAPTURE_FILES = (
     "2026-09-04-02.jsonl",
     "2026-09-04-03.jsonl",
     "2026-09-05.jsonl",
+    "2026-09-04-first-transmit.jsonl",
 )
 
 # Files from milestone 2 onward carry their provenance in-band, as a
@@ -32,8 +33,22 @@ CAPTURE_FILES = (
 # carry theirs in a paired `.meta.json` sidecar (DESIGN.md §12).
 SIDECAR_PROVENANCE_FILES = ("2026-09-02.jsonl", "2026-09-03.jsonl")
 
+RX_FRAME_KIND = "rx_frame"
+TX_FRAME_KIND = "tx_frame"
+"""Frames sighop transmitted. They decode through the same codecs as receptions
+and belong in the corpus, but they must stay out of any measurement whose
+subject is what the mesh sent us — a duplicate rate computed over our own
+transmissions would be measuring the wrong thing (milestone 4)."""
+
 # Recorded expectations. Asserted, never regenerated from a failing run.
-EXPECTED_FRAME_COUNT = 997
+EXPECTED_FRAME_COUNT = 1003
+"""Every frame record: 1000 received, 3 transmitted."""
+
+EXPECTED_RECEIVED_COUNT = 1000
+EXPECTED_TRANSMITTED_COUNT = 3
+"""Three frames sighop put on the air in the first-transmit exercise: the DM, its
+acknowledgement of the peer's DM, and one zero-hop advert."""
+
 EXPECTED_FRAMES_PER_FILE = {
     "2026-09-02.jsonl": 152,
     "2026-09-03.jsonl": 199,
@@ -41,12 +56,33 @@ EXPECTED_FRAMES_PER_FILE = {
     "2026-09-04-02.jsonl": 2,
     "2026-09-04-03.jsonl": 33,
     "2026-09-05.jsonl": 555,
+    "2026-09-04-first-transmit.jsonl": 6,
 }
+
+FIRST_TRANSMIT_FILE = "2026-09-04-first-transmit.jsonl"
+"""The one session in the corpus whose ciphertext sighop holds a key for.
+
+Its record indices, which the known-answer tests name so the vector and its
+provenance cannot drift apart:
+
+* 1 — the peer's zero-hop advert
+* 2 — sighop's first transmission (a `TXT_MSG` to the peer)
+* 3 — the peer's `TXT_MSG` to sighop, produced by stock `companion_radio`
+  v1.17.1-d929643 and decryptable with `tests/fixtures/burned-first-transmit.json`
+* 4 — the peer's 6-byte acknowledgement of record 2
+* 5 — sighop's 4-byte acknowledgement of record 3
+* 6 — sighop's zero-hop advert
+"""
+
+PEER_DM_INDEX = 3
+SIGHOP_DM_INDEX = 2
+PEER_ACK_INDEX = 4
+SIGHOP_ACK_INDEX = 5
 
 
 @dataclass(frozen=True, slots=True)
 class CorpusFrame:
-    """One `rx_frame` record, identified well enough to name it in a failure."""
+    """One frame record, identified well enough to name it in a failure."""
 
     capture_file: str
     index: int
@@ -54,13 +90,16 @@ class CorpusFrame:
     raw: bytes
     snr_db: float | None
     rssi_dbm: int | None
+    transmitted: bool = False
+    """True for a frame sighop sent. Excluded from reception-derived measures."""
 
     @property
     def location(self) -> str:
         return f"{self.capture_file}[{self.index}] {self.timestamp}"
 
     def describe(self) -> str:
-        return f"{self.location}: {self.raw.hex()}"
+        direction = "tx" if self.transmitted else "rx"
+        return f"{self.location} ({direction}): {self.raw.hex()}"
 
 
 class CorpusError(RuntimeError):
@@ -81,7 +120,8 @@ def _load_file(name: str) -> list[CorpusFrame]:
             if not line:
                 continue
             record = json.loads(line)
-            if record.get("kind") != "rx_frame":
+            kind = record.get("kind")
+            if kind not in (RX_FRAME_KIND, TX_FRAME_KIND):
                 continue
             meta = record.get("rx_meta") or {}
             frames.append(
@@ -92,27 +132,61 @@ def _load_file(name: str) -> list[CorpusFrame]:
                     raw=bytes.fromhex(record["raw_hex"]),
                     snr_db=meta.get("snr_db"),
                     rssi_dbm=meta.get("rssi_dbm"),
+                    transmitted=kind == TX_FRAME_KIND,
                 )
             )
     if not frames:
-        raise CorpusError(f"capture file {path} contained no rx_frame records")
+        raise CorpusError(f"capture file {path} contained no frame records")
     return frames
 
 
 @cache
 def load_corpus() -> tuple[CorpusFrame, ...]:
-    """Every `rx_frame` record across every capture file, in capture order."""
+    """Every frame record across every capture file, in capture order.
+
+    Both directions: receptions, and the frames sighop transmitted in the
+    first-transmit exercise. `received_frames()` is what any measurement of what
+    the mesh sent us must use.
+    """
     frames: list[CorpusFrame] = []
     for name in CAPTURE_FILES:
         loaded = _load_file(name)
         expected = EXPECTED_FRAMES_PER_FILE[name]
         if len(loaded) != expected:
             raise CorpusError(
-                f"{name} holds {len(loaded)} rx_frame records, expected {expected}"
+                f"{name} holds {len(loaded)} frame records, expected {expected}"
             )
         frames.extend(loaded)
     if len(frames) != EXPECTED_FRAME_COUNT:
         raise CorpusError(
             f"corpus holds {len(frames)} frames, expected {EXPECTED_FRAME_COUNT}"
         )
+    transmitted = sum(1 for frame in frames if frame.transmitted)
+    if transmitted != EXPECTED_TRANSMITTED_COUNT:
+        raise CorpusError(
+            f"corpus holds {transmitted} transmitted frames, expected "
+            f"{EXPECTED_TRANSMITTED_COUNT}"
+        )
     return tuple(frames)
+
+
+def received_frames() -> tuple[CorpusFrame, ...]:
+    """Only the frames the mesh sent us — what a duplicate rate is measured over."""
+    return tuple(frame for frame in load_corpus() if not frame.transmitted)
+
+
+def transmitted_frames() -> tuple[CorpusFrame, ...]:
+    """Only the frames sighop put on the air."""
+    return tuple(frame for frame in load_corpus() if frame.transmitted)
+
+
+def first_transmit_frame(index: int) -> CorpusFrame:
+    """One record of the first-transmit session, by its index in the file.
+
+    Named rather than searched for, so a known-answer test and the capture it
+    reads cannot drift apart (`protocol-corpus`, milestone 4).
+    """
+    for frame in load_corpus():
+        if frame.capture_file == FIRST_TRANSMIT_FILE and frame.index == index:
+            return frame
+    raise CorpusError(f"{FIRST_TRANSMIT_FILE} has no record at index {index}")

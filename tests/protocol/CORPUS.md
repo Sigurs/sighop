@@ -1,6 +1,7 @@
 # The protocol regression corpus
 
-997 frames captured off the live mesh, in six files:
+1003 frame records in seven files: **1000 received** off the live mesh, and
+**3 that sighop itself transmitted**.
 
 | File | Frames | Recorded | Provenance |
 |---|---|---|---|
@@ -10,6 +11,7 @@
 | `captures/2026-09-04-02.jsonl` | 2 | milestone 2, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-04-03.jsonl` | 33 | milestone 2, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-05.jsonl` | 555 | milestone 3, Heltec V4 OLED | `capture_meta` header |
+| `captures/2026-09-04-first-transmit.jsonl` | 6 (3 rx, 3 tx) | milestone 4, V4 OLED ↔ V3 peer | `capture_meta` header, both boards |
 
 Per DESIGN.md §12 these files are the permanent regression corpus for the
 protocol layer. The two milestone 0 files predate the `capture_meta` header
@@ -17,6 +19,15 @@ record and keep their sidecars; everything recorded from milestone 2 onward
 carries its provenance in-band, as the first line of the file itself. Either
 way every corpus file states the conditions it was recorded under —
 `test_every_corpus_file_carries_provenance` refuses a file that states neither.
+
+The first-transmit file is milestone 4's exercise: sighop's first three
+transmissions and the peer's three replies, recorded on 2026-09-04 between
+21:44 and 21:49 UTC. It is the only file holding frames sighop sent, and its
+`capture_meta` header records **both** boards — the V4 that ran sighop and the
+Heltec V3 running stock `companion_radio` v1.17.1-d929643 that produced the
+ciphertext. Transmitted frames carry the record kind `tx_frame`; they decode
+through the same codecs as receptions and are excluded from every
+reception-derived measurement, the duplicate rate included.
 
 The 2026-09-04 files are one overnight session split by device restarts. The
 2026-09-05 file is milestone 3's long receive-only run — 2 h 54 min on the V4,
@@ -46,18 +57,26 @@ writes to them or their sidecars. Nothing regenerates them.
 
 ## What the corpus does NOT prove
 
-**Decryption.** This is the important one. sighop holds no key for any encrypted
-payload in the corpus, so not one of them is decrypted here. Nearly all are
-third-party traffic; the 2026-09-04 files also caught a handful of exchanges
-involving the operator's own MeshCore node (`Sigurs`, key `[redacted]7064e837…`),
-whose key sighop still does not hold. If it ever does, the golden file's
-no-plaintext rule is what keeps those frames rendered as digests. Ciphertext
-handling is verified only by round-trip against our own keys and by the fixed
-known-answer vectors in `test_crypto.py`. Nothing here confirms that sighop
-decrypts the way MeshCore does. The milestone 4 exchange with the reference peer
-board is what closes that gap, and "first successful decrypt of a real MeshCore
-DM" is its explicit exit criterion. A green corpus run must not be read as
-evidence that decryption works.
+**Decryption, except for exactly one exchange.** sighop holds the key for the
+two direct messages in `2026-09-04-first-transmit.jsonl` (records 2 and 3) and
+for **no other encrypted payload in the corpus**. Those two are decrypted on
+every commit by `test_foreign_decrypt.py`, and record 3 was produced by a
+different implementation — stock `companion_radio` v1.17.1-d929643 — which is
+what makes it evidence rather than a round-trip against ourselves. Decryption is
+therefore confirmed against live MeshCore traffic **for that exchange only**.
+
+Every other ciphertext here stays unopenable and is verified only by round-trip
+against our own keys and by the fixed known-answer vectors in `test_crypto.py`.
+Nearly all of it is third-party traffic; the 2026-09-04 files also caught a
+handful of exchanges involving the operator's own MeshCore node (`Sigurs`, key
+`[redacted]7064e837…`), whose key sighop still does not hold. The golden file's
+no-plaintext rule holds regardless, and now means something it did not before:
+we hold a key for two of these frames and the golden file still renders them as
+ciphertext digests.
+
+A green corpus run still must not be read as evidence that decryption works in
+general — it is evidence that it worked for one message from one firmware build
+on one evening, which is exactly one more than the corpus could hold before.
 
 Shapes absent from the corpus, each covered by a synthetic fixture instead:
 
@@ -99,17 +118,24 @@ The 2026-09-05 session added three more, and settled how ordinary one of the
 Asserted by `test_corpus.py`; a decoder change that shifts classification fails
 loudly even when every frame still decodes.
 
-- **Payload types**: GRP_TXT 341, TXT_MSG 191, CONTROL 168, ADVERT 92, ACK 67,
+Counted over all 1003 records, receptions and transmissions alike — the
+first-transmit session's 6 frames are every one `DIRECT` with an empty path, so
+its whole contribution is `TXT_MSG` +2, `ACK` +2, `ADVERT` +2, `DIRECT` +6, hop
+count 0 +6 and hash size 1 +6.
+
+- **Payload types**: GRP_TXT 341, TXT_MSG 193, CONTROL 168, ADVERT 94, ACK 69,
   ANON_REQ 42, PATH 38, RESPONSE 36, REQ 12, GRP_DATA 5, TRACE 5.
-- **Route types**: FLOOD 502, DIRECT 494, TRANSPORT_FLOOD 1. No
+- **Route types**: FLOOD 502, DIRECT 500, TRANSPORT_FLOOD 1. No
   `TRANSPORT_DIRECT`.
-- **Hop counts**: 0→418, 1→326, 2→177, 3→69, 4→5, 5→2.
-- **Path hash sizes**: 1-byte 487, 2-byte 109, 3-byte 401.
-- **Adverts**: 92, all verifying and all named; 77 with flags `0x92` (repeater,
-  located, named), 7 with `0x81` (chat, named, no location), 6 with `0x93` (room
-  server, located, named), 2 with `0x91` (chat, located, named). Eight distinct
-  names.
-- **ACK payload lengths**: 4 bytes ×48, 6 bytes ×19.
+- **Hop counts**: 0→424, 1→326, 2→177, 3→69, 4→5, 5→2.
+- **Path hash sizes**: 1-byte 493, 2-byte 109, 3-byte 401.
+- **Adverts**: 94, all verifying and all named; 77 with flags `0x92` (repeater,
+  located, named), 9 with `0x81` (chat, named, no location), 6 with `0x93` (room
+  server, located, named), 2 with `0x91` (chat, located, named). Ten distinct
+  names — the two new ones are the peer and sighop's own burned test identity.
+- **ACK payload lengths**: 4 bytes ×49, 6 bytes ×20. The 6-byte form is now
+  confirmed as an acknowledgement of something sighop sent, not only as
+  third-party traffic.
 
 ## Flood repetition rate (input to the milestone 3 dedup cache)
 
@@ -139,9 +165,10 @@ between nights, on a different board.
 
 The 2026-09-05 session, being both long and busy, is the one that settled the
 sizing. 555 receptions, 370 distinct, **33.3% repeats**, at most 3 copies of any
-packet, 16 distinct packets in any 60 s and 49 in any 300 s. Over the whole
-997-frame corpus: 656 distinct packets, 34.2% repeats, median gap between
-consecutive copies **0.99 s**, p95 **3.3 s**, and only **two** gaps anywhere
+packet, 16 distinct packets in any 60 s and 49 in any 300 s. Over all **1000
+receptions** — the 3 frames sighop transmitted are excluded, since the subject
+here is what the mesh sent us: 659 distinct packets, 34.1% repeats, median gap
+between consecutive copies **0.99 s**, p95 **3.3 s**, and only **two** gaps anywhere
 above 60 s. Those two are worth naming, because they are not the same thing:
 
 - **200.7 s** — a flood ANON_REQ whose late copy arrived by a *different* path

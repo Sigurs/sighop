@@ -14,18 +14,25 @@ more conservative than the firmware's own defaults:
 * a faster interval only through an override that **must** carry an expiry
   (default 1 h, maximum 24 h) and reverts by itself (DESIGN.md §13)
 
-The entities here are **stubs** (design D15): real Ed25519 keys, real signed
-adverts, real payload lengths — so the budget sees honest load — but generated
-per process and gone when it exits. Milestone 5 introduces persisted entities;
-a stub that quietly wrote its key somewhere would be that milestone's design
-decision made by accident.
+Entities come in two kinds and the policy treats them identically. A **stub**
+(milestone 3 design D15) has real Ed25519 keys, real signed adverts and real
+payload lengths — so the budget sees honest load — but is generated per process
+and gone when it exits. A **persistent** entity is one whose keypair was loaded
+from a keyfile (`sighop/keystore.py`, milestone 4 design D1), so a peer that
+stored its public key stays able to reach it across restarts. The distinction is
+reported, never acted on: the floor, jitter, stagger and inter-entity gap are
+the same for both.
+
+`request_zero_hop` is the one advert that is not scheduled at all: one packet,
+on explicit request, reaching direct neighbours and stopping there. It is how
+the first-transmit exercise introduces an identity to a board on the same desk
+without giving the wider mesh anything to repeat.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import random
-from collections.abc import Container
 from dataclasses import dataclass, field, replace
 
 import structlog
@@ -88,12 +95,24 @@ class AdvertOverride:
 
 @dataclass(slots=True)
 class EntityStub:
-    """An in-memory identity that adverts. Ephemeral by construction."""
+    """An identity that adverts.
+
+    Ephemeral by default — a keypair generated per process, which is what
+    milestone 3 needed. Milestone 4 adds the other kind: `persistent` marks an
+    identity loaded from a keyfile, whose public key another node may already
+    hold. Every interval, jitter, gap and override rule applies identically to
+    both; the flag exists so an operator can tell which identities outlive the
+    process, not so the policy can treat them differently.
+    """
 
     entity_id: str
     name: str
     identity: LocalIdentity
     node_type: NodeType = NodeType.CHAT
+    persistent: bool = False
+    keyfile: str = ""
+    """The file this identity was loaded from, for the startup listing."""
+
     flood_interval_seconds: float = FLOOD_INTERVAL_FLOOR_SECONDS
     zero_hop_interval_seconds: float = 0.0
     """0 means disabled, which is the default and community practice."""
@@ -119,8 +138,9 @@ class EntityStub:
         return {
             "entity_id": self.entity_id,
             "entity_name": self.name,
-            "entity_type": "stub",
-            "ephemeral": True,
+            "entity_type": "entity" if self.persistent else "stub",
+            "ephemeral": not self.persistent,
+            "keyfile": self.keyfile or None,
             "node_hash": self.node_hash,
             "public_key": self.identity.public_key.hex(),
             "flood_interval_seconds": self.flood_interval_seconds,
@@ -185,6 +205,7 @@ class AdvertScheduler:
     stubs: list[EntityStub] = field(default_factory=list)
     last_global_flood_at: dt.datetime | None = None
     deferrals: int = 0
+    zero_hop_requests: int = 0
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="adverts")
@@ -208,19 +229,64 @@ class AdvertScheduler:
                 "which must carry an expiry"
             )
         identity = generate_identity(avoid_node_hashes=self._taken_hashes())
-        stub = EntityStub(
-            entity_id=entity_id or f"stub-{len(self.stubs) + 1}",
-            name=name,
-            identity=identity,
-            node_type=node_type,
-            flood_interval_seconds=flood_interval_seconds,
-            zero_hop_interval_seconds=zero_hop_interval_seconds,
+        return self._register(
+            EntityStub(
+                entity_id=entity_id or f"stub-{len(self.stubs) + 1}",
+                name=name,
+                identity=identity,
+                node_type=node_type,
+                flood_interval_seconds=flood_interval_seconds,
+                zero_hop_interval_seconds=zero_hop_interval_seconds,
+            )
         )
+
+    def add_identity(
+        self,
+        name: str,
+        identity: LocalIdentity,
+        *,
+        node_type: NodeType = NodeType.CHAT,
+        flood_interval_seconds: float = FLOOD_INTERVAL_FLOOR_SECONDS,
+        zero_hop_interval_seconds: float = 0.0,
+        entity_id: str | None = None,
+        keyfile: str = "",
+    ) -> EntityStub:
+        """Register an identity loaded from storage as an advert source.
+
+        The same floor, jitter, stagger and inter-entity gap apply as to a
+        generated stub — this is the *same* scheduler with a key that outlives
+        the process, not a second policy (milestone 4, `advert-policy`).
+        """
+        if flood_interval_seconds < FLOOD_INTERVAL_FLOOR_SECONDS:
+            raise AdvertPolicyError(
+                f"flood interval {flood_interval_seconds:.0f}s is below the "
+                f"{FLOOD_INTERVAL_FLOOR_SECONDS:.0f}s floor; use an override, "
+                "which must carry an expiry"
+            )
+        if identity.node_hash in self._taken_hashes():
+            raise AdvertPolicyError(
+                f"an entity with node hash 0x{identity.node_hash:02x} is already "
+                "registered; two local entities may not share one (DESIGN.md §3)"
+            )
+        return self._register(
+            EntityStub(
+                entity_id=entity_id or name,
+                name=name,
+                identity=identity,
+                node_type=node_type,
+                persistent=True,
+                keyfile=keyfile,
+                flood_interval_seconds=flood_interval_seconds,
+                zero_hop_interval_seconds=zero_hop_interval_seconds,
+            )
+        )
+
+    def _register(self, stub: EntityStub) -> EntityStub:
         self.stubs.append(stub)
         self._stagger(stub)
         return stub
 
-    def _taken_hashes(self) -> Container[int]:
+    def _taken_hashes(self) -> set[int]:
         return {stub.node_hash for stub in self.stubs}
 
     def _stagger(self, stub: EntityStub) -> None:
@@ -330,6 +396,45 @@ class AdvertScheduler:
 
         return handles
 
+    def request_zero_hop(self, stub: EntityStub) -> TxHandle:
+        """Emit one zero-hop advert for `stub`, on explicit request only.
+
+        A zero-hop advert reaches direct neighbours and stops there, so it is
+        the cheapest way to introduce ourselves to a board on the same desk
+        without giving the wider mesh anything to repeat (design D3). It goes
+        through the scheduler as ordinary class 3 traffic and is charged against
+        the budget like any other advert.
+
+        It deliberately leaves the entity's flood schedule alone: this is one
+        packet on request, not a second recurring cadence, and the zero-hop
+        interval stays disabled.
+        """
+        assert self.logger is not None
+        now = self.clock.now()
+        packet = build_advert_packet(stub, int(now.timestamp()), zero_hop=True)
+        handle: TxHandle = self.submit(  # type: ignore[operator]
+            Submission(
+                packet=packet,
+                priority=PriorityClass.ADVERT,
+                entity_id=stub.entity_id,
+                entity_name=stub.name,
+                entity_type="entity" if stub.persistent else "stub",
+                deadline=now + dt.timedelta(seconds=self.deadline_seconds),
+                origin="advert_zero_hop",
+            )
+        )
+        self.zero_hop_requests += 1
+        self.logger.info(
+            "advert_zero_hop_requested",
+            entity_id=stub.entity_id,
+            entity_name=stub.name,
+            size_bytes=len(packet),
+            next_flood_at=(
+                None if stub.next_flood_at is None else stub.next_flood_at.isoformat()
+            ),
+        )
+        return handle
+
     def _gap_remaining(self, now: dt.datetime) -> float:
         if self.last_global_flood_at is None:
             return 0.0
@@ -362,6 +467,7 @@ class AdvertScheduler:
             "stubs": [stub.as_json() for stub in self.stubs],
             "active_overrides": len(self.active_overrides(now)),
             "deferrals": self.deferrals,
+            "zero_hop_requests": self.zero_hop_requests,
             "min_entity_gap_seconds": self.min_entity_gap_seconds,
         }
 

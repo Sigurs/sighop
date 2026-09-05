@@ -15,25 +15,32 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import datetime as dt
 import signal
 import sys
 from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import IO
 
 import structlog
 
+from sighop.keystore import EntityRegistry
 from sighop.logging import get_logger
 from sighop.monitor.render import (
+    render_contacts,
     render_detail_line,
+    render_dm_event,
     render_frame_line,
     render_run_startup,
     render_status,
     render_stubs,
 )
 from sighop.net.adverts import AdvertScheduler
-from sighop.net.bus import IngressPipeline, NetworkBus
+from sighop.net.bus import IngressPipeline, NetworkBus, TxOutcome
+from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
+from sighop.net.dm import DirectMessageError, DirectMessageEvent, DirectMessenger
 from sighop.net.paths import PathStore
 from sighop.net.rx import decode_event
 from sighop.net.tx import (
@@ -44,12 +51,23 @@ from sighop.net.tx import (
     SystemClock,
     TxScheduler,
 )
+from sighop.protocol.payloads import NodeType
 from sighop.radio.capture import CaptureWriter
 from sighop.radio.modem import ModemEvent, RadioParams
 from sighop.radio.probe import ProbeResult
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
 DEFAULT_ADVERT_TICK_SECONDS = 5.0
+
+DEFAULT_PEER_WAIT_SECONDS = 60.0
+"""How long a `--send` waits for its peer's advert before saying it is unknown.
+
+The first-transmit runbook starts the run, then asks the peer for a zero-hop
+advert, then sends — so the peer is not a contact at the moment the run comes
+up, and a send that gave up instantly would be unusable. It gives up loudly
+rather than exiting: an unknown peer must not end a receiving session."""
+
+PEER_POLL_SECONDS = 0.25
 
 
 @dataclass(slots=True)
@@ -65,6 +83,20 @@ class RuntimeConfig:
     stub_names: tuple[str, ...] = ()
     advert_override_seconds: float | None = None
     advert_override_expires_in: float | None = None
+    entity_keyfiles: tuple[Path, ...] = ()
+    """Persistent identities, loaded through the registry so two that share a
+    node hash fail startup rather than being loaded (milestone 4 design D1)."""
+
+    peer: str | None = None
+    send_text: str | None = None
+    allow_flood: bool = False
+    """Inverts the firmware's default (design D4): with no route known, a send
+    is refused unless this was asked for explicitly."""
+
+    zero_hop_advert: str | None = None
+    """The name of an entity to emit exactly one zero-hop advert for."""
+
+    peer_wait_seconds: float = DEFAULT_PEER_WAIT_SECONDS
 
 
 @dataclass(slots=True)
@@ -91,7 +123,11 @@ class Runtime:
     pipeline: IngressPipeline = field(init=False)
     scheduler: TxScheduler = field(init=False)
     adverts: AdvertScheduler = field(init=False)
+    entities: EntityRegistry = field(init=False)
+    contacts: ContactStore = field(init=False)
+    messenger: DirectMessenger = field(init=False)
     _stop: asyncio.Event = field(init=False)
+    _ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
     _held: list[str] = field(init=False, default_factory=list)
 
@@ -104,6 +140,7 @@ class Runtime:
             clock=self.clock,
             budget=AirtimeBudget(ceiling_fraction=self.config.ceiling_fraction),
             transmit_enabled=self.config.transmit_enabled,
+            on_transmitted=self._record_transmitted,
             logger=self.logger,
         )
         self.bus = NetworkBus(tx_sink=self.scheduler, logger=self.logger)
@@ -120,8 +157,37 @@ class Runtime:
         self.adverts = AdvertScheduler(
             submit=self.bus.submit, clock=self.clock, logger=self.logger
         )
+        # Persistent identities first: a stub's generated key is then made to
+        # avoid their node hashes rather than the other way round.
+        self.entities = EntityRegistry(logger=self.logger)
+        for path in self.config.entity_keyfiles:
+            keyfile = self.entities.load(path)
+            self.adverts.add_identity(
+                keyfile.name,
+                keyfile.identity,
+                node_type=(
+                    keyfile.node_type
+                    if isinstance(keyfile.node_type, NodeType)
+                    else NodeType.CHAT
+                ),
+                keyfile=str(keyfile.path),
+            )
         for name in self.config.stub_names:
             self.adverts.add_stub(name)
+        self.contacts = ContactStore(logger=self.logger)
+        self.messenger = DirectMessenger(
+            contacts=self.contacts,
+            paths=self.pipeline.paths,
+            submit=self.bus.submit,
+            entities=self.adverts.stubs,
+            clock=self.clock,
+            radio=self.radio,
+            allow_flood=self.config.allow_flood,
+            on_event=self._on_dm_event,
+            logger=self.logger,
+        )
+        self.contacts.subscribe(self.bus)
+        self.messenger.subscribe(self.bus)
         if self.config.advert_override_seconds is not None:
             for stub in self.adverts.stubs:
                 self.adverts.set_override(
@@ -131,6 +197,7 @@ class Runtime:
                     or self.config.advert_override_seconds * 10,
                 )
         self._stop = asyncio.Event()
+        self._ready = asyncio.Event()
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -148,19 +215,33 @@ class Runtime:
         self.radio = radio
         self.scheduler.set_radio(radio)
         self.pipeline.radio = radio
+        self.messenger.set_radio(radio)
+
+    @property
+    def _one_shot_requested(self) -> bool:
+        return self.config.send_text is not None or self.config.zero_hop_advert is not None
 
     async def run(self) -> None:
         """Run until the source ends or `stop()` is called, then shut down."""
+        send = asyncio.create_task(self._send_once(), name="send-once")
         tasks = [
             asyncio.create_task(self._print_startup(), name="runtime-startup"),
             asyncio.create_task(self.scheduler.run(), name="tx-scheduler"),
             asyncio.create_task(self._advert_loop(), name="advert-loop"),
             asyncio.create_task(self._status_loop(), name="status-loop"),
+            send,
         ]
         consume = asyncio.create_task(self._consume(), name="rx-consume")
         stopping = asyncio.create_task(self._stop.wait(), name="stop")
         try:
             await asyncio.wait((consume, stopping), return_when=asyncio.FIRST_COMPLETED)
+            if self._one_shot_requested and not send.done():
+                # A run asked to send one message does not exit before that send
+                # has resolved or given up. Without this a replayed source — which
+                # ends in milliseconds — would tear the run down before the peer
+                # it was told to send to had even been heard. `stop()` still cuts
+                # it short, and `_await_peer` watches for that.
+                await asyncio.wait((send, stopping), return_when=asyncio.FIRST_COMPLETED)
         finally:
             # Order matters: stop scheduling before tearing down the loop, so
             # every queued packet is resolved and logged rather than abandoned.
@@ -197,6 +278,81 @@ class Runtime:
             await self.clock.sleep(self.config.status_interval)
             self._print(self._status_line())
 
+    async def _send_once(self) -> None:
+        """The `--send` one-shot, and the one-shot zero-hop advert with it.
+
+        Both are deliberate single acts rather than schedules. Neither can end
+        the run: a peer that never adverts leaves a receiving session running,
+        which is what an operator watching a first transmission needs.
+
+        Both wait for startup, because startup is what adopts the board's radio
+        readback — and without one the scheduler refuses to compute airtime and
+        drops the packet. Observed doing exactly that on the first attempt at the
+        one-shot advert: correct refusal, wrong ordering. A `--send` survived it
+        only by accident, having waited for its peer's advert in the meantime.
+        """
+        await self._ready.wait()
+        if self.config.zero_hop_advert is not None:
+            await self._request_zero_hop(self.config.zero_hop_advert)
+        if self.config.peer is None or self.config.send_text is None:
+            return
+        contact = await self._await_peer(self.config.peer)
+        if contact is None:
+            return
+        entity = next(iter(self.adverts.stubs), None)
+        if entity is None:
+            self._print(
+                "cannot send: no entity identity is loaded "
+                "(use --entity <keyfile>, or --stub for an ephemeral one)"
+            )
+            return
+        try:
+            await self.messenger.send(entity, contact, self.config.send_text)
+        except DirectMessageError as exc:
+            # Refused rather than sent — the outcome is reported and the run
+            # keeps receiving, since a refusal is information, not a failure.
+            self._print(f"send refused: {exc}")
+
+    async def _request_zero_hop(self, name: str) -> None:
+        for stub in self.adverts.stubs:
+            if stub.name == name or stub.entity_id == name:
+                self.adverts.request_zero_hop(stub)
+                self._print(f"zero-hop advert requested for {stub.name!r}")
+                return
+        self._print(f"no entity named {name!r} to advert; the run continues")
+
+    async def _await_peer(self, reference: str) -> Contact | None:
+        """Wait for a peer's advert, then resolve it — or say it is unknown."""
+        deadline = self.clock.now() + dt.timedelta(seconds=self.config.peer_wait_seconds)
+        while True:
+            try:
+                contact = self.contacts.resolve(reference)
+            except ContactError as exc:
+                if self.clock.now() >= deadline or self._stop.is_set():
+                    self._print(f"peer {reference!r} is unknown: {exc}")
+                    self._print("nothing was queued; the run continues receiving")
+                    return None
+                await self.clock.sleep(PEER_POLL_SECONDS)
+                continue
+            return contact
+
+    # --- Capture and events ------------------------------------------------
+
+    def _record_transmitted(self, packet: bytes, outcome: TxOutcome) -> None:
+        """Every frame that reached the air, into the capture beside the
+        receptions — the first captures that hold both directions."""
+        if self.capture_writer is None:
+            return
+        self.capture_writer.write_transmitted(
+            packet,
+            at=self.clock.now(),
+            packet_id=outcome.packet_id,
+            airtime_ms=outcome.airtime_ms,
+        )
+
+    def _on_dm_event(self, event: DirectMessageEvent) -> None:
+        self._print(render_dm_event(event))
+
     # --- Output ------------------------------------------------------------
 
     def _status_line(self) -> str:
@@ -205,6 +361,7 @@ class Runtime:
             dedup=self.pipeline.dedup.stats,
             learned_paths=self.pipeline.paths.destination_count,
             active_overrides=len(self.adverts.active_overrides()),
+            contacts=len(self.contacts),
         )
 
     async def _print_startup(self) -> None:
@@ -216,13 +373,21 @@ class Runtime:
                 transmit_enabled=self.scheduler.transmit_enabled,
                 ceiling_pct=self.scheduler.budget.ceiling_fraction * 100,
                 above_regulatory_default=self.scheduler.budget.above_regulatory_default,
+                entities=self.adverts.stubs,
             )
         )
         self._write(render_stubs(self.adverts.stubs))
+        self._write(render_contacts())
+        for entity in self.entities.entities:
+            for warning in entity.warnings:
+                self._write(f"!! {warning}")
         self._release()
         if self.capture_writer is not None:
             probe_result = await self.capture_probe() if self.capture_probe else None
             self.capture_writer.start(probe_result)
+        # Only now is the board's readback adopted, so only now may anything be
+        # queued: the scheduler drops what it cannot compute airtime for.
+        self._ready.set()
 
     def _print(self, text: str) -> None:
         if not self._started:
