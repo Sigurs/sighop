@@ -61,6 +61,20 @@ BURNED_WARNING = (
     "on air; generate a new one with `sighop keys new`"
 )
 
+PLAINTEXT_SEED_NOTICE = (
+    "this file holds an UNENCRYPTED 32-byte private seed, protected only by its "
+    f"filesystem permissions ({KEYFILE_MODE:04o}); the same seed inside the entity "
+    "store is sealed under SIGHOP_SECRET_KEY, and the two do not offer the same "
+    "protection"
+)
+"""Printed wherever a keyfile is created or exported (milestone 5, `local-identity`).
+
+Milestone 5 encrypts the seed at rest, which makes the keyfile the *weaker* of
+the two stores rather than the only one. An operator who has stopped thinking
+about keyfile permissions because "sighop encrypts keys now" is the failure this
+sentence exists to prevent, and it has to appear at the moment the file is
+written rather than in documentation."""
+
 
 class KeyfileError(RuntimeError):
     """A keyfile could not be created or loaded. Always names the path."""
@@ -295,23 +309,76 @@ def load_keyfile(
     return keyfile
 
 
+ENTITY_STORE_SOURCE = "the entity store"
+
+
+@dataclass(frozen=True, slots=True)
+class LocalEntity:
+    """One local identity in this run, whatever store it came from.
+
+    Milestone 5 gives identities a second source, so the registry stops being a
+    list of keyfiles and becomes a list of *entities that happen to know where
+    they came from*. `source` is what the startup line reports, and it is the
+    thing an operator needs when two runs disagree about which identity is live.
+    """
+
+    name: str
+    identity: LocalIdentity
+    node_type: NodeType | int
+    source: str
+    """`str(path)` for a keyfile, `the entity store` for a stored row."""
+
+    keyfile: Keyfile | None = None
+    warnings: tuple[str, ...] = ()
+
+    @property
+    def public_key(self) -> bytes:
+        return self.identity.public_key
+
+    @property
+    def node_hash(self) -> int:
+        return self.identity.node_hash
+
+    @property
+    def from_store(self) -> bool:
+        return self.keyfile is None
+
+    def as_json(self) -> dict[str, object]:
+        """What an identity is, without what makes it secret."""
+        return {
+            "entity_name": self.name,
+            "node_type": int(self.node_type),
+            "public_key": self.public_key.hex(),
+            "node_hash": self.node_hash,
+            "source": self.source,
+        }
+
+
 class EntityRegistry:
     """The local entities one run holds, with the §3 rule 3 check between them.
 
     Two local entities sharing a node hash would make an inbound packet
     ambiguous between our *own* identities, which is the one collision case the
     design rules out rather than handles. Generation is fed the hashes already
-    taken so a new key avoids them; loading two files that collide is a startup
-    failure naming both.
+    taken so a new key avoids them; loading two that collide is a startup failure
+    naming both.
+
+    The rule applies across **every** source in the run (design D14): a keyfile
+    that collides with a stored entity is the same fault as two keyfiles that
+    collide, and reporting it differently would let the mixed case through.
     """
 
     def __init__(self, *, logger: structlog.stdlib.BoundLogger | None = None) -> None:
-        self._entities: list[Keyfile] = []
+        self._entities: list[LocalEntity] = []
         self._log = logger or get_logger(component="keystore")
 
     @property
-    def entities(self) -> tuple[Keyfile, ...]:
+    def entities(self) -> tuple[LocalEntity, ...]:
         return tuple(self._entities)
+
+    @property
+    def keyfiles(self) -> tuple[Keyfile, ...]:
+        return tuple(e.keyfile for e in self._entities if e.keyfile is not None)
 
     def __len__(self) -> int:
         return len(self._entities)
@@ -319,8 +386,8 @@ class EntityRegistry:
     def taken_node_hashes(self) -> frozenset[int]:
         return frozenset(entity.node_hash for entity in self._entities)
 
-    def load(self, path: Path) -> Keyfile:
-        return self._register(load_keyfile(path, logger=self._log))
+    def load(self, path: Path) -> LocalEntity:
+        return self._register(_from_keyfile(load_keyfile(path, logger=self._log)))
 
     def create(
         self,
@@ -329,26 +396,57 @@ class EntityRegistry:
         *,
         node_type: NodeType | int = NodeType.CHAT,
         burned: bool = False,
-    ) -> Keyfile:
+    ) -> LocalEntity:
         return self._register(
-            create_keyfile(
-                path,
-                name,
-                node_type=node_type,
-                avoid_node_hashes=self.taken_node_hashes(),
-                burned=burned,
-                logger=self._log,
+            _from_keyfile(
+                create_keyfile(
+                    path,
+                    name,
+                    node_type=node_type,
+                    avoid_node_hashes=self.taken_node_hashes(),
+                    burned=burned,
+                    logger=self._log,
+                )
             )
         )
 
-    def _register(self, keyfile: Keyfile) -> Keyfile:
+    def add_stored(
+        self,
+        name: str,
+        identity: LocalIdentity,
+        *,
+        node_type: NodeType | int = NodeType.CHAT,
+    ) -> LocalEntity:
+        """Register an identity loaded from the entity store (design D14)."""
+        return self._register(
+            LocalEntity(
+                name=name,
+                identity=identity,
+                node_type=node_type,
+                source=ENTITY_STORE_SOURCE,
+            )
+        )
+
+    def _register(self, entity: LocalEntity) -> LocalEntity:
         for existing in self._entities:
-            if existing.node_hash == keyfile.node_hash:
+            if existing.node_hash == entity.node_hash:
                 raise NodeHashCollisionError(
-                    f"local entities {existing.path} and {keyfile.path} share node "
-                    f"hash 0x{keyfile.node_hash:02x}; two local entities with one "
-                    "node hash make an inbound packet ambiguous between our own "
-                    "identities (DESIGN.md §3)"
+                    f"local entities {existing.name!r} (from {existing.source}) and "
+                    f"{entity.name!r} (from {entity.source}) share node hash "
+                    f"0x{entity.node_hash:02x}; two local entities with one node hash "
+                    "make an inbound packet ambiguous between our own identities "
+                    "(DESIGN.md §3)"
                 )
-        self._entities.append(keyfile)
-        return keyfile
+        self._entities.append(entity)
+        return entity
+
+
+def _from_keyfile(keyfile: Keyfile) -> LocalEntity:
+    return LocalEntity(
+        name=keyfile.name,
+        identity=keyfile.identity,
+        node_type=keyfile.node_type,
+        source=str(keyfile.path),
+        keyfile=keyfile,
+        warnings=keyfile.warnings,
+    )

@@ -300,6 +300,15 @@ def render_run_startup(
     return "\n".join(lines)
 
 
+PERSISTENCE_OFF = "off"
+PERSISTENCE_ON = "on"
+PERSISTENCE_DEGRADED = "degraded"
+"""Three states, and the difference between the first two and the third is the
+whole point (design D8): "off" is a choice an operator made and "degraded" is a
+fault they have not yet noticed. A status line that rendered them alike would
+make a broken database look like a deliberate configuration."""
+
+
 def render_status(
     status: SchedulerStatus,
     *,
@@ -307,8 +316,18 @@ def render_status(
     learned_paths: int,
     active_overrides: int = 0,
     contacts: int = 0,
+    persistence: str = PERSISTENCE_OFF,
+    packet_log_discarded: int = 0,
+    routes_discarded: int = 0,
+    awaiting_backfill: int = 0,
 ) -> str:
-    """The periodic status line. Duty cycle first — it is the limit that binds."""
+    """The periodic status line. Duty cycle first — it is the limit that binds.
+
+    The three persistence counters are always rendered, including as zeros. A
+    field that disappears when it is zero is a field a reader cannot tell from a
+    field nobody wrote, and the whole reason they are here is so that a gap in
+    the feed reads as a gap rather than as a quiet mesh.
+    """
     queues = "/".join(str(status.queue_depths.get(index, 0)) for index in range(4))
     budget = (
         f"duty={status.duty_cycle_pct:5.1f}% "
@@ -324,7 +343,9 @@ def render_status(
         f"drop={status.stats.dropped} fail={status.stats.failed} "
         f"dup={dedup.hit_rate * 100:.1f}% "
         f"cache={dedup.entries}/{dedup.max_entries} paths={learned_paths} "
-        f"contacts={contacts}"
+        f"contacts={contacts} "
+        f"persist={persistence} log_drop={packet_log_discarded} "
+        f"route_drop={routes_discarded} backfill={awaiting_backfill}"
     )
     if active_overrides:
         line += f" overrides={active_overrides}"
@@ -348,16 +369,41 @@ def render_stubs(stubs: Sequence[EntityStub]) -> str:
     return f"stubs: {rendered}"
 
 
-def render_contacts() -> str:
-    """Contacts are in memory only for this milestone, and the run says so.
+def render_persistence(
+    *,
+    database: str | None = None,
+    schema_version: str | None = None,
+    entities: int = 0,
+    contacts: int = 0,
+    paths: int = 0,
+    writing: bool = True,
+    not_writing_because: str = "",
+) -> str:
+    """Whether this run's state survives it, and what came back if it does.
 
-    Deliberately carries no count. The banner is printed once the board's probe
-    has answered, which is seconds after the radio started delivering frames, so
-    a count here is not "what we started with" — it is whatever had arrived by
-    then, and reads as state that survived the restart. The live count belongs
-    in the status line, where a moving number is what a reader expects.
+    An operator must never have to infer durability. With no database the line
+    says so in the words milestone 4 used, because that is still what happens;
+    with one it names the database in force, the applied schema version and the
+    counts restored — so "nothing was heard yet" and "nothing was restored" are
+    two visibly different things before any traffic arrives.
+
+    The restored counts are a snapshot from before the pipeline started, unlike
+    the live figures in the status line: they are what persistence supplied, not
+    what the radio has since added.
+
+    `database` is expected already redacted — this function never sees a
+    password, so there is no rendering path along which one could escape.
     """
-    return "contacts: in memory only — they do not survive the process"
+    if database is None:
+        return (
+            "persistence: off — contacts, paths and the packet log are in memory "
+            "only and do not survive the process"
+        )
+    state = "on" if writing else f"on, not writing ({not_writing_because})"
+    return (
+        f"persistence: {state} — {database}  schema={schema_version or 'unknown'}\n"
+        f"restored: entities={entities} contacts={contacts} paths={paths}"
+    )
 
 
 # --- Direct messages (milestone 4) -----------------------------------------

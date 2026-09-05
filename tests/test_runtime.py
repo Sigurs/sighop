@@ -59,6 +59,7 @@ def runtime(
     sender: RecordingSender | None = None,
     clock: ManualClock | None = None,
     out: io.StringIO | None = None,
+    persistence=None,
 ) -> Runtime:
     return Runtime(
         source=source,
@@ -69,6 +70,10 @@ def runtime(
         clock=clock or ManualClock(),
         out=out or io.StringIO(),
         logger=RecordingLogger(),
+        # None is the milestone-4 shape and stays the default: every existing
+        # test here runs with no database, which is the property the proposal
+        # asked for.
+        persistence=persistence,
     )
 
 

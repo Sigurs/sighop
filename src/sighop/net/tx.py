@@ -361,6 +361,7 @@ class TxScheduler:
         busy_attempts: int = DEFAULT_BUSY_ATTEMPTS,
         busy_delay: float = DEFAULT_BUSY_DELAY_SECONDS,
         on_transmitted: Callable[[bytes, TxOutcome], None] | None = None,
+        on_resolved: Callable[[Submission, TxOutcome], None] | None = None,
         logger: structlog.stdlib.BoundLogger | None = None,
     ) -> None:
         self.on_transmitted = on_transmitted
@@ -368,6 +369,15 @@ class TxScheduler:
         The capture writer uses it, so a transmitting run records both
         directions; a suppressed packet never fires it, because nothing was
         transmitted."""
+
+        self.on_resolved = on_resolved
+        """Called once for *every* submission that resolves — transmitted,
+        suppressed, dropped or failed — beside the §9 *Packet TX* wide event.
+
+        Milestone 5's packet log uses it: the feed records what the scheduler
+        decided, and a packet the gate suppressed is exactly the kind of thing
+        an operator needs to see there. Never awaits; a hook that raises is
+        contained, because a logging sink must not be able to fail a packet."""
 
         self._sender = sender
         self._radio = radio
@@ -620,6 +630,16 @@ class TxScheduler:
 
     def _emit(self, item: _Queued, outcome: TxOutcome, now: dt.datetime) -> None:
         """The DESIGN.md §9 *Packet TX* wide event, one per attempt."""
+        if self.on_resolved is not None:
+            try:
+                self.on_resolved(item.submission, outcome)
+            except Exception as exc:
+                # A feed must never be able to fail a packet (packet-log spec).
+                self._log.error(
+                    "tx_resolution_hook_failed",
+                    packet_id=outcome.packet_id,
+                    error=repr(exc),
+                )
         failed = outcome.result in (TxResult.FAILED, TxResult.DROPPED)
         emit = self._log.error if failed else self._log.info
         emit(

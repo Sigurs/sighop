@@ -174,7 +174,9 @@ async def test_a_loaded_identity_is_listed_as_persistent(tmp_path) -> None:
     text = out.getvalue()
     assert "skogen" in text
     assert "persistent" in text
-    assert "contacts: in memory only" in text
+    # Milestone 5 replaced the milestone-4 wording with the persistence line;
+    # with no database configured it still says state does not survive.
+    assert "persistence: off" in text
     assert "do not survive the process" in text
 
 

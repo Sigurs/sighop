@@ -25,24 +25,28 @@ from typing import IO
 
 import structlog
 
-from sighop.keystore import EntityRegistry
+from sighop.db.persistence import Persistence
+from sighop.db.repositories import LoadedEntity
+from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import get_logger
 from sighop.monitor.render import (
-    render_contacts,
+    PERSISTENCE_OFF,
     render_detail_line,
     render_dm_event,
     render_frame_line,
+    render_persistence,
     render_run_startup,
     render_status,
     render_stubs,
 )
 from sighop.net.adverts import AdvertScheduler
-from sighop.net.bus import IngressPipeline, NetworkBus, TxOutcome
+from sighop.net.airtime import time_on_air_ms
+from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxOutcome
 from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
 from sighop.net.dm import DirectMessageError, DirectMessageEvent, DirectMessenger
 from sighop.net.paths import PathStore
-from sighop.net.rx import decode_event
+from sighop.net.rx import RxRecord, decode_event
 from sighop.net.tx import (
     DEFAULT_CEILING_FRACTION,
     AirtimeBudget,
@@ -87,6 +91,18 @@ class RuntimeConfig:
     """Persistent identities, loaded through the registry so two that share a
     node hash fail startup rather than being loaded (milestone 4 design D1)."""
 
+    stored_entities: tuple[LoadedEntity, ...] = ()
+    """Identities the entity store held, already decrypted by the caller.
+
+    Registered *before* the keyfiles, so the §3 rule 3 collision check runs
+    across both sources and a generated stub avoids every taken hash whichever
+    store it came from (design D14)."""
+
+    replay_persists: bool = False
+    """Whether a replayed capture writes (design D13). Off by default: replayed
+    receptions carry an earlier session's timestamps, and writing them would make
+    a week-old contact indistinguishable from one heard this minute."""
+
     peer: str | None = None
     send_text: str | None = None
     allow_flood: bool = False
@@ -119,6 +135,16 @@ class Runtime:
     capture_probe: Callable[[], Awaitable[ProbeResult | None]] | None = None
     """Supplies the provenance header. Events are held until it resolves."""
 
+    persistence: Persistence | None = None
+    """The durable backing, already opened and version-checked by the caller.
+
+    None is the whole of "no database configured": the stores get no sink, every
+    lookup is answered from memory exactly as before, and the startup line says
+    that state will not survive the process. Opening happens outside the runtime
+    because a configured database that cannot be reached is a *startup* failure
+    (`database` spec) — it must be reported before a pipeline exists, and before
+    anything could be transmitted."""
+
     bus: NetworkBus = field(init=False)
     pipeline: IngressPipeline = field(init=False)
     scheduler: TxScheduler = field(init=False)
@@ -141,6 +167,7 @@ class Runtime:
             budget=AirtimeBudget(ceiling_fraction=self.config.ceiling_fraction),
             transmit_enabled=self.config.transmit_enabled,
             on_transmitted=self._record_transmitted,
+            on_resolved=self._record_tx,
             logger=self.logger,
         )
         self.bus = NetworkBus(tx_sink=self.scheduler, logger=self.logger)
@@ -150,7 +177,9 @@ class Runtime:
                 ttl_seconds=self.config.dedup_ttl_seconds,
                 max_entries=self.config.dedup_max_entries,
             ),
-            paths=PathStore(),
+            paths=PathStore(
+                sink=None if self.persistence is None else self.persistence.path_sink()
+            ),
             logger=self.logger,
             radio=self.radio,
         )
@@ -158,23 +187,26 @@ class Runtime:
             submit=self.bus.submit, clock=self.clock, logger=self.logger
         )
         # Persistent identities first: a stub's generated key is then made to
-        # avoid their node hashes rather than the other way round.
+        # avoid their node hashes rather than the other way round. Stored
+        # entities before keyfiles, so a collision between the two sources is
+        # reported the same way as one between two keyfiles (design D14).
         self.entities = EntityRegistry(logger=self.logger)
-        for path in self.config.entity_keyfiles:
-            keyfile = self.entities.load(path)
-            self.adverts.add_identity(
-                keyfile.name,
-                keyfile.identity,
-                node_type=(
-                    keyfile.node_type
-                    if isinstance(keyfile.node_type, NodeType)
-                    else NodeType.CHAT
-                ),
-                keyfile=str(keyfile.path),
+        for stored in self.config.stored_entities:
+            self._adopt_entity(
+                self.entities.add_stored(
+                    stored.name, stored.identity, node_type=stored.record.node_type
+                )
             )
+        for path in self.config.entity_keyfiles:
+            self._adopt_entity(self.entities.load(path))
         for name in self.config.stub_names:
             self.adverts.add_stub(name)
-        self.contacts = ContactStore(logger=self.logger)
+        self.contacts = ContactStore(
+            logger=self.logger,
+            sink=None if self.persistence is None else self.persistence.contact_sink(),
+        )
+        if self.persistence is not None:
+            self.persistence.attach_contacts(self.contacts)
         self.messenger = DirectMessenger(
             contacts=self.contacts,
             paths=self.pipeline.paths,
@@ -198,6 +230,17 @@ class Runtime:
                 )
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
+
+    def _adopt_entity(self, entity: LocalEntity) -> None:
+        """Give a local identity to the advert scheduler, whatever it came from."""
+        self.adverts.add_identity(
+            entity.name,
+            entity.identity,
+            node_type=(
+                entity.node_type if isinstance(entity.node_type, NodeType) else NodeType.CHAT
+            ),
+            keyfile=entity.source,
+        )
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -223,6 +266,10 @@ class Runtime:
 
     async def run(self) -> None:
         """Run until the source ends or `stop()` is called, then shut down."""
+        # Restoration happens before the source is consumed, so a peer heard on
+        # an earlier run is addressable before any traffic arrives rather than
+        # racing it (contacts spec).
+        await self._restore()
         send = asyncio.create_task(self._send_once(), name="send-once")
         tasks = [
             asyncio.create_task(self._print_startup(), name="runtime-startup"),
@@ -253,9 +300,24 @@ class Runtime:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
             await self.bus.aclose()
+            if self.persistence is not None:
+                # After the bus, so nothing is still producing rows, and before
+                # the last status line, so its counters are final.
+                await self.persistence.stop()
             self._started = True
             self._release()
             self._write(self._status_line())
+
+    async def _restore(self) -> None:
+        """Load contacts and paths, then start the writers, pruner and probe."""
+        if self.persistence is None:
+            return
+        await self.persistence.restore(
+            self.contacts,
+            self.pipeline.paths,
+            entities=len(self.config.stored_entities),
+        )
+        self.persistence.start()
 
     # --- Loops -------------------------------------------------------------
 
@@ -265,8 +327,22 @@ class Runtime:
                 self.capture_writer.write(event)
             record = decode_event(event)
             self.pipeline.ingest(record)
+            if self.persistence is not None:
+                # After ingest and after the decision it describes: the feed
+                # records what happened, and nothing consults it (§6).
+                self.persistence.record_rx(record, airtime_ms=self._airtime_ms(record))
             self._print(render_frame_line(record))
             self._print(render_detail_line(record))
+
+    def _airtime_ms(self, record: RxRecord) -> float | None:
+        """What the frame cost the air, when the board's readback is known.
+
+        Absent rather than guessed when it is not — the same rule the budget and
+        the RX wide event follow.
+        """
+        if self.radio is None:
+            return None
+        return round(time_on_air_ms(record.size_bytes, self.radio), 3)
 
     async def _advert_loop(self) -> None:
         while True:
@@ -350,18 +426,34 @@ class Runtime:
             airtime_ms=outcome.airtime_ms,
         )
 
+    def _record_tx(self, submission: Submission, outcome: TxOutcome) -> None:
+        """Every resolved submission into the feed — suppressed ones included.
+
+        A gated run resolves everything as `suppressed`, and a feed that showed
+        only what reached the air would render that as silence.
+        """
+        if self.persistence is None:
+            return
+        self.persistence.record_tx(submission, outcome, at=self.clock.now())
+
     def _on_dm_event(self, event: DirectMessageEvent) -> None:
         self._print(render_dm_event(event))
 
     # --- Output ------------------------------------------------------------
 
     def _status_line(self) -> str:
+        persistence = PERSISTENCE_OFF if self.persistence is None else self.persistence.state
+        writers = self.persistence
         return render_status(
             self.scheduler.status(),
             dedup=self.pipeline.dedup.stats,
             learned_paths=self.pipeline.paths.destination_count,
             active_overrides=len(self.adverts.active_overrides()),
             contacts=len(self.contacts),
+            persistence=persistence,
+            packet_log_discarded=0 if writers is None else writers.packet_log_writer.discarded,
+            routes_discarded=0 if writers is None else writers.path_writer.discarded,
+            awaiting_backfill=self.contacts.awaiting_backfill,
         )
 
     async def _print_startup(self) -> None:
@@ -377,7 +469,7 @@ class Runtime:
             )
         )
         self._write(render_stubs(self.adverts.stubs))
-        self._write(render_contacts())
+        self._write(self._persistence_line())
         for entity in self.entities.entities:
             for warning in entity.warnings:
                 self._write(f"!! {warning}")
@@ -388,6 +480,23 @@ class Runtime:
         # Only now is the board's readback adopted, so only now may anything be
         # queued: the scheduler drops what it cannot compute airtime for.
         self._ready.set()
+
+    def _persistence_line(self) -> str:
+        """What the run's durability is, said once, before any traffic."""
+        if self.persistence is None:
+            return render_persistence()
+        return render_persistence(
+            database=self.persistence.database.config.redacted_url,
+            schema_version=self.persistence.database.applied_revision,
+            entities=self.persistence.restored.entities,
+            contacts=self.persistence.restored.contacts,
+            paths=self.persistence.restored.paths,
+            writing=self.persistence.writes_enabled,
+            not_writing_because=(
+                "a replay carries an earlier session's timestamps; "
+                "--persist-replay writes anyway"
+            ),
+        )
 
     def _print(self, text: str) -> None:
         if not self._started:

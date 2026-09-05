@@ -6,9 +6,16 @@ flooding the mesh again.
 
 The store is **platform-wide, not per-entity** — a route is a property of the RF
 neighbourhood, and duplicating it per entity would waste memory and learn slower
-(§4.2). It is also in-memory only: milestone 5 owns the `path` table, and a
-store that quietly persisted would be that milestone's design decision made by
-accident (design D13).
+(§4.2).
+
+Milestone 5 adds a durable backing behind it and changes nothing else. Memory is
+still the authority and answers every lookup at full speed, including while the
+database is unreachable; an optional `sink` receives learned routes and writes
+them behind the reception path, dropping freely when it cannot keep up, because
+a route is relearned from the next reception (design D2). Restored routes keep
+the confirmation time they were learned with — restoring is not confirming, so a
+live reception still beats an old route under most-recently-confirmed-wins.
+Nothing here imports SQLAlchemy (design D10).
 
 Two things this deliberately does *not* do:
 
@@ -25,7 +32,9 @@ from __future__ import annotations
 
 import datetime as dt
 from collections import OrderedDict
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol
 
 from sighop.net.rx import AdvertOutcome, Payload, RxRecord
 from sighop.protocol.packet import RouteType
@@ -123,23 +132,37 @@ def sender_key(record: RxRecord) -> PathKey | None:
             return None if source is None else PathKey.for_node_hash(source)
 
 
+class PathSink(Protocol):
+    """Where learned routes go to be written. Never awaits, never raises.
+
+    Implemented by the write-behind queue in `db/`. Unlike the contact queue this
+    one drops when it is full and reports the drop as a counter: a route costs
+    one reception to relearn, so an unbounded backlog would buy nothing.
+    """
+
+    def offer(self, entry: tuple[PathKey, LearnedPath]) -> bool: ...
+
+
 class PathStore:
-    """Learned routes, keyed by sender, bounded and in memory only."""
+    """Learned routes, keyed by sender, bounded, and authoritative in memory."""
 
     def __init__(
         self,
         *,
         max_destinations: int = DEFAULT_MAX_DESTINATIONS,
         max_candidates: int = DEFAULT_MAX_CANDIDATES_PER_DESTINATION,
+        sink: PathSink | None = None,
     ) -> None:
         if max_destinations <= 0 or max_candidates <= 0:
             raise ValueError("bounds must be positive")
         self.max_destinations = max_destinations
         self.max_candidates = max_candidates
+        self._sink = sink
         self._paths: OrderedDict[tuple[bytes | None, int], list[LearnedPath]] = OrderedDict()
         self._keys: dict[tuple[bytes | None, int], PathKey] = {}
         self._learned = 0
         self._evictions = 0
+        self.restored = 0
 
     def observe(self, record: RxRecord) -> tuple[PathKey, LearnedPath] | None:
         """Learn from a reception. Returns what was learned, or None.
@@ -179,7 +202,26 @@ class PathStore:
             packet_id=record.packet_id,
         )
         self._insert(key, learned)
+        if self._sink is not None:
+            # Offered, not written: `offer` returns immediately and a full queue
+            # drops rather than back-pressuring the decode stage (design D2).
+            self._sink.offer((key, learned))
         return key, learned
+
+    def restore(self, entries: Iterable[tuple[PathKey, LearnedPath]]) -> int:
+        """Adopt routes read from the store, before traffic arrives.
+
+        Restored routes carry the `confirmed_at` they were learned with, so a
+        route confirmed by a live reception wins over an older restored one
+        under the existing most-recently-confirmed rule — restoration is not
+        confirmation. They are not offered back to the sink: they came from it.
+        """
+        restored = 0
+        for key, learned in entries:
+            self._insert(key, learned)
+            restored += 1
+        self.restored += restored
+        return restored
 
     def _insert(self, key: PathKey, learned: LearnedPath) -> None:
         index = (key.public_key, key.node_hash)
@@ -244,5 +286,6 @@ class PathStore:
             "max_destinations": self.max_destinations,
             "learned": self._learned,
             "evictions": self._evictions,
+            "restored": self.restored,
             "ambiguous_destinations": sum(1 for key in self._keys.values() if key.ambiguous),
         }

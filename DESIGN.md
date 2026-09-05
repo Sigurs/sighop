@@ -53,7 +53,7 @@ whole outgoing-path design (§4.3).
 | Radio attachment | **Direct device passthrough** (`/dev/ttyUSB0` into the container). | Chosen for operational simplicity. See §10 for how this coexists with the arbitrary-UID goal. |
 | Transport abstraction | Serial is behind a `KissTransport` interface anyway. | A TCP implementation (ser2net) is ~40 lines if the deployment ever needs it. Costs nothing now. |
 | Concurrency | Single asyncio process. | The radio is a single serialized resource; there is nothing to parallelize below it. Postgres and the web server are the only real I/O fan-out. |
-| DB access | SQLAlchemy 2.0 async + asyncpg, Alembic migrations. | Spec requires ORM + Alembic. |
+| DB access | SQLAlchemy 2.0 async + asyncpg, Alembic migrations. | Spec requires ORM + Alembic. **Re-confirmed against the live development database at milestone 5**, not assumed: `.env.dev` had arrived saying `postgresql+psycopg`, and the URL was rewritten to match this row rather than the row rewritten to match the URL. The cost is paid once — asyncpg has no synchronous mode, so `alembic/env.py` bridges through `connection.run_sync`, about fifteen lines. asyncpg also does not read libpq's query parameters (`?sslmode=`, `?options=`), so `config.py` rejects them at startup rather than letting them surface as a driver error at the first TLS-terminating deployment. |
 | Web | FastAPI + server-rendered HTML with HTMX, WebSocket for live feeds. | Avoids a separate SPA build in the container image. |
 | Logging | structlog, JSON, wide events. | Spec requirement; see §11. |
 | Packaging | uv with a locked `uv.lock`. | Spec requirement. |
@@ -454,16 +454,41 @@ must not render channel sender names in a way that implies verified identity.
 
 ## 6. Persistence
 
-Postgres via SQLAlchemy 2.0 async. Sketch, not final DDL:
+Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one; four
+of them exist as of milestone 5 and four do not yet, and the split is deliberate.
 
-- **entity** — id, type, name, public key, **encrypted** private key, advert flags/config, enabled
-- **contact** — public key, node hash, name, first/last heard, advert flags, location
-- **path** — destination public key, path bytes, hop SNRs, learned/confirmed timestamps, score
-- **room** — entity ref, guest/admin password hashes, retention policy
-- **room_member** — room ref, contact ref, ACL level, last-sync timestamp, joined-at
-- **message** — room ref, sender contact ref, timestamp, body, delivery state
-- **packet_log** — ring buffer of recent RX/TX for the observability UI (bounded; not the audit trail)
-- **bot_state** — bot ref, key/value scratch (the greeter's already-greeted set lives here)
+**Built (milestone 5, migration `0001`):**
+
+- **entity** — id, type, name, public key, **sealed** seed, advert config (JSONB), enabled,
+  created_at
+- **contact** — public key (PK), node hash, name, node type, flags, `advert_verified`,
+  first/last heard
+- **path** — destination public key *or* node hash, path bytes, hash size, hop count, SNR,
+  `confirmed_at`, packet id, unique on (destination, path bytes, hash size)
+- **packet_log** — ring buffer of recent RX/TX for the observability UI (bounded; not the
+  audit trail), with `raw` and `reason` for frames that could not be decoded
+
+**Not built yet, each in the milestone that owns it and each named in `0001`'s docstring so
+absence reads as intent:**
+
+- **room**, **room_member**, **message** — milestone 6
+- **bot_state** — milestone 7
+
+The list above was always a sketch and never final DDL, and milestone 6 will discover things
+about ACLs and retention that change those four tables; shipping them untested would make
+the first real migration a rewrite rather than an addition.
+
+Three details of the built four are worth stating because they look like mistakes:
+
+- **`node_hash` is indexed but not unique**, on either table. §3 says one byte of identity
+  collides at 1 in 256 and the whole design is built on candidate sets; a unique constraint
+  there is a bug waiting for a busy mesh.
+- **`path.path_bytes` may be empty**, and an empty path is a *zero-hop route* — the most
+  useful route a node can have — which is a different thing from no row at all.
+- **Every timestamp is `TIMESTAMPTZ`** and every value crossing the boundary is
+  timezone-aware UTC, with naive datetimes rejected rather than assumed. The development
+  server's own `TimeZone` is `Europe/Helsinki`, so a `TIMESTAMP WITHOUT TIME ZONE` column
+  would record local wall-clock time here and something else against a UTC server.
 
 Message history is durable and survives reboot, per spec — the whole reason a room server
 beats a walkie-talkie.
@@ -472,6 +497,16 @@ beats a walkie-talkie.
 feed, not to be a permanent record; unbounded packet logging on a busy mesh will fill a
 disk.
 
+**Memory stays the authority.** Contacts and paths keep their in-memory stores and their
+interfaces, are loaded from the database once at startup, and answer every lookup from
+memory — including while the database is unreachable. Writes happen behind the reception
+path, and the three stores differ only in how much a lost write costs: a contact is written
+promptly and never dropped (re-acquiring one means waiting for the peer to advert, and the
+advert floor is 24 h), while a route and a log row are dropped freely and counted, because
+the next reception regenerates one and the other is a feed. Migrations are the only
+authority on schema; `sighop run` refuses a database that is not at the revision the code
+expects, and never migrates as a side effect of starting.
+
 ### Private keys at rest
 
 Entity private keys are the platform's crown jewels — they *are* the identities. Encrypt
@@ -479,6 +514,29 @@ them at rest with a key from the environment (`SIGHOP_SECRET_KEY`), never in the
 A DB dump must not be sufficient to impersonate a room server. Provide `sighop keys export`
 / `import` so operators can back identities up deliberately, and make the WebUI's key
 display an explicit, audited action.
+
+**How, as of milestone 5.** The seed is sealed with **XSalsa20-Poly1305 secretbox**
+(PyNaCl's `SecretBox`, already a dependency because the identity code uses libsodium), and
+the stored value is a **version byte followed by the sealed box** so a future re-key has
+somewhere to declare itself. The box generates its own nonce, which is the one thing most
+likely to be got wrong by hand, and Poly1305 supplies the authentication tag — a tampered
+`sealed_seed` fails loudly instead of yielding some other key. On load the public key
+derived from the decrypted seed is compared against the `public_key` column stored beside
+it, and a mismatch names the entity rather than preferring either value.
+
+`SIGHOP_SECRET_KEY` is base64 of **exactly 32 bytes**, generated by `sighop keys secret`
+from the system CSPRNG. A value of the wrong length or encoding is a startup failure that
+says which; it is never padded, truncated or hashed into shape, and there is no passphrase
+KDF — accepting a passphrase invites `hunter2` and then requires an Argon2 parameter
+conversation for something no human needs to type. Losing the secret makes every stored
+identity unrecoverable; that is what encryption at rest means, and `sighop keys export` is
+the mitigation §6 already asked for.
+
+Keyfiles remain, demoted to what §6 wanted: an interchange format. `sighop keys import`
+seals one into the store and `sighop keys export` writes one back out, owner-only, refusing
+an existing path. Both say — as does `sighop keys new` — that a keyfile holds an
+*unencrypted* seed protected only by its permissions, because the same seed inside the store
+is encrypted and an operator must not conclude the two offer the same protection.
 
 ---
 
@@ -683,12 +741,19 @@ sighop/
 │   ├── runtime.py      the whole pipeline wired together (`sighop run`)
 │   ├── entities/       base, room server, companion, bot runtime
 │   │   └── bots/       greeter
-│   ├── db/             models, repositories
+│   ├── db/             models.py (the four tables), repositories.py (what net/
+│   │                   calls), engine.py (pool, bounds, degraded state, probe),
+│   │                   writer.py (bounded write-behind), sealing.py (seeds at
+│   │                   rest), packetlog.py (feed rows, pruner),
+│   │                   persistence.py (the wiring), migrations.py (alembic)
 │   ├── web/            FastAPI app, routes, templates
 │   ├── logging.py      structlog config, wide-event helpers
-│   ├── config.py
+│   ├── config.py       DATABASE_URL and SIGHOP_SECRET_KEY from the environment,
+│   │                   validated and password-redacted. No dotenv dependency:
+│   │                   `uv run --env-file` and compose already read the file
 │   └── cli.py
-├── alembic/
+├── alembic/            async env.py (design D1) and one migration per milestone
+├── alembic.ini         no URL in it — config.py is the single source
 ├── tests/
 ├── compose.yaml
 ├── build.sh
@@ -698,7 +763,14 @@ sighop/
 
 `protocol/` must have no dependency on `db/` or `net/` — it is pure functions over bytes.
 That is what makes it testable against captured packets, and it is the layer where
-correctness matters most.
+correctness matters most. Since milestone 5 `db/` actually exists, so
+`tests/protocol/test_import_boundary.py` asserts the direction explicitly — naming
+`sqlalchemy`, `asyncpg` and `alembic` as well as `sighop.db` — rather than relying on the
+package not being there to import. **`db/` is a peer of `net/`, not a layer beneath
+`protocol/`**: it may import from `net/`, and `net/contacts.py` and `net/paths.py` import
+no SQLAlchemy at all. Each takes an optional sink whose `offer` never awaits and never
+raises, which is what keeps the persistent path a thin adapter rather than a rewrite, and
+keeps every existing test running with no database.
 
 `keystore.py` sits at the top level rather than in `protocol/` for the same reason: reading a
 keyfile is I/O, and `protocol/` has none. The seed → identity step stays in
@@ -942,6 +1014,63 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      corpus to **1003 records — 1000 received and 3 transmitted**, and bringing it its first
      frames sighop sent and its first decryptable payload.
 5. **Persistence.** Postgres, models, Alembic, entity identity storage with key encryption.
+   *Done:* `src/sighop/db/` (models, repositories, engine, bounded write-behind writer, seed
+   sealing, packet-log feed and pruner, the `Persistence` wiring), `src/sighop/config.py`,
+   `alembic/` with an async `env.py` and migration `0001`, and `sighop db` / `sighop keys
+   secret|list|import|export`. Four of §6's eight tables, and `run` gained `--database-url`
+   and `--persist-replay`. Findings:
+   - **The database was probed before the design was written, and two of the readings changed
+     the plan.** The role's `rolcreatedb` is **false**, so tests cannot create a throwaway
+     database and isolate in a throwaway *schema* instead; and the server's `TimeZone` is
+     **`Europe/Helsinki`**, which turns a stylistic preference about timestamp types into a
+     correctness rule. `rolconnlimit` is 30, which is what sizes the pool at 10.
+   - **`ON CONFLICT DO UPDATE` refuses a batch that proposes one key twice**, and a real batch
+     does: `cannot affect row a second time`, observed against the dev database on the first
+     corpus replay, where it discarded **every** contact and route write in the run while the
+     packet log — which does not upsert — wrote 872 rows and looked healthy. The batch is now
+     collapsed to one row per conflict key before the insert, keeping the latest, which is the
+     same semantics D15 already stated for the recovery flush. Two regression tests hold it.
+     Worth naming as a class: the failure was invisible in the counters that were being
+     watched, and only showed up as *zero rows in two tables*.
+   - **`NULLS NOT DISTINCT` is load-bearing for the `path` table.** A route keyed only by node
+     hash has a NULL `dest_public_key`, and Postgres's default treatment of NULLs as distinct
+     would have made every re-hearing insert a new row rather than re-confirm the one already
+     there — the accumulation D12 exists to prevent, arriving through the back door.
+   - **The bounded connect is not theoretical, and it was measured.** Against a proxy that
+     accepts the TCP handshake and then says nothing — which is what a host that is *down*
+     looks like, and is not what closing a listener looks like — a write failed in **5.003 s**,
+     the configured bound, against asyncpg's own 60 s default. Detection of the outage took
+     **15.0 s** end to end: the time until something wanted to write, plus that bound.
+   - **Recovery detection is bounded by the backoff, and the backoff is the slow part.** Over a
+     4-minute outage the probe interval walked 30 → 60 → 120 → 240 s, so a database that came
+     back was noticed **222.8 s later** — by the probe, with no restart and no further advert,
+     and the two contacts observed during the outage were then written carrying their *latest*
+     state, one row each rather than one per observation. The mechanism does what D15 says;
+     the measurement is that the capped backoff, not the fault, is what dominates the time
+     spent reporting `degraded`. Left as designed, and recorded so the ceiling (300 s) is
+     understood as the real bound rather than the 30 s default.
+   - **Reception is unaffected by a database that is down, and that is now measured rather
+     than argued.** Throughout the outage every peer stayed resolvable by name, contacts stayed
+     addressable, and a replay of the whole corpus through a runtime whose database never
+     answers reproduces the same delivered count, duplicate count, contact count and path count
+     as a run with no database configured.
+   - **Contacts survive a `kill -9`.** A live receive-only run was killed outright — no
+     graceful stop, no flush, no dispose — and all four contacts it had heard were present on
+     the next start, because they are written when the advert is observed rather than at
+     shutdown. The restart reported `restored: entities=1 contacts=4 paths=4` **before the
+     first frame arrived**, which is the operational difference milestone 4 asked for: the run
+     that sends no longer has to hear the peer in that same run.
+   - **The write rate is low enough that the retention default stands** (open question 2). A
+     quiet live session recorded **101 rows/hour**, against the corpus-derived ≈191/hour — so
+     the 100 000-row cap is 22–41 days either way, and is left unchanged. **Path candidates
+     did not grow** (open question 1): 4 destinations, 4 rows, **1.00 candidate per
+     destination**. Both samples are one quiet session and neither settles the busy-mesh case;
+     they are recorded as not yet contradicting the defaults rather than as confirming them.
+   - **§13 unknown #4 stays open.** The milestone's live work was receive-only and involved no
+     peer exchange, so no opportunity arose to observe whether a node that learns us only from
+     a zero-hop advert floods its replies. Durable contacts make it cheap to test whenever one
+     does — the exchange no longer has to complete inside one process lifetime — and it is
+     left open rather than closed on inference.
 6. **Room server.** Login/ACL, history storage and sync, retention.
 7. **Greeter bot** and the bot plugin interface.
 8. **WebUI**, in the §8 priority order.
@@ -1037,7 +1166,10 @@ These need real hardware or real traffic to answer, and are cheap to resolve in-
    once multiple routes to the same peer exist. Still open: milestone 3 records every
    candidate route with its hop count and SNR, and deliberately scores none of them, and
    milestone 4 produced exactly one route to one peer, which is not the observation this
-   needs.
+   needs. Milestone 5 made the observation *accumulate*: candidates are persisted rather
+   than thrown away every restart, so the evidence now builds across runs instead of
+   starting over. Its own quiet session still showed **1.00 candidate per destination**,
+   which is the same non-observation as before, with a longer lever behind it.
 4. Whether a peer that learns us **only from a zero-hop advert** will flood its replies.
    Raised by milestone 4 rather than settled by it: a zero-hop advert carries no path, so the
    peer recorded our contact with `out_path_len = -1` (unknown) after hearing one, where the
@@ -1045,7 +1177,11 @@ These need real hardware or real traffic to answer, and are cheap to resolve in-
    a node does with the advert-learned form is untested. It matters the first time sighop is
    reachable by a node it has not been introduced to over a cable — milestone 5 or 6 —
    and the answer decides whether an entity must solicit a path before it can be replied to
-   cheaply.
+   cheaply. **Still open after milestone 5**, deliberately: that milestone's live work was
+   receive-only and involved no peer exchange, so no opportunity to observe it arose, and it
+   is not closed on inference. What did change is the cost of testing it — durable contacts
+   mean the exchange no longer has to complete inside one process lifetime, so the peer can
+   be adverted to on one run and answered on another.
 
 **Telemetry sub-command availability**, previously unknown #1, is settled from the firmware
 source: `getMCUTemperature()` comes from the shared `src/helpers/ESP32Board.h` and both the

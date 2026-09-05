@@ -19,16 +19,28 @@ convention, is what makes an unverified advert unrecordable. A contact may also
 be added from a hex public key an operator pasted, which is marked as having no
 verified advert behind it precisely so the two cannot be confused.
 
-In memory only for this milestone. Milestone 5 owns the `contact` table; a
-store that quietly persisted would be that milestone's design decision made by
-accident, which is the same rule `net/paths.py` follows.
+Milestone 5 gives the store a durable backing without changing any of that.
+Memory stays the authority — every lookup is answered from it, including while
+the database is unreachable — and a `sink` receives contacts to write in its own
+time (design D2). Three properties of that arrangement are load-bearing:
+
+* **The write never happens on the path that records the advert** (design D16).
+  `sink.offer` neither awaits nor raises, and a sink that refuses hands the
+  contact back rather than dropping it.
+* **A contact whose write has not landed is marked, not lost** (design D15).
+  Re-acquiring a contact means waiting for the peer to advert again and the
+  advert floor is 24 h, so the marker is what the recovery flush writes.
+* **Nothing here imports SQLAlchemy** (design D10). The sink is a protocol, the
+  records crossing it are this module's own `Contact`, and a run with no
+  database behaves exactly as it did before.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import Protocol
 
 import structlog
 
@@ -110,6 +122,27 @@ class ContactObservation:
     name_changed: tuple[str, str] | None = None
     """`(previous, current)` when a verified advert renamed a known key."""
 
+    changed: bool = True
+    """Whether anything worth storing moved.
+
+    False for the common case: the *same* advert reaching us again over another
+    path. Adverts flood, so one advert produces several receptions, and a write
+    per reception would make the write rate a function of how well we hear a
+    peer rather than of what we learned about it (design D2). `last_heard` moves
+    either way — it is in memory, and the next real change carries it."""
+
+
+class ContactSink(Protocol):
+    """Where contacts go to be written. Never awaits, never raises.
+
+    Implemented by the write-behind queue in `db/`. `offer` returning False
+    means the queue is full and the caller keeps the contact marked unpersisted —
+    the queue refuses rather than drops, because a lost contact costs a 24 h wait
+    (design D15, D16).
+    """
+
+    def offer(self, contact: Contact) -> bool: ...
+
 
 def parse_public_key(text: str) -> bytes:
     """A 32-byte public key from hex, with the failure naming what was wrong."""
@@ -126,13 +159,23 @@ def parse_public_key(text: str) -> bytes:
 
 
 class ContactStore:
-    """Contacts by public key, indexed by node hash, in memory only."""
+    """Contacts by public key, indexed by node hash. Memory is the authority."""
 
-    def __init__(self, *, logger: structlog.stdlib.BoundLogger | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        logger: structlog.stdlib.BoundLogger | None = None,
+        sink: ContactSink | None = None,
+    ) -> None:
         self._contacts: dict[bytes, Contact] = {}
         self._by_node_hash: dict[int, set[Contact]] = {}
         self._log = logger or get_logger(component="contacts")
+        self._sink = sink
+        self._unpersisted: set[bytes] = set()
         self.adverts_recorded = 0
+        self.restored = 0
+        self.writes_offered = 0
+        self.writes_refused = 0
 
     # --- Reading -----------------------------------------------------------
 
@@ -185,17 +228,30 @@ class ContactStore:
             )
             self._insert(contact)
             self._log.info("contact_created", **contact.as_json())
+            self._persist(contact)
             return ContactObservation(contact=contact, created=True)
 
         previous = None if existing.name is None else existing.name.text
         current = None if name is None else name.text
         renamed = previous != current and current is not None
+        # What makes this worth a write: a different advert, not another copy of
+        # the same one. A flood advert reaches us over several paths, and the
+        # advert's own timestamp is what tells the copies apart (design D2).
+        changed = (
+            renamed
+            or not existing.advert_verified
+            or existing.advert_timestamp != advert.timestamp
+            or existing.node_type != advert.appdata.node_type
+            or existing.flags != advert.appdata.flags
+        )
         existing.name = name if name is not None else existing.name
         existing.node_type = advert.appdata.node_type
         existing.flags = advert.appdata.flags
         existing.last_heard = at
         existing.advert_timestamp = advert.timestamp
         existing.advert_verified = True
+        if changed:
+            self._persist(existing)
         if renamed:
             # The key is the identity and the name is advert content: a name
             # that moves is either a rename or an impersonation, and only the
@@ -208,9 +264,10 @@ class ContactStore:
             return ContactObservation(
                 contact=existing,
                 created=False,
+                changed=True,
                 name_changed=(previous or "(unnamed)", current or "(unnamed)"),
             )
-        return ContactObservation(contact=existing, created=False)
+        return ContactObservation(contact=existing, created=False, changed=changed)
 
     def add_public_key(self, key: bytes | str) -> Contact:
         """Add a contact from a public key alone, for a peer not yet heard.
@@ -228,11 +285,81 @@ class ContactStore:
         contact = Contact(public_key=public_key, advert_verified=False)
         self._insert(contact)
         self._log.info("contact_added_manually", **contact.as_json())
+        self._persist(contact)
         return contact
 
     def _insert(self, contact: Contact) -> None:
         self._contacts[contact.public_key] = contact
         self._by_node_hash.setdefault(contact.node_hash, set()).add(contact)
+
+    # --- Durability (design D2, D15, D16) ----------------------------------
+
+    def restore(self, contacts: Iterable[Contact]) -> int:
+        """Adopt contacts read from the store, before any traffic is processed.
+
+        Restored contacts are *not* offered back to the sink: they came from it,
+        and re-writing them at startup would turn every restart into a full
+        table rewrite. They are not marked unpersisted either, for the same
+        reason — the database already holds them.
+        """
+        restored = 0
+        for contact in contacts:
+            if contact.public_key in self._contacts:
+                continue
+            self._insert(contact)
+            restored += 1
+        self.restored += restored
+        self._log.info("contacts_restored", outcome="success", restored=restored)
+        return restored
+
+    def _persist(self, contact: Contact) -> None:
+        """Hand a changed contact to the sink. Never awaits, never raises.
+
+        The contact is marked unpersisted the moment it is offered and stays
+        marked until a write actually lands: queued is not written, and the
+        difference is the whole of what the recovery backfill acts on.
+        """
+        if self._sink is None:
+            return
+        self._unpersisted.add(contact.public_key)
+        self.writes_offered += 1
+        if not self._sink.offer(contact):
+            # The queue refuses rather than drops (design D16). The marker is
+            # what carries the contact now, and the next flush writes it.
+            self.writes_refused += 1
+            self._log.error(
+                "contact_write_queue_full",
+                outcome="error",
+                public_key=contact.public_key.hex(),
+                awaiting_backfill=len(self._unpersisted),
+            )
+
+    def mark_persisted(self, contact: Contact) -> None:
+        """A write landed. Clearing a marker that was never set is harmless."""
+        self._unpersisted.discard(contact.public_key)
+
+    def mark_unpersisted(self, contact: Contact) -> None:
+        """A write did not land. Idempotent, and safe to call redundantly: the
+        write is an upsert on the public key, so a marker wrongly set costs one
+        extra write and a marker wrongly cleared is what the tests target."""
+        self._unpersisted.add(contact.public_key)
+
+    def unpersisted(self) -> tuple[Contact, ...]:
+        """Every contact whose latest state is not known to be stored.
+
+        Latest state, not every observation: the write is an upsert on the
+        public key, so a peer observed several times during an outage lands
+        once rather than replaying each observation (design D15).
+        """
+        return tuple(
+            contact
+            for key, contact in self._contacts.items()
+            if key in self._unpersisted
+        )
+
+    @property
+    def awaiting_backfill(self) -> int:
+        return len(self._unpersisted)
 
     # --- Selection ---------------------------------------------------------
 
@@ -286,4 +413,6 @@ class ContactStore:
             ),
             "node_hashes": len(self._by_node_hash),
             "adverts_recorded": self.adverts_recorded,
+            "restored": self.restored,
+            "awaiting_backfill": self.awaiting_backfill,
         }

@@ -4,9 +4,12 @@ version = "0.1.0"
 description = "A virtualization platform for MeshCore over a KISS modem"
 requires-python = ">=3.13"
 dependencies = [
+    "alembic>=1.13",
+    "asyncpg>=0.30",
     "cryptography>=43.0",
     "pynacl>=1.5",
     "pyserial-asyncio>=0.6",
+    "sqlalchemy[asyncio]>=2.0",
     "structlog>=24.1",
 ]
 
@@ -28,6 +31,12 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    # Tests that need Postgres. They isolate in a throwaway schema (design D11)
+    # and skip when neither SIGHOP_TEST_DATABASE_URL nor DATABASE_URL is set —
+    # no test may require a database to pass.
+    "database: exercises persistence against a real PostgreSQL server",
+]
 # The corpus harness imports its loader as `tests.protocol.corpus`, so the repo
 # root must be importable.
 pythonpath = ["."]
@@ -109,5 +118,5 @@ disable_error_code = ["union-attr", "index"]
 
 [[tool.mypy.overrides]]
 # structlog's stdlib BoundLogger and pyserial-asyncio ship partial or absent stubs.
-module = ["serial_asyncio.*", "serial.*", "nacl.*"]
+module = ["serial_asyncio.*", "serial.*", "nacl.*", "asyncpg.*"]
 ignore_missing_imports = true
