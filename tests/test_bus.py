@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
@@ -307,7 +308,7 @@ async def test_the_rx_event_carries_airtime_when_the_radio_is_known(record) -> N
     pipeline.ingest(record)
 
     fields = logger.events[0][2]
-    assert fields["airtime_ms"] > 0
+    assert cast(float, fields["airtime_ms"]) > 0
 
 
 async def test_the_rx_event_omits_airtime_when_the_radio_is_unknown(record) -> None:

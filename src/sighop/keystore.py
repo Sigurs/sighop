@@ -40,9 +40,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.protocol.identity import (
     PUB_KEY_SIZE,
     SEED_SIZE,
@@ -195,7 +193,7 @@ def create_keyfile(
     avoid_node_hashes: frozenset[int] = frozenset(),
     identity: LocalIdentity | None = None,
     burned: bool = False,
-    logger: structlog.stdlib.BoundLogger | None = None,
+    logger: Logger | None = None,
 ) -> Keyfile:
     """Generate an identity and write it, refusing to touch an existing file.
 
@@ -257,7 +255,7 @@ def _permission_warning(path: Path) -> str | None:
 
 
 def load_keyfile(
-    path: Path, *, logger: structlog.stdlib.BoundLogger | None = None
+    path: Path, *, logger: Logger | None = None
 ) -> Keyfile:
     """Load an identity from a keyfile, checking what the file claims."""
     log = logger or get_logger(component="keystore")
@@ -368,7 +366,7 @@ class EntityRegistry:
     collide, and reporting it differently would let the mixed case through.
     """
 
-    def __init__(self, *, logger: structlog.stdlib.BoundLogger | None = None) -> None:
+    def __init__(self, *, logger: Logger | None = None) -> None:
         self._entities: list[LocalEntity] = []
         self._log = logger or get_logger(component="keystore")
 

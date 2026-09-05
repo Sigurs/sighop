@@ -24,8 +24,6 @@ import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-import structlog
-
 from sighop.db.engine import Database, Succeeded
 from sighop.db.packetlog import (
     DEFAULT_PRUNE_INTERVAL_SECONDS,
@@ -42,7 +40,7 @@ from sighop.db.repositories import (
     PathRepository,
 )
 from sighop.db.writer import WriteBehind
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.bus import Submission, TxOutcome
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.paths import LearnedPath, PathKey, PathStore
@@ -78,7 +76,7 @@ class Persistence:
     written, because a replayed reception carries an earlier session's timestamps
     and storing them would make a week-old contact look like a live one."""
 
-    logger: structlog.stdlib.BoundLogger | None = None
+    logger: Logger | None = None
 
     entities: EntityRepository = field(init=False)
     contacts: ContactRepository = field(init=False)

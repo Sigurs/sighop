@@ -265,7 +265,7 @@ def test_an_active_override_is_visible_for_the_status_line() -> None:
     assert sched.active_overrides() == [stub]
     summary = sched.as_json()
     assert summary["active_overrides"] == 1
-    assert summary["stubs"][0]["override_interval_seconds"] == 300  # type: ignore[index]
+    assert summary["stubs"][0]["override_interval_seconds"] == 300
 
 
 # --- The adverts themselves ------------------------------------------------
@@ -384,7 +384,9 @@ async def test_a_loaded_identity_adverts_under_the_same_rules_as_a_stub() -> Non
     stub.next_flood_at = clock.now()
     sched.tick()
     payload = decode_packet(sink.submissions[0].packet).payload
-    verified = verify_advert(parse_advert(payload))
+    parsed = parse_advert(payload)
+    assert not isinstance(parsed, DecodeFailure)
+    verified = verify_advert(parsed)
     assert isinstance(verified, VerifiedAdvert)
     assert verified.public_key == identity.public_key
 

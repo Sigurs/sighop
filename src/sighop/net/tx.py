@@ -36,9 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.airtime import require_params, time_on_air_ms
 from sighop.net.bus import PriorityClass, Submission, TxHandle, TxOutcome, TxResult
 from sighop.net.rx import new_packet_id
@@ -362,7 +360,7 @@ class TxScheduler:
         busy_delay: float = DEFAULT_BUSY_DELAY_SECONDS,
         on_transmitted: Callable[[bytes, TxOutcome], None] | None = None,
         on_resolved: Callable[[Submission, TxOutcome], None] | None = None,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self.on_transmitted = on_transmitted
         """Called with the bytes of every packet that actually reached the air.

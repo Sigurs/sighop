@@ -406,7 +406,7 @@ async def test_an_entity_load_failure_logs_neither_the_seed_nor_the_secret(
         def info(self, event: str, **fields: object) -> None:
             events.append({"event": event, **fields})
 
-    database.logger = Recorder()  # type: ignore[assignment]
+    database.logger = Recorder()
     store = EntityRepository(database=database)
     identity = generate_identity()
     await store.store(name="roomy", identity=identity, secret=SECRET)

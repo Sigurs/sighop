@@ -21,9 +21,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.radio.capture import CAPTURE_META_KIND, TX_FRAME_KIND
 from sighop.radio.modem import ModemEvent, RxEvent, RxMeta, UnparsedEvent
 
@@ -60,11 +58,11 @@ class CaptureReplay:
     """`tx_frame` records passed over: frames sighop sent, not receptions."""
 
     _header_line: int | None = None
-    _logger: structlog.stdlib.BoundLogger | None = None
+    _logger: Logger | None = None
 
     @classmethod
     def open(
-        cls, path: Path, *, logger: structlog.stdlib.BoundLogger | None = None
+        cls, path: Path, *, logger: Logger | None = None
     ) -> CaptureReplay:
         """Read the file's provenance, so a caller can report it before the
         first frame is replayed.

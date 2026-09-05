@@ -35,9 +35,7 @@ import datetime as dt
 import random
 from dataclasses import dataclass, field, replace
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.bus import PriorityClass, Submission, TxHandle
 from sighop.net.tx import Clock, SystemClock
 from sighop.protocol.crypto import sign_advert
@@ -201,7 +199,7 @@ class AdvertScheduler:
     jitter_fraction: float = DEFAULT_JITTER_FRACTION
     deadline_seconds: float = DEFAULT_ADVERT_DEADLINE_SECONDS
     rng: random.Random = field(default_factory=random.Random)
-    logger: structlog.stdlib.BoundLogger | None = None
+    logger: Logger | None = None
     stubs: list[EntityStub] = field(default_factory=list)
     last_global_flood_at: dt.datetime | None = None
     deferrals: int = 0

@@ -30,9 +30,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Protocol
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.airtime import time_on_air_ms
 from sighop.net.dedup import DedupCache, Duplicate
 from sighop.net.paths import PathStore
@@ -217,7 +215,7 @@ class NetworkBus:
         self,
         *,
         tx_sink: TxSink | None = None,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
         default_queue_size: int = DEFAULT_QUEUE_SIZE,
     ) -> None:
         self._subscriptions: list[Subscription] = []
@@ -324,7 +322,7 @@ class IngressPipeline:
     bus: NetworkBus
     dedup: DedupCache = field(default_factory=DedupCache)
     paths: PathStore = field(default_factory=PathStore)
-    logger: structlog.stdlib.BoundLogger | None = None
+    logger: Logger | None = None
     radio: RadioParams | None = None
     """The board's readback, when known: it is what lets the RX event carry the
     `airtime_ms` DESIGN.md §9 asks for. Absent rather than guessed when it is

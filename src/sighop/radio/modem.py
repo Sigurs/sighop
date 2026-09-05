@@ -20,9 +20,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.radio.kiss import (
     FrameEvent,
     KissFrame,
@@ -320,7 +318,7 @@ class Modem:
         *,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         handshake_timeout: float | None = None,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._transport = transport
         self._radio_params = radio_params

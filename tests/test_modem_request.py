@@ -13,7 +13,7 @@ import contextlib
 
 import pytest
 
-from sighop.radio.kiss import KissFrame
+from sighop.radio.kiss import FrameEvent, KissFrame
 from sighop.radio.modem import (
     SUB_ERROR,
     SUB_GET_DEVICE_NAME,
@@ -48,7 +48,7 @@ class QueueTransport:
     def __init__(self, *, answer_set_radio: bool = True) -> None:
         self.sent: list[tuple[int, bytes]] = []
         self.opened = False
-        self._queue: asyncio.Queue[KissFrame | None] = asyncio.Queue()
+        self._queue: asyncio.Queue[FrameEvent | None] = asyncio.Queue()
         self._answer_set_radio = answer_set_radio
 
     async def open(self) -> None:
@@ -70,7 +70,7 @@ class QueueTransport:
         ):
             self.push(sub_frame(SUB_OK))
 
-    def push(self, *frames: KissFrame) -> None:
+    def push(self, *frames: FrameEvent) -> None:
         for frame in frames:
             self._queue.put_nowait(frame)
 

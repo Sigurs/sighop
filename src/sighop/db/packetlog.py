@@ -21,11 +21,9 @@ import datetime as dt
 import uuid
 from collections.abc import Awaitable, Callable
 
-import structlog
-
 from sighop.db.engine import Succeeded
 from sighop.db.repositories import PacketLogRepository, PacketLogRow
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.bus import Submission, TxOutcome
 from sighop.net.rx import RxRecord, outcome_fields
 
@@ -115,7 +113,7 @@ class PacketLogPruner:
         *,
         interval: float = DEFAULT_PRUNE_INTERVAL_SECONDS,
         sleep: Sleep = asyncio.sleep,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._repository = repository
         self.interval = interval

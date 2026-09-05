@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
-from typing import IO, TextIO, cast
+from typing import IO, Any, Protocol, TextIO, cast
 
 import structlog
 
@@ -77,9 +77,19 @@ def configure_logging(
     )
 
 
-def get_logger(**initial_context: object) -> structlog.stdlib.BoundLogger:
+class Logger(Protocol):
+    """The two wide-event methods DESIGN.md §9 allows — nothing else in this
+    codebase calls anything else on a logger, so nothing else needs to be
+    fakeable in a test double.
+    """
+
+    def info(self, event: str, **fields: object) -> Any: ...
+    def error(self, event: str, **fields: object) -> Any: ...
+
+
+def get_logger(**initial_context: object) -> Logger:
     return cast(
-        structlog.stdlib.BoundLogger,
+        Logger,
         structlog.get_logger().bind(
             service="sighop",
             version=package_version(),
@@ -92,7 +102,7 @@ def get_logger(**initial_context: object) -> structlog.stdlib.BoundLogger:
 
 @contextlib.contextmanager
 def wide_event(
-    logger: structlog.stdlib.BoundLogger, event_type: str, **context: object
+    logger: Logger, event_type: str, **context: object
 ) -> Iterator[dict[str, object]]:
     """Time and log one unit of work as a single wide event.
 

@@ -15,9 +15,7 @@ import sys
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from typing import IO
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
     Summary,
     render_detail_line,
@@ -54,7 +52,7 @@ class MonitorRun:
         summary_interval: float = DEFAULT_SUMMARY_INTERVAL_SECONDS,
         reconnects: Callable[[], int] = lambda: 0,
         reboots: Callable[[], int] = lambda: 0,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._source = source
         self._startup = startup

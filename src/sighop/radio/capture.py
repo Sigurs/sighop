@@ -23,9 +23,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import IO, Protocol
 
-import structlog
-
-from sighop.logging import commit_hash, get_logger, package_version
+from sighop.logging import Logger, commit_hash, get_logger, package_version
 from sighop.radio.modem import ModemEvent, RxEvent
 from sighop.radio.probe import ProbeResult
 
@@ -207,7 +205,7 @@ class CaptureRun:
         *,
         probe_result: ProbeResult | None = None,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._modem = modem
         self._injected_probe_result = probe_result

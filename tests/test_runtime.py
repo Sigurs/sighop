@@ -14,6 +14,7 @@ import datetime as dt
 import io
 import json
 from collections.abc import AsyncIterator
+from typing import cast
 
 import pytest
 
@@ -40,7 +41,7 @@ async def _never_ends() -> AsyncIterator[ModemEvent]:
     """A source that stays open, so a test controls when the run ends."""
     forever = asyncio.Event()
     await forever.wait()
-    yield  # pragma: no cover - unreachable, and what makes this a generator
+    yield cast(ModemEvent, None)  # pragma: no cover - unreachable, and what makes this a generator
 
 
 async def run_briefly(run: Runtime, *, turns: int = 60) -> None:
@@ -101,7 +102,7 @@ async def test_receptions_reach_a_subscriber() -> None:
     run = runtime(_events(), out=out)
     seen: list[str] = []
 
-    async def handler(record) -> None:  # type: ignore[no-untyped-def]
+    async def handler(record) -> None:
         seen.append(record.packet_id)
 
     run.bus.subscribe("entity", handler=handler, queue_size=1024)

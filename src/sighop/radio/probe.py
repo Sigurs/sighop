@@ -21,9 +21,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-import structlog
-
-from sighop.logging import get_logger, wide_event
+from sighop.logging import Logger, get_logger, wide_event
 from sighop.radio.modem import (
     ERROR_NO_CALLBACK,
     ERROR_UNKNOWN_CMD,
@@ -240,7 +238,7 @@ async def run_probe(
     requester: Requester,
     configured: RadioParams,
     *,
-    logger: structlog.stdlib.BoundLogger | None = None,
+    logger: Logger | None = None,
 ) -> ProbeResult:
     """Ask the board about itself. Never raises; every failure is a value."""
     log = logger or get_logger(component="modem")

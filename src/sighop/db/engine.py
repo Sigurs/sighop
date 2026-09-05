@@ -35,7 +35,6 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
-import structlog
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
@@ -47,7 +46,7 @@ from sqlalchemy.ext.asyncio import (
 
 from sighop.config import DatabaseConfig
 from sighop.db import migrations
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 
 DEFAULT_PROBE_INTERVAL_SECONDS = 30.0
 """How soon a degraded runtime looks again. Short enough that an operator
@@ -231,7 +230,7 @@ class Database:
     """One engine, its sessions, and the containment around every use of them."""
 
     config: DatabaseConfig
-    logger: structlog.stdlib.BoundLogger | None = None
+    logger: Logger | None = None
     sleep: Sleep = asyncio.sleep
     probe_interval: float = DEFAULT_PROBE_INTERVAL_SECONDS
     max_probe_interval: float = MAX_PROBE_INTERVAL_SECONDS

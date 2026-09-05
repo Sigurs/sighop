@@ -23,12 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-import structlog
-
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import LoadedEntity
 from sighop.keystore import EntityRegistry, LocalEntity
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
     PERSISTENCE_OFF,
     render_detail_line,
@@ -126,7 +124,7 @@ class Runtime:
     radio: RadioParams | None = None
     clock: Clock = field(default_factory=SystemClock)
     out: IO[str] | None = None
-    logger: structlog.stdlib.BoundLogger | None = None
+    logger: Logger | None = None
     capture_writer: CaptureWriter | None = None
     """Records the frames as they arrive, through the same writer `capture` and
     `monitor --capture` use — one implementation of the format, so an overnight

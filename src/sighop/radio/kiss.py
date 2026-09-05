@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import Protocol
 
 import serial_asyncio
-import structlog
 
-from sighop.logging import get_logger, wide_event
+from sighop.logging import Logger, get_logger, wide_event
 
 _FEND = 0xC0
 _FESC = 0xDB
@@ -206,7 +205,7 @@ class KissTransport:
         *,
         backoff_initial: float = 0.5,
         backoff_cap: float = 30.0,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self._connect = connect
         self._backoff_initial = backoff_initial

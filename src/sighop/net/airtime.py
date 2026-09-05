@@ -37,9 +37,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.radio.modem import RadioParams
 from sighop.radio.probe import Absent, Requester, probe_airtime
 
@@ -246,7 +244,7 @@ async def cross_check_airtime(
     params: RadioParams,
     *,
     lengths: Sequence[int] = CHECK_LENGTHS,
-    logger: structlog.stdlib.BoundLogger | None = None,
+    logger: Logger | None = None,
 ) -> CrossCheck:
     """Ask the board its estimate for each length and compare against ours.
 

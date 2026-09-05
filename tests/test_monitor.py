@@ -292,7 +292,7 @@ async def test_wide_events_go_to_the_log_stream_not_the_rendered_output():
         out=out,
         # A recorder standing in for the wide-event logger: the pipeline only
         # ever calls .info/.error on it.
-        logger=logger,  # type: ignore[arg-type]
+        logger=logger,
     )
     task = asyncio.create_task(run.run())
     await asyncio.sleep(0.02)

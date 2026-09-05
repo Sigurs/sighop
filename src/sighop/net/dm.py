@@ -52,9 +52,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.contacts import Contact, ContactStore
@@ -464,7 +462,7 @@ class DirectMessenger:
         radio: RadioParams | None = None,
         allow_flood: bool = False,
         on_event: Callable[[DirectMessageEvent], None] | None = None,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         self.contacts = contacts
         self.paths = paths

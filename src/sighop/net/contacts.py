@@ -42,9 +42,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.net.bus import NetworkBus, Subscription
 from sighop.net.rx import AdvertOutcome, RxRecord
 from sighop.protocol.crypto import VerifiedAdvert
@@ -164,7 +162,7 @@ class ContactStore:
     def __init__(
         self,
         *,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
         sink: ContactSink | None = None,
     ) -> None:
         self._contacts: dict[bytes, Contact] = {}

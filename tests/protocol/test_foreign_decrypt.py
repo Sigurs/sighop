@@ -45,6 +45,7 @@ from sighop.protocol.crypto import (
 from sighop.protocol.packet import PayloadType, decode
 from sighop.protocol.payloads import (
     DirectEnvelope,
+    TextMessageBody,
     TextType,
     parse_payload,
     parse_text_message_body,
@@ -215,6 +216,7 @@ def test_the_peers_acknowledgement_matches_the_checksum_we_computed(
     )
     assert plaintext is not None
     body = parse_text_message_body(plaintext)
+    assert isinstance(body, TextMessageBody)
 
     computed = ack_checksum_for(body, first_transmit_identity_public_key())
 
@@ -252,6 +254,7 @@ def test_our_acknowledgement_is_the_one_the_peer_accepted(shared_secret) -> None
     )
     assert plaintext is not None
     body = parse_text_message_body(plaintext)
+    assert isinstance(body, TextMessageBody)
 
     computed = ack_checksum_for(body, PEER_PUBLIC_KEY)
 

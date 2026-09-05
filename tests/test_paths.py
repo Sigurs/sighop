@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
@@ -344,7 +345,7 @@ def test_the_store_is_bounded_by_destination_count(corpus_records) -> None:
         store.observe(record)
 
     assert store.destination_count <= 5
-    assert store.as_json()["evictions"] > 0
+    assert cast(int, store.as_json()["evictions"]) > 0
 
 
 def test_candidates_per_destination_are_bounded(flood_advert) -> None:
@@ -380,4 +381,4 @@ def test_the_whole_corpus_learns_without_error(corpus_records) -> None:
     assert learned > 0
     summary = store.as_json()
     assert summary["destinations"] == store.destination_count
-    assert summary["ambiguous_destinations"] <= summary["destinations"]
+    assert cast(int, summary["ambiguous_destinations"]) <= summary["destinations"]

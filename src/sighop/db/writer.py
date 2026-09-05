@@ -27,9 +27,7 @@ import contextlib
 from collections import deque
 from collections.abc import Awaitable, Callable
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 
 DEFAULT_CAPACITY = 1024
 DEFAULT_BATCH_SIZE = 64
@@ -48,7 +46,7 @@ class WriteBehind[T]:
         capacity: int = DEFAULT_CAPACITY,
         batch_size: int = DEFAULT_BATCH_SIZE,
         drop_oldest: bool = True,
-        logger: structlog.stdlib.BoundLogger | None = None,
+        logger: Logger | None = None,
     ) -> None:
         if capacity <= 0 or batch_size <= 0:
             raise ValueError("capacity and batch_size must be positive")

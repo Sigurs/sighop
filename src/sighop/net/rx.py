@@ -28,9 +28,7 @@ import uuid
 from collections.abc import AsyncIterable, AsyncIterator, Mapping
 from dataclasses import dataclass
 
-import structlog
-
-from sighop.logging import get_logger
+from sighop.logging import Logger, get_logger
 from sighop.protocol.crypto import AdvertVerification, VerifiedAdvert, verify_advert
 from sighop.protocol.packet import Packet, PayloadType, RouteType
 from sighop.protocol.packet import decode as decode_packet
@@ -253,7 +251,7 @@ def _payload_outcome(packet: Packet) -> RxOutcome:
 async def decode_stream(
     events: AsyncIterable[ModemEvent],
     *,
-    logger: structlog.stdlib.BoundLogger | None = None,
+    logger: Logger | None = None,
 ) -> AsyncIterator[RxRecord]:
     """Decode a stream of modem events, emitting one *Packet RX* wide event
     per frame.
@@ -307,7 +305,7 @@ def outcome_fields(record: RxRecord) -> dict[str, object]:
 def emit_packet_rx(
     record: RxRecord,
     *,
-    logger: structlog.stdlib.BoundLogger,
+    logger: Logger,
     extra: Mapping[str, object] | None = None,
 ) -> None:
     """The DESIGN.md §9 *Packet RX* wide event, once per frame.

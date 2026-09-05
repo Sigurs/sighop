@@ -8,6 +8,8 @@ and changes nothing: we keep using the computed value either way.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from sighop.net.airtime import (
@@ -112,7 +114,8 @@ async def test_a_disagreeing_board_is_reported_at_error_level() -> None:
     (_level, event, fields) = next(entry for entry in logger.events if entry[0] == "error")
     assert event == "airtime_cross_check_mismatch"
     # Both figures present: a mismatch nobody can act on is not worth logging.
-    mismatch = next(c for c in fields["checks"] if c["payload_len"] == 64)  # type: ignore[union-attr,index]
+    checks = cast("list[dict[str, object]]", fields["checks"])
+    mismatch = next(c for c in checks if c["payload_len"] == 64)
     assert mismatch["reported_ms"] == board[64]
     assert mismatch["computed_ms"] == pytest.approx(time_on_air_ms(64, EU868_NARROW), abs=0.01)
 

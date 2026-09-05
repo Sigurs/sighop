@@ -8,6 +8,7 @@ nowhere in the output.
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 import pytest
 
@@ -305,7 +306,7 @@ def test_rendering_touches_no_io(snr):
 def _status(**overrides):
     from sighop.net.tx import SchedulerStats, SchedulerStatus
 
-    fields = {
+    fields: dict[str, Any] = {
         "transmit_enabled": False,
         "duty_cycle_pct": 12.5,
         "duty_cycle_used_ms": 45_000.0,
@@ -322,7 +323,7 @@ def _status(**overrides):
 def _dedup_stats(**overrides):
     from sighop.net.dedup import DedupStats
 
-    fields = {
+    fields: dict[str, Any] = {
         "considered": 100,
         "duplicates": 11,
         "passed_through": 89,
