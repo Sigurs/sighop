@@ -10,6 +10,8 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
+from sighop.bots import drivers as bot_drivers
+from sighop.bots.base import BotConfigError, BotMode, UnknownDriverError
 from sighop.config import (
     SECRET_KEY_VARIABLE,
     Config,
@@ -30,13 +32,18 @@ from sighop.db.engine import (
 from sighop.db.migrations import MigrationsNotFoundError
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
+    BOT_ENTITY_TYPE,
+    BotExistsError,
+    BotRecord,
     EntityExistsError,
+    EntityHasRoleError,
     EntityLoadError,
     EntityRecord,
     EntityRepository,
     LoadedEntity,
     RoomExistsError,
     RoomRecord,
+    advert_config_for,
 )
 from sighop.db.sealing import SealError
 from sighop.keystore import (
@@ -46,7 +53,11 @@ from sighop.keystore import (
     load_keyfile,
 )
 from sighop.logging import configure_logging, get_logger
-from sighop.monitor.render import render_replay_startup, render_startup
+from sighop.monitor.render import (
+    render_bot_mode_change,
+    render_replay_startup,
+    render_startup,
+)
 from sighop.monitor.run import MonitorRun
 from sighop.net.airtime import cross_check_airtime
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
@@ -326,6 +337,16 @@ def build_parser() -> argparse.ArgumentParser:
         "import", help="store a keyfile's identity, sealing its seed (needs a database)"
     )
     keys_import.add_argument("keyfile", type=Path, help="the keyfile to import")
+    keys_import.add_argument(
+        "--bot",
+        action="store_true",
+        help=(
+            "store the identity as a bot. A bot adverts as an ordinary chat node "
+            "— it is a companion to every other node — so only the stored type "
+            "tells them apart, and it is an explicit choice here rather than a "
+            "side effect of binding a bot to the identity later"
+        ),
+    )
     keys_export = key_actions.add_parser(
         "export",
         help=(
@@ -462,6 +483,122 @@ def build_parser() -> argparse.ArgumentParser:
         room_history,
     ):
         _add_database_url_argument(room_parser)
+
+    bot = subparsers.add_parser(
+        "bot",
+        help="create and administer bots on stored identities",
+    )
+    bot_actions = bot.add_subparsers(dest="bot_command", required=True)
+
+    bot_create = bot_actions.add_parser(
+        "create", help="bind a driver to a stored identity, in observe mode"
+    )
+    bot_create.add_argument(
+        "identity", help="the stored entity, by exact name or hex public key prefix"
+    )
+    bot_create.add_argument(
+        "--driver",
+        required=True,
+        help=(
+            "the driver to run, named explicitly. An unknown name is refused "
+            f"with the list of what exists ({', '.join(bot_drivers.driver_names())})"
+        ),
+    )
+
+    bot_actions.add_parser("list", help="list the bots this database holds")
+
+    bot_show = bot_actions.add_parser(
+        "show", help="show one bot's driver, mode, configuration and limits"
+    )
+    bot_show.add_argument("bot", help="the bot, by the name of the identity it runs on")
+
+    bot_enable = bot_actions.add_parser("enable", help="let a bot run again")
+    bot_enable.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_disable = bot_actions.add_parser(
+        "disable", help="stop a bot running; it stays configured and is reported as disabled"
+    )
+    bot_disable.add_argument("bot", help="the bot, by the name of the identity it runs on")
+
+    bot_mode = bot_actions.add_parser(
+        "mode",
+        help=(
+            "switch a bot between observe and active. Active is what lets it "
+            "transmit at all; the run's --enable-transmit flag still applies"
+        ),
+    )
+    bot_mode.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_mode.add_argument(
+        "mode", choices=[mode.value for mode in BotMode], help="observe or active"
+    )
+
+    bot_set = bot_actions.add_parser(
+        "set", help="set one driver configuration value, validated by the driver"
+    )
+    bot_set.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_set.add_argument("key", help="the setting's name")
+    bot_set.add_argument("value", help="the value, parsed and checked by the driver")
+
+    bot_greeted = bot_actions.add_parser(
+        "greeted",
+        help=(
+            "inspect or change which contacts a greeter considers already "
+            "greeted. Clearing one greets it the next time it adverts"
+        ),
+    )
+    bot_greeted.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_greeted.add_argument(
+        "peer",
+        nargs="?",
+        default=None,
+        help="one contact, by exact name or hex public key prefix. Omit to list them all",
+    )
+    bot_greeted.add_argument(
+        "--clear",
+        action="store_true",
+        help="forget this contact's greeting record, so it is greeted when it next adverts",
+    )
+    bot_greeted.add_argument(
+        "--set",
+        action="store_true",
+        dest="set_greeted",
+        help="record this contact as greeted, so it never is",
+    )
+    bot_greeted.add_argument(
+        "--seed",
+        action="store_true",
+        help=(
+            "record every contact currently known as already greeted, without "
+            "touching records that already exist. What `bot create` does, for a "
+            "greeter whose seeding did not complete"
+        ),
+    )
+
+    bot_state = bot_actions.add_parser(
+        "state", help="inspect or clear a bot's durable state"
+    )
+    bot_state.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_state.add_argument(
+        "--clear",
+        action="store_true",
+        help=(
+            "delete everything the bot has stored. For a greeter this discards "
+            "its greeting records, so previously greeted nodes may be greeted "
+            "again the next time they advert and create a contact"
+        ),
+    )
+
+    for bot_parser in (
+        bot_create,
+        bot_actions.choices["list"],
+        bot_show,
+        bot_enable,
+        bot_disable,
+        bot_mode,
+        bot_set,
+        bot_greeted,
+        bot_state,
+    ):
+        _add_database_url_argument(bot_parser)
 
     database = subparsers.add_parser(
         "db", help="apply and report database migrations (never done by `run`)"
@@ -729,6 +866,18 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    if args.bot and keyfile.node_type != NodeType.CHAT:
+        # A bot is a companion to every other node and adverts as one, so the
+        # keyfile has to say so too. Forcing the node type silently would make
+        # the stored identity disagree with the file it came from.
+        print(
+            f"{keyfile.path} adverts as {NodeType(keyfile.node_type).name}; a bot "
+            "presents itself to the mesh as a chat node, indistinguishable from a "
+            "companion. Create the identity with --node-type CHAT",
+            file=sys.stderr,
+        )
+        return 2
+
     async def store_it(store: EntityRepository) -> Outcome[EntityRecord]:
         existing = await store.get(keyfile.public_key)
         if isinstance(existing, Failed):
@@ -744,6 +893,8 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
             identity=keyfile.identity,
             secret=secret,
             node_type=keyfile.node_type,
+            entity_type=BOT_ENTITY_TYPE if args.bot else None,
+            advert_config=advert_config_for(NodeType.CHAT) if args.bot else None,
         )
 
     try:
@@ -758,6 +909,8 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
     print(f"imported   {keyfile.path}", file=out)
     print(f"entity_id  {record.id}", file=out)
     print(f"name       {record.name}", file=out)
+    print(f"type       {record.type}", file=out)
+    print(f"node_type  {NodeType(record.node_type).name}", file=out)
     print(f"public_key {record.public_key.hex()}", file=out)
     print(f"node_hash  0x{record.node_hash:02x}", file=out)
     print("the seed is sealed under SIGHOP_SECRET_KEY and is not stored in the clear", file=out)
@@ -1367,6 +1520,543 @@ def _room_history(args: argparse.Namespace, database: DatabaseConfig, out: IO[st
     return 0
 
 
+# --- Bots (milestone 7) -----------------------------------------------------
+#
+# The `sighop room` shape, deliberately (design D3), with one rule of its own:
+# **every output that changes what a bot may do says what it may now do.**
+# Creating one says it will transmit nothing until it is made active; making it
+# active says the run's transmit flag still applies; clearing its state says
+# what the bot will do again. A safety posture an operator has to infer is a
+# safety posture that gets inferred wrongly.
+
+TRANSMIT_STILL_GATED = (
+    "transmission still requires the run's --enable-transmit flag, and stays "
+    "under the duty-cycle ceiling"
+)
+
+CLEARING_STATE_FORGETS = (
+    "the bot has forgotten everything it recorded, the seed included. A greeter "
+    "will greet a previously greeted node again the next time it adverts"
+)
+
+SEEDING_IS_WHAT_A_NEW_GREETER_OWES = (
+    "recorded as already greeted, so this greeter starts owing nothing to the "
+    "contacts this node already knew. Release one with `sighop bot greeted "
+    "{name} <peer> --clear`"
+)
+"""Design D7: the debt is data an operator can read and edit, rather than a gate
+that also refuses the cases the gate was never meant to refuse. Printed at the
+moment it is incurred, because a seeded contact and a greeted one are
+indistinguishable from the outside afterwards."""
+
+
+async def _seed_greeted(persistence: Persistence, record: BotRecord) -> Outcome[int]:
+    """Record every contact this node already knows as already greeted.
+
+    Read through `ContactRepository` rather than the runtime's store, because
+    this runs from the command line with no runtime: the durable table *is* the
+    platform's memory of the mesh, which is exactly what is being seeded from.
+    """
+    from sighop.bots.greeter import SEEDED, greeted_key
+
+    contacts = await persistence.contacts.load_all()
+    if isinstance(contacts, Failed):
+        return contacts
+    entries: dict[str, object] = {
+        greeted_key(contact.public_key): {
+            "outcome": SEEDED,
+            "at": _now_iso(),
+            "name": contact.display_name,
+        }
+        for contact in contacts.value
+    }
+    return await persistence.bot_state.set_many(record.id, entries)
+
+
+def _now_iso() -> str:
+    import datetime as dt
+
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
+def _render_bot(record: BotRecord, out: IO[str]) -> None:
+    """One bot's configuration. No key material appears here and none can:
+    nothing on this path has ever held a seed or its ciphertext."""
+    print(f"bot        {record.entity_name}", file=out)
+    print(f"bot_id     {record.id}", file=out)
+    print(f"entity_id  {record.entity_id}", file=out)
+    print(f"driver     {record.driver}", file=out)
+    print(f"mode       {record.mode}", file=out)
+    print(f"enabled    {'yes' if record.enabled else 'no'}", file=out)
+    for key, value in sorted(record.config.items()):
+        print(f"  {key:<14} {'none' if value is None else value}", file=out)
+
+
+async def _find_bot(persistence: Persistence, name: str) -> Any:
+    found = await persistence.bots.get_by_name(name)
+    if isinstance(found, Failed):
+        return found
+    return found.value
+
+
+def _bot_command(args: argparse.Namespace, out: IO[str]) -> int:
+    database = _database_config(args, out)
+    if database is None:
+        return 2
+    match args.bot_command:
+        case "create":
+            return _bot_create(args, database, out)
+        case "list":
+            return _bot_list(args, database, out)
+        case "show":
+            return _bot_show(args, database, out)
+        case "enable" | "disable":
+            return _bot_enablement(args, database, out)
+        case "mode":
+            return _bot_mode(args, database, out)
+        case "set":
+            return _bot_set(args, database, out)
+        case "greeted":
+            return _bot_greeted(args, database, out)
+        case _:
+            return _bot_state(args, database, out)
+
+
+def _bot_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    try:
+        config = bot_drivers.default_config(args.driver)
+    except UnknownDriverError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    async def work(persistence: Persistence) -> Any:
+        entities = EntityRepository(database=persistence.database)
+        found = await entities.list_all()
+        if isinstance(found, Failed):
+            return found
+        matches = [
+            record
+            for record in found.value
+            if record.name == args.identity
+            or record.public_key.hex().startswith(args.identity.lower())
+        ]
+        if len(matches) != 1:
+            raise EntityLoadError(
+                f"{args.identity!r} matches {len(matches)} stored identities; "
+                "name one exactly, or give a longer public key prefix"
+            )
+        entity = matches[0]
+        if entity.type != BOT_ENTITY_TYPE:
+            raise EntityHasRoleError(
+                f"{entity.name!r} is stored as {entity.type!r}, not a bot; import "
+                "the identity with `sighop keys import --bot`, because being a "
+                "bot is an explicit choice and never a side effect of having a "
+                "bot bound to it"
+            )
+        created = await persistence.bots.create(
+            entity_id=entity.id,
+            driver=args.driver,
+            config=config,
+            entity_name=entity.name,
+        )
+        if isinstance(created, Failed):
+            return created
+        # Seeded after the row exists, because `bot_state` has a foreign key to
+        # it. A seed that fails leaves a bot owing the whole contact table, so
+        # the failure is loud and the remedy is named (design D7).
+        seeded = await _seed_greeted(persistence, created.value)
+        return created.value, seeded
+
+    try:
+        outcome = asyncio.run(_with_rooms(database, work))
+    except (BotExistsError, EntityHasRoleError, EntityLoadError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record, seeded = outcome
+    _render_bot(record, out)
+    print(
+        "the bot is enabled and in observe mode: it runs its whole decision path "
+        f"and will transmit nothing until `sighop bot mode {record.entity_name} "
+        "active` says otherwise",
+        file=out,
+    )
+    print(TRANSMIT_STILL_GATED, file=out)
+    if isinstance(seeded, Failed):
+        print(
+            f"the bot was created, but seeding its greeting records failed: "
+            f"{seeded.error}. It currently owes a greeting to every contact this "
+            f"node knows — do not make it active until `sighop bot greeted "
+            f"{record.entity_name} --seed` succeeds",
+            file=sys.stderr,
+        )
+        return 2
+    if seeded.value:
+        print(
+            f"seeded     {seeded.value} existing contacts "
+            + SEEDING_IS_WHAT_A_NEW_GREETER_OWES.format(name=record.entity_name),
+            file=out,
+        )
+    else:
+        print(
+            "seeded     nothing — this node knows no contacts yet, so every node "
+            "it hears from here on is one this greeter has said nothing to",
+            file=out,
+        )
+    return 0
+
+
+def _bot_list(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    outcome = asyncio.run(_with_rooms(database, lambda p: p.bots.list_all()))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print("no bots are configured", file=out)
+        return 0
+    for record in outcome.value:
+        print(
+            f"{record.entity_name}  driver={record.driver}  mode={record.mode}  "
+            f"{'enabled' if record.enabled else 'disabled'}  entity={record.entity_id}",
+            file=out,
+        )
+    return 0
+
+
+def _bot_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        state = await persistence.bot_state.list(record.id)
+        return record, len(state.value) if isinstance(state, Succeeded) else 0
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    record, keys = outcome
+    _render_bot(record, out)
+    print(f"state_keys {keys}", file=out)
+    # Counters are per run and live in the running process; a bot that has never
+    # run has none, and saying so beats printing zeros that look like facts.
+    print(
+        "counters are reported by the run itself (`sighop run` status lines); "
+        "nothing is persisted per run",
+        file=out,
+    )
+    return 0
+
+
+def _bot_enablement(
+    args: argparse.Namespace, database: DatabaseConfig, out: IO[str]
+) -> int:
+    enabled = args.bot_command == "enable"
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        changed = await persistence.bots.set_enabled(record.id, enabled)
+        if isinstance(changed, Failed):
+            return changed
+        return record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    if enabled:
+        print(
+            f"bot {outcome.entity_name!r} is enabled and will run, in "
+            f"{outcome.mode} mode",
+            file=out,
+        )
+        return 0
+    print(
+        f"bot {outcome.entity_name!r} is disabled: it stays configured, receives "
+        "no events, and every run reports it as not running with that reason",
+        file=out,
+    )
+    return 0
+
+
+def _bot_mode(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    mode = BotMode(args.mode)
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        changed = await persistence.bots.set_mode(record.id, str(mode))
+        if isinstance(changed, Failed):
+            return changed
+        return record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    print(render_bot_mode_change(outcome.entity_name, mode), file=out)
+    return 0
+
+
+def _bot_set(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Hand the value to whoever owns the setting, and store nothing on refusal."""
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        # Validated against the driver named by the *stored* row, so the check
+        # is the one the bot will actually run under.
+        value = bot_drivers.validate_config(record.driver, args.key, args.value)
+        config = {**record.config, args.key: value}
+        changed = await persistence.bots.set_config(record.id, config)
+        if isinstance(changed, Failed):
+            return changed
+        return await _find_bot(persistence, args.bot)
+
+    try:
+        outcome = asyncio.run(_with_rooms(database, work))
+    except (BotConfigError, UnknownDriverError) as exc:
+        # Refused before anything was written: the stored configuration is
+        # exactly what it was (design D14).
+        print(str(exc), file=sys.stderr)
+        print("the stored configuration is unchanged", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    _render_bot(outcome, out)
+    return 0
+
+
+def _greeting_state(record: dict) -> str:
+    """One greeting record, as something an operator can act on.
+
+    The attempt count is shown for a record that is *not* settled, because that
+    is the only case where it changes what happens next: an unacknowledged
+    greeting is retried, and how many have already gone tells an operator
+    whether the peer is about to be left alone.
+    """
+    from sighop.bots.greeter import SETTLED
+
+    outcome = str(record.get("outcome", "unknown"))
+    if outcome in SETTLED:
+        return outcome
+    attempts = record.get("attempts", 0)
+    return f"{outcome} after {attempts} attempt(s)"
+
+
+async def _resolve_contact(persistence: Persistence, reference: str) -> Any:
+    """One contact by exact name or hex key prefix, from the durable table.
+
+    Through `ContactStore.resolve` rather than a query, so the command line
+    resolves a peer exactly as a run does — including the ambiguity error that
+    lists every match, which a `LIKE` would have to reinvent worse.
+    """
+    from sighop.net.contacts import ContactStore
+
+    loaded = await persistence.contacts.load_all()
+    if isinstance(loaded, Failed):
+        return loaded
+    store = ContactStore()
+    store.restore(loaded.value)
+    return store.resolve(reference)
+
+
+def _bot_greeted(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Who this greeter considers already greeted, and the operator's say in it.
+
+    The greeting record is the whole gate (design D7), so this command is the
+    whole of the policy an operator can turn: releasing one contact is one
+    command and one contact, which is the granularity a decision to message a
+    stranger deserves.
+    """
+    from sighop.bots.greeter import OPERATOR, greeted_key, greeted_public_key
+    from sighop.net.contacts import ContactError
+
+    if args.clear and args.set_greeted:
+        print(
+            "--clear and --set say opposite things about the same contact",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+
+        if args.seed:
+            seeded = await _seed_greeted(persistence, record)
+            return ("seeded", record, seeded)
+
+        if args.peer is None:
+            listed = await persistence.bot_state.list(record.id)
+            if isinstance(listed, Failed):
+                return listed
+            return ("list", record, listed.value)
+
+        contact = await _resolve_contact(persistence, args.peer)
+        if isinstance(contact, Failed):
+            return contact
+        key = greeted_key(contact.public_key)
+        if args.clear:
+            cleared = await persistence.bot_state.delete(record.id, key)
+            if isinstance(cleared, Failed):
+                return cleared
+            return ("clear", record, (contact, cleared.value))
+        if args.set_greeted:
+            written = await persistence.bot_state.set(
+                record.id,
+                key,
+                {"outcome": OPERATOR, "at": _now_iso(), "name": contact.display_name},
+            )
+            if isinstance(written, Failed):
+                return written
+            return ("set", record, contact)
+        found = await persistence.bot_state.get(record.id, key)
+        if isinstance(found, Failed):
+            return found
+        return ("show", record, (contact, found.value))
+
+    try:
+        outcome = asyncio.run(_with_rooms(database, work))
+    except ContactError as exc:
+        # Unknown or ambiguous: the store's own message lists every match, which
+        # is what an operator needs to give a longer prefix.
+        print(str(exc), file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+
+    action, record, payload = outcome
+    match action:
+        case "seeded":
+            print(
+                f"seeded {payload.value} contacts for bot {record.entity_name!r}; "
+                "records that already existed were left alone",
+                file=out,
+            )
+        case "list":
+            greetings = {
+                key: value
+                for key, value in payload.items()
+                if greeted_public_key(key) is not None
+            }
+            if not greetings:
+                print(
+                    f"bot {record.entity_name!r} has greeted nobody and owes a "
+                    "greeting to every contact it hears from",
+                    file=out,
+                )
+                return 0
+            for key, value in sorted(greetings.items()):
+                public_key = greeted_public_key(key)
+                assert public_key is not None
+                rendered = value if isinstance(value, dict) else {}
+                print(
+                    f"{public_key.hex()[:16]}  {_greeting_state(rendered)}  "
+                    f"{rendered.get('name', '')}",
+                    file=out,
+                )
+        case "clear":
+            contact, removed = payload
+            if not removed:
+                print(
+                    f"{contact.display_name} ({contact.public_key.hex()[:16]}) had no "
+                    "greeting record; it is already eligible to be greeted",
+                    file=out,
+                )
+                return 0
+            print(
+                f"cleared the greeting record for {contact.display_name} "
+                f"({contact.public_key.hex()[:16]}): bot {record.entity_name!r} will "
+                "greet it the next time it adverts, if the hop, node-type and rate "
+                "gates pass",
+                file=out,
+            )
+        case "set":
+            print(
+                f"{payload.display_name} ({payload.public_key.hex()[:16]}) is recorded "
+                f"as greeted by an operator: bot {record.entity_name!r} will never "
+                "greet it",
+                file=out,
+            )
+        case _:
+            contact, value = payload
+            if value is None:
+                print(
+                    f"{contact.display_name} ({contact.public_key.hex()[:16]}) has no "
+                    f"greeting record from bot {record.entity_name!r} and will be "
+                    "greeted when it next adverts",
+                    file=out,
+                )
+                return 0
+            rendered = value if isinstance(value, dict) else {}
+            print(
+                f"{contact.display_name} ({contact.public_key.hex()[:16]})  "
+                f"{_greeting_state(rendered)}  at {rendered.get('at', '?')}",
+                file=out,
+            )
+    return 0
+
+
+def _bot_state(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        if args.clear:
+            cleared = await persistence.bot_state.clear(record.id)
+            if isinstance(cleared, Failed):
+                return cleared
+            return record, cleared.value, {}
+        listed = await persistence.bot_state.list(record.id)
+        if isinstance(listed, Failed):
+            return listed
+        return record, None, listed.value
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    record, cleared, state = outcome
+    if cleared is not None:
+        print(f"cleared {cleared} keys from bot {record.entity_name!r}", file=out)
+        print(CLEARING_STATE_FORGETS, file=out)
+        return 0
+    if not state:
+        print(f"bot {record.entity_name!r} has stored nothing", file=out)
+        return 0
+    for key, value in sorted(state.items()):
+        print(f"{key}  {value}", file=out)
+    return 0
+
+
 async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:
     """The platform against a live link. The gate is closed unless asked for."""
     transport = KissTransport(serial_connector(args.device))
@@ -1489,6 +2179,10 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     if args.command == "room":
         configure_logging(stream=sys.stderr)
         return _room_command(args, stream)
+
+    if args.command == "bot":
+        configure_logging(stream=sys.stderr)
+        return _bot_command(args, stream)
 
     if args.command == "db":
         configure_logging(stream=sys.stderr)

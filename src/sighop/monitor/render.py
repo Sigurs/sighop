@@ -15,6 +15,16 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from sighop.bots.base import (
+    BotActed,
+    BotDispatchDropped,
+    BotFailed,
+    BotMode,
+    BotRuntimeEvent,
+    BotSendResult,
+    BotSuppressed,
+    BotWouldAct,
+)
 from sighop.net.adverts import EntityStub
 from sighop.net.dedup import DedupStats
 from sighop.net.dm import (
@@ -794,6 +804,171 @@ def render_room_event(event: RoomEvent) -> str:
             return render_request_refused(event)
         case RetentionPruned():
             return render_retention_pruned(event)
+
+
+# --- Bots (milestone 7) -----------------------------------------------------
+#
+# Pure formatting, and one rule that is not cosmetic: **an observe-mode decision
+# is never formatted like a transmission.** A bot in observe mode ran its whole
+# decision path and put nothing on the air, and a line that looked like a send
+# would make a dry run indistinguishable from a live one — which is the whole
+# thing the dry run exists to establish (design D4). It gets its own verb, its
+# own arrow and an explicit statement that nothing was transmitted.
+#
+# `bots/` never imports this module: every function here takes a typed event or
+# plain values, exactly as the room renderers do (milestone 6 design D17).
+
+BOTS_OFF = (
+    "bots: none — a bot's decisions depend on state restored before any traffic, "
+    "and that requires durable storage"
+)
+"""What `sighop run` says with no database configured (design D5). §7 rule 1 —
+"new means never seen in the persistent contact table, not new since process
+start" — is a statement about a table that does not exist without one, so a
+DB-less greeter would greet the entire neighbourhood on every restart. Stated
+rather than omitted, exactly as the equivalent room line is."""
+
+OBSERVE_NOTE = "transmitted nothing (observe mode)"
+"""One phrase, used everywhere an observation is rendered, so an operator learns
+it once."""
+
+
+def render_bot_startup(
+    *,
+    name: str,
+    driver: str,
+    node_hash: int,
+    mode: str,
+    limits: dict[str, object],
+    served: bool = True,
+    not_served_because: str = "",
+) -> str:
+    """One bot, before any traffic is handled.
+
+    The mode is on the startup line rather than only in `bot show`, because
+    "this bot is in observe mode" and "this bot is broken" look identical in a
+    run's output otherwise.
+    """
+    rendered = " ".join(f"{key}={_render_limit(value)}" for key, value in limits.items())
+    head = f"bot {name!r}[{node_hash:02x}]  driver={driver}  mode={mode}  {rendered}".rstrip()
+    if served:
+        return head
+    return f"{head}  NOT RUNNING ({not_served_because})"
+
+
+def render_bot_status(
+    *,
+    name: str,
+    driver: str,
+    mode: str,
+    actions: int,
+    observations: int,
+    suppressions: dict[str, int],
+    dropped: int,
+    failures: int,
+    pending: int = 0,
+    announces: int = 0,
+) -> str:
+    """The periodic bot line.
+
+    Every counter is rendered at zero too, and the suppressions are rendered
+    whole rather than as a total: "eleven suppressed" says nothing an operator
+    can act on, and "too_many_hops=11" says which bound to reconsider.
+    """
+    line = (
+        f"== bot {name!r} driver={driver} mode={mode} acted={actions} "
+        f"announced={announces} observed={observations} pending={pending} "
+        f"dropped={dropped} failures={failures}"
+    )
+    reasons = ",".join(f"{reason}={count}" for reason, count in sorted(suppressions.items()))
+    return f"{line} suppressed={reasons or 'none'}"
+
+
+def render_bot_acted(event: BotActed) -> str:
+    outcomes = {
+        BotSendResult.ACKNOWLEDGED: "acknowledged",
+        BotSendResult.UNACKNOWLEDGED: "NOT ACKNOWLEDGED",
+        BotSendResult.REFUSED: "not sent",
+        BotSendResult.OBSERVED: OBSERVE_NOTE,
+    }
+    outcome = outcomes[event.result]
+    return (
+        f"{_INDENT}-> bot {event.bot_name!r}  sent to "
+        f"{CLAIMED_MARK}{event.contact.public_key.hex()[:16]}  {event.route}  "
+        f"attempts={event.attempts}  {outcome}  {event.text!r}"
+    )
+
+
+def render_bot_would_act(event: BotWouldAct) -> str:
+    """An observation. Deliberately shaped nothing like `render_bot_acted`."""
+    return (
+        f"{_INDENT}.. bot {event.bot_name!r}  would send to "
+        f"{CLAIMED_MARK}{event.contact.public_key.hex()[:16]}  {OBSERVE_NOTE}  "
+        f"{event.text!r}"
+    )
+
+
+def render_bot_suppressed(event: BotSuppressed) -> str:
+    """A decision not to act. A greeter that is greeting nobody has to be
+    distinguishable from a mesh that has gone quiet."""
+    who = (
+        ""
+        if event.contact is None
+        else f"  {CLAIMED_MARK}{event.contact.public_key.hex()[:16]}"
+    )
+    detail = f"  {event.detail}" if event.detail else ""
+    return f"{_INDENT}.. bot {event.bot_name!r}  suppressed: {event.reason}{who}{detail}"
+
+
+def render_bot_dispatch_dropped(event: BotDispatchDropped) -> str:
+    return (
+        f"{_INDENT}!! bot {event.bot_name!r}  dropped the oldest pending dispatch "
+        f"(queue full, {event.dropped} so far); reception is unaffected"
+    )
+
+
+def render_bot_failed(event: BotFailed) -> str:
+    return (
+        f"{_INDENT}!! bot {event.bot_name!r}  driver {event.driver} raised on "
+        f"{event.event}: {event.error}  (failures={event.failures}); the run continues"
+    )
+
+
+def render_bot_event(event: BotRuntimeEvent) -> str:
+    match event:
+        case BotActed():
+            return render_bot_acted(event)
+        case BotWouldAct():
+            return render_bot_would_act(event)
+        case BotSuppressed():
+            return render_bot_suppressed(event)
+        case BotDispatchDropped():
+            return render_bot_dispatch_dropped(event)
+        case BotFailed():
+            return render_bot_failed(event)
+
+
+def render_bot_mode_change(name: str, mode: BotMode) -> str:
+    """What `sighop bot mode` prints, which is where the two gates get said.
+
+    The mode is one of them and the run's `--enable-transmit` is the other, and
+    an operator who has just made a bot active is exactly the person who needs
+    to be told that the second one still applies (design D4).
+    """
+    if mode is BotMode.ACTIVE:
+        return (
+            f"bot {name!r} is now active: it may transmit. Transmission still "
+            "requires the run's --enable-transmit flag and stays under the "
+            "duty-cycle ceiling"
+        )
+    return (
+        f"bot {name!r} is now in observe mode: it runs its whole decision path "
+        "and transmits nothing"
+    )
+
+
+def _render_limit(value: object) -> str:
+    return "none" if value is None else str(value)
 
 
 def _render_wire_text(text: WireText) -> str:

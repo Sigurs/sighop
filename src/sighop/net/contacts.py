@@ -38,7 +38,7 @@ time (design D2). Three properties of that arrangement are load-bearing:
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -142,6 +142,21 @@ class ContactSink(Protocol):
     def offer(self, contact: Contact) -> bool: ...
 
 
+type ObservationListener = Callable[[ContactObservation, RxRecord], None]
+"""Who is told what a verified advert did to the store (milestone 7 design D2).
+
+The store has always known the one fact that matters — whether an advert
+*created* a contact — and never told anyone. A component that must act on the
+first sighting of a peer could subscribe to the bus for advert records instead
+and ask the store afterwards, but subscribers have independent queues: the
+store's own subscriber may or may not have processed that record yet, so the
+answer would be a race whose wrong branch greets a peer twice or not at all.
+
+Invoked synchronously, after the store has been updated and before the next
+observation is processed, so a first sighting is an ordered fact. It is expected
+to *offer* work to a queue of its own, not to do it here."""
+
+
 def parse_public_key(text: str) -> bytes:
     """A 32-byte public key from hex, with the failure naming what was wrong."""
     cleaned = text.strip().removeprefix("0x")
@@ -164,16 +179,24 @@ class ContactStore:
         *,
         logger: Logger | None = None,
         sink: ContactSink | None = None,
+        on_observation: ObservationListener | None = None,
     ) -> None:
         self._contacts: dict[bytes, Contact] = {}
         self._by_node_hash: dict[int, set[Contact]] = {}
         self._log = logger or get_logger(component="contacts")
         self._sink = sink
+        self._on_observation = on_observation
         self._unpersisted: set[bytes] = set()
         self.adverts_recorded = 0
         self.restored = 0
         self.writes_offered = 0
         self.writes_refused = 0
+        self.listener_failures = 0
+
+    def set_observation_listener(self, listener: ObservationListener | None) -> None:
+        """Wire an observer, or remove one. Set before any traffic is processed;
+        a listener attached mid-run would miss the sightings it exists for."""
+        self._on_observation = listener
 
     # --- Reading -----------------------------------------------------------
 
@@ -396,9 +419,35 @@ class ContactStore:
             case AdvertOutcome() as outcome:
                 verified = outcome.verified
                 if verified is not None:
-                    self.observe_advert(verified, at=record.received_at)
+                    observation = self.observe_advert(verified, at=record.received_at)
+                    self._report(observation, record)
             case _:
                 return
+
+    def _report(self, observation: ContactObservation, record: RxRecord) -> None:
+        """Tell the listener, and survive it.
+
+        A listener is untrusted with respect to the store: the contact is
+        already recorded and already offered for persistence by the time this
+        runs, and a listener that raises must cost none of that and must not
+        stop the next advert being processed. The failure is reported — a
+        listener failing silently is a bot that has quietly stopped seeing the
+        mesh.
+        """
+        if self._on_observation is None:
+            return
+        try:
+            self._on_observation(observation, record)
+        except Exception as exc:
+            self.listener_failures += 1
+            self._log.error(
+                "contact_listener_failed",
+                outcome="error",
+                packet_id=record.packet_id,
+                public_key=observation.contact.public_key.hex(),
+                error=f"{type(exc).__name__}: {exc}",
+                listener_failures=self.listener_failures,
+            )
 
     def subscribe(self, bus: NetworkBus, *, name: str = "contacts") -> Subscription:
         return bus.subscribe(name, handler=self.handle)

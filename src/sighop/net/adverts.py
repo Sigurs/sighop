@@ -204,6 +204,7 @@ class AdvertScheduler:
     last_global_flood_at: dt.datetime | None = None
     deferrals: int = 0
     zero_hop_requests: int = 0
+    flood_requests: int = 0
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="adverts")
@@ -433,6 +434,56 @@ class AdvertScheduler:
         )
         return handle
 
+    def request_flood(self, stub: EntityStub) -> TxHandle:
+        """Emit one flood advert for `stub` now, and move its schedule with it.
+
+        The expensive counterpart to `request_zero_hop`, and it exists for one
+        reason: a direct message can only be decrypted by a node that already
+        holds the sender's public key, so a peer we heard *through a repeater*
+        cannot be introduced to by a zero-hop advert — it is not a direct
+        neighbour, and a zero-hop advert stops at direct neighbours.
+
+        **This is repeated by every repeater in the mesh**, on everybody's
+        airtime, which is why the flood interval floor is a day. So this
+        deliberately advances the entity's own flood schedule: from the mesh's
+        point of view this *is* the entity's flood advert, and the next
+        scheduled one moves a full interval out rather than arriving on top of
+        it. What bounds how often a caller may ask is the caller's own limit —
+        for a bot, its rate limit — and nothing here.
+        """
+        assert self.logger is not None
+        now = self.clock.now()
+        packet = build_advert_packet(stub, int(now.timestamp()))
+        handle: TxHandle = self.submit(  # type: ignore[operator]
+            Submission(
+                packet=packet,
+                priority=PriorityClass.ADVERT,
+                entity_id=stub.entity_id,
+                entity_name=stub.name,
+                entity_type="entity" if stub.persistent else "stub",
+                deadline=now + dt.timedelta(seconds=self.deadline_seconds),
+                origin="advert_flood_requested",
+            )
+        )
+        stub.adverts_sent += 1
+        stub.last_flood_at = now
+        self.last_global_flood_at = now
+        stub.next_flood_at = now + dt.timedelta(
+            seconds=self._jittered(stub.effective_interval(now))
+        )
+        self.flood_requests += 1
+        self.logger.info(
+            "advert_flood_requested",
+            entity_id=stub.entity_id,
+            entity_name=stub.name,
+            size_bytes=len(packet),
+            next_flood_at=(
+                None if stub.next_flood_at is None else stub.next_flood_at.isoformat()
+            ),
+            detail="repeated by every repeater in the mesh; the schedule moved with it",
+        )
+        return handle
+
     def _gap_remaining(self, now: dt.datetime) -> float:
         if self.last_global_flood_at is None:
             return 0.0
@@ -466,6 +517,7 @@ class AdvertScheduler:
             "active_overrides": len(self.active_overrides(now)),
             "deferrals": self.deferrals,
             "zero_hop_requests": self.zero_hop_requests,
+            "flood_requests": self.flood_requests,
             "min_entity_gap_seconds": self.min_entity_gap_seconds,
         }
 

@@ -454,8 +454,9 @@ must not render channel sender names in a way that implies verified identity.
 
 ## 6. Persistence
 
-Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one; seven
-of them exist as of milestone 6 and one does not yet, and the split is deliberate.
+Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
+milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
+them.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -478,9 +479,28 @@ of them exist as of milestone 6 and one does not yet, and the split is deliberat
 - **message** — id, room id, author public key, `post_timestamp`, nullable
   `sender_timestamp`, text as **bytes**, posted_at, unique on (room, `post_timestamp`)
 
-**Not built yet, named in `0002`'s docstring so absence still reads as intent:**
+**Built (milestone 7, migration `0003`):**
 
-- **bot_state** — milestone 7
+- **bot_state** — PK (bot id, key), value as JSONB, updated_at; the durable per-bot
+  key/value store a driver persists in, and the only place a driver may write anything
+- **bot** — id, **unique** entity id, driver name, enabled, mode, config (JSONB), created_at
+
+**`bot` was not in the sketch, and the reason it exists is worth stating.** §6 imagined a
+bot's whole durable state as key/value rows. That predates a bot having a *driver name*, a
+*mode* and *configuration*, and those are per bot rather than per key — there is nowhere in
+a key/value table for them to live. The rejected alternative was keeping them in
+`entity.advert_config`: that column describes how an identity adverts, and putting a
+greeting template in it would make one column mean two things and make "list the bots" a
+scan of every entity. `bot` is `room`'s shape deliberately — unique `entity_id`, enablement,
+JSONB configuration — so the loader, the CLI noun and the startup reporting each have a
+direct analogue and milestone 7 wrote little new structure.
+
+Two columns on `bot` carry the safety posture rather than configuration. **`mode` is
+`observe` or `active` and a new row is `observe`**: a bot that transmits is an explicit
+operator act, stored rather than passed per run, so a bot cannot become active because
+somebody forgot which flags the last run had. And **a downgrade of `0003` loses every
+greeting record**, which is stated in the migration's docstring rather than discovered — a
+node already greeted can be greeted again if its `contact` row is lost with them.
 
 The list above was always a sketch and never final DDL, and milestone 6 was right that
 building the three untested would have made the first real migration a rewrite. **Three
@@ -543,6 +563,14 @@ advert floor is 24 h), while a route and a log row are dropped freely and counte
 the next reception regenerates one and the other is a feed. Migrations are the only
 authority on schema; `sighop run` refuses a database that is not at the revision the code
 expects, and never migrates as a side effect of starting.
+
+**`bot_state` is the exception to write-behind, and it is the sharpest one.** A dropped
+contact costs a re-learn; a dropped greeting record costs a *second unsolicited message to a
+stranger* after the next restart. Worse, the greeter needs the record to have **landed**
+before it transmits, and a queue answers "written" before that is true. So bot state is a
+bounded repository call from the bot's own worker task, under the connect and statement
+timeouts the engine already sets, and a write that fails is reported as a failure and
+suppresses the action it was guarding.
 
 ### Private keys at rest
 
@@ -689,28 +717,158 @@ stack — build it early, since it exercises nearly every protocol path.
 
 ### Bots
 
-A bot is a companion with a driver plugin. Minimal interface:
+A bot is a companion with a driver plugin. **As shipped in milestone 7 the interface has two
+handlers, not three:**
 
 ```python
 class Bot(Protocol):
-    async def on_advert(self, ctx: BotContext, advert: Advert) -> None: ...
-    async def on_direct_message(self, ctx: BotContext, msg: DirectMessage) -> None: ...
-    async def on_channel_message(self, ctx: BotContext, msg: ChannelMessage) -> None: ...
+    driver_name: str
+
+    async def on_advert(self, ctx: BotContext, event: AdvertEvent) -> None: ...
+    async def on_direct_message(self, ctx: BotContext, event: DirectMessageEvent) -> None: ...
 ```
 
-`BotContext` exposes sending, contact lookup, and persistent state — bots never touch the
-scheduler or the database directly.
+`on_channel_message` is **absent, and its absence is intent.** No channel key store exists
+and nothing in `net/` decrypts `GRP_TXT`, so a hook declared here could never fire — a
+promise the runtime cannot keep, that a driver author would nonetheless write against. It
+arrives with channels.
+
+`BotContext` exposes sending, contact lookup and durable state, and nothing else: not the
+scheduler, not the bus, not the modem, not a database session. That is what makes the rate
+limit, the mode and the never-flood rule properties of the seam rather than checks a driver
+could forget — there is no path along which a driver could reach the radio to bypass them.
+It also carries a *non-consuming* `can_send`, split from `send` the way the room server's
+throttle splits `check` from `spend`, because the greeter must write its greeting record
+before it transmits and a limit discoverable only by attempting the send would burn that
+record on an action the limit was going to refuse.
+
+An `AdvertEvent` exists only for a signature-verified advert, because it is built from a
+`ContactObservation` and the contact store produces one only from a `VerifiedAdvert`. Rule 3
+below is therefore carried by the type system rather than by a check anybody has to
+remember.
+
+Driver work runs on a bounded queue with one worker task per bot, never on a bus subscriber
+and never in front of an acknowledgement. Overflow drops the *oldest* pending dispatch and
+counts it, matching the bus's own subscription semantics; a driver that raises is reported
+with the bot and the triggering event, counted, and otherwise ignored. Bots ride on the
+existing direct messenger's reports and the contact store's observations rather than
+subscribing to the bus themselves — doing that would decrypt one packet twice and, if it
+also acknowledged, put two acknowledgements on the air for one message.
+
+**Bots require a database, and a run without one says so.** Rule 1 below is a statement
+about the persistent `contact` table; without Postgres the store starts empty every run and
+every contact looks new, so a DB-less greeter would greet the whole neighbourhood on every
+restart. Rooms already refuse to exist without a database, and bots take the same rule and
+the same startup line.
 
 **Greeter bot.** Sends a welcome DM to nodes not seen before.
 
-Three things it must get right:
+Four things it must get right — three from the original sketch and one milestone 7 added:
 
-1. *"New"* means never seen in the persistent `contact` table — not new since process start.
-   A restart must not re-greet the whole neighbourhood.
+1. *"New"* means **never greeted**, recorded durably per bot — not new since process start,
+   and (as built) not "never heard of" either. A restart must not re-greet the whole
+   neighbourhood, and the greeting record is what stops it.
+
+   The original sketch read "new" as *never seen in the persistent `contact` table*, and
+   implementing it showed those are two different facts. "We have never heard this key" is
+   the platform's memory of the mesh; "we have never said anything to this node" is one
+   bot's. Gating on the first refuses every peer heard before the greeter existed — the one
+   advert that would have qualified it is gone and will not come again — and silently
+   refuses every peer we skipped once because the rate limit was exhausted or the database
+   was degraded. Both are nodes with an unsent welcome, which is precisely what a greeter is
+   for.
+
+   So the record decides alone. The risk that inverts — a greeter created on an established
+   node owing a greeting to the whole contact table — is answered by making the debt
+   explicit rather than by a gate: **creating a greeter seeds a record for every contact
+   already present**, marked `seeded` rather than sent, and reports the count. A new greeter
+   starts owing nothing, and `sighop bot greeted` is where an operator sees that and changes
+   it — releasing one contact so it is greeted when it next adverts, or marking one so it
+   never is. One mechanism, readable, at the granularity a decision to message a stranger
+   deserves.
 2. Rate-limit greetings globally. A busy mesh, or a burst of adverts after an outage, would
-   otherwise produce a flood of DMs — antisocial and airtime-expensive.
+   otherwise produce a flood of DMs — antisocial and airtime-expensive. One token bucket per
+   bot and no per-source bucket: the per-contact gate is absolute, so the only bucket that
+   can be exhausted is the global one.
 3. Only greet after verifying the advert signature (§5). Greeting an unverified identity
    means a spoofed advert can make sighop transmit on demand.
+4. **Greet only what is nearby.** The reception's own hop count against a configured
+   `max_hops`, defaulting to 1 — nodes we hear directly and nodes one repeater away, which
+   is the neighbourhood a greeting is for. A flood advert that reached us from half a mesh
+   away is heard and recorded and not answered.
+
+   **What this does not do, stated rather than implied:** `max_hops` bounds *network*
+   distance, not radio distance. A tropospheric or ducted path delivers a zero-hop advert
+   from a node hundreds of kilometres away, and no hop count will ever separate that from a
+   neighbour across the street. `min_snr_db` is offered alongside and is null by default,
+   because a strong ducted signal defeats it too. The honest position: `max_hops` bounds how
+   much of the mesh can trigger us, the once-ever rule bounds the damage when one gets
+   through, and neither claims to identify a duct.
+
+A fifth gate is not about who to greet but about how: **a greeting is never flooded.** It is
+unsolicited traffic to a peer that has never contacted us, so a peer with no known route is
+suppressed with that reason rather than shouted across the mesh. A sixth restricts node
+type to ordinary chat nodes by default, so no repeater or room server is sent a message no
+human will read.
+
+**Observe is the default mode, and transmitting is the opt-in.** A newly created bot runs
+its whole decision path, records and renders every action it *would* have taken, and puts
+nothing on the air. Moving it to `active` is a deliberate `sighop bot mode` invocation, and
+the run's `--enable-transmit` gate and duty-cycle ceiling apply on top of that. Two
+independent gates for the reason milestone 4 kept `--enable-transmit` after adding the
+airtime ceiling: the mode says *this bot is meant to act*, the flag says *this run is
+allowed to transmit*, and they answer to different people. Observe mode still spends from
+the rate limit, so a dry run's counters are what an active run would have done.
+
+**The greeting record is written before the greeting is transmitted.** A crash between the
+two costs one un-sent greeting, which is invisible to its recipient; the reverse order costs
+a duplicate message to a stranger after every crash, which is the failure rule 1 exists to
+prevent. This is the room server's "acknowledge only once the row has landed" pointed the
+other way: there the row was the promise, here the record is the guard. Its consequence is
+stated rather than hidden — while the database is degraded the greeter greets nobody, and
+says why.
+
+**The record holds an attempt, not a delivery.** Only an acknowledgement settles a contact
+for good (along with a seed, an operator's mark, and an observe-mode decision). An
+unacknowledged greeting is retried on a later advert from that contact, fifteen minutes
+apart, three times in all. The live exercise is why: its one greeting went unacknowledged
+because the peer could not read it, the record settled the contact anyway, and the peer could
+never be greeted again — a certain permanent failure traded away to avoid a possible
+duplicate. The two bounds are what keep the retry from becoming the spam the original
+reasoning feared.
+
+**A peer is introduced to before it is messaged.** A direct message is encrypted under a
+secret derived from the *sender's* public key, so a peer that has never heard the greeter's
+advert cannot read a byte of a greeting and has nothing to acknowledge — which from our side
+is indistinguishable from a peer that is not listening. So the greeter adverts first: a
+zero-hop advert for a contact heard directly, which stops at direct neighbours and costs the
+mesh nothing, and a flood advert — repeated by every repeater — only on a retry to a contact
+heard further away, where the cheap attempt has already proved insufficient. The advert is
+waited for, because an advert is class 3 and a message is class 2, so a send that did not
+wait would overtake the very advert that makes it readable.
+
+**That escalation happens in the same reaction as the silence, not at the next cooldown.**
+A second exercise proved the point at one hop: the bare greeting went out four times and was
+never answered, because the peer held no key for us — the same failure as before, merely
+deferred. Silence from a distant peer is not ambiguous enough to sleep on. It will mean the
+same thing in fifteen minutes, and the peer is adverting *now*, which is the one moment it
+is known to be awake. So the flood advert and the second greeting follow immediately, **once**,
+after which the cooldown governs everything further. A direct neighbour never escalates: it
+was introduced to before its first greeting, so its silence means something the escalation
+cannot fix.
+
+**Silence is believed only after a grace period.** The message path spends four attempts in
+about forty seconds; the escalation it triggers is a flood the whole mesh repeats. An
+acknowledgement returning over a longer path than the one we sent on is late rather than
+absent, so a greeting keeps listening past the last attempt — thirty seconds by default,
+configurable — with the expectations it already registered still armed. It buys listening
+and never a packet. This is opt-in at the message path rather than default, because an
+interactive send that returned half a minute after it had already failed would read as a
+hang; a bot deciding whether to spend the mesh's airtime is exactly the caller that should
+wait.
+
+Every suppression is counted by reason and reported, because a greeter that silently greets
+nobody looks exactly like a mesh that went quiet — and exactly like a broken greeter.
 
 ---
 
@@ -841,13 +999,15 @@ sighop/
 │   ├── protocol/       packet codec, payloads, crypto
 │   ├── net/            rx.py (decode stage), dedup.py, paths.py, bus.py,
 │   │                   tx.py (scheduler), airtime.py, adverts.py,
-│   │                   contacts.py, dm.py (direct messages, both directions)
+│   │                   contacts.py, dm.py (direct messages, both directions),
+│   │                   room.py (the room server), acks.py, pathbodies.py
 │   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
 │   ├── keystore.py     entity keyfiles (`sighop keys`) — file I/O, so not
 │   │                   under protocol/
 │   ├── runtime.py      the whole pipeline wired together (`sighop run`)
-│   ├── entities/       base, room server, companion, bot runtime
-│   │   └── bots/       greeter
+│   ├── bots/           base.py (the Bot protocol and BotContext),
+│   │                   runtime.py (dispatch, limits, mode, state),
+│   │                   drivers.py (the registry), greeter.py
 │   ├── db/             models.py (the four tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
 │   │                   writer.py (bounded write-behind), sealing.py (seeds at
@@ -883,6 +1043,21 @@ keeps every existing test running with no database.
 keyfile is I/O, and `protocol/` has none. The seed → identity step stays in
 `protocol/identity.py`, so the boundary test keeps passing and the split is the one the layer
 rule already implies.
+
+**There is no `entities/` package, and the sketch above has been corrected to say so.** It
+was to hold the room server, the companion and the bot runtime. The room server ended up in
+`net/room.py`, because it is a bus subscriber that needs the messenger's routing, the
+acknowledgement registry and the path store, and putting it a package away would have meant
+either duplicating those or importing across a boundary that describes nothing. There is no
+companion yet. Creating `entities/` for one remaining occupant would have produced a package
+that describes the layout *less* accurately than the sketch it came from — so the bot runtime
+lives in `bots/`, a peer of `net/` that imports from it exactly as `db/` does, and `entities/`
+arrives if and when the companion gives it a second tenant.
+
+`bots/` never imports `monitor/`, for the same reason `net/` does not: it emits typed events
+and `monitor/render.py` turns one into a line. It imports no SQLAlchemy either — its storage
+seam is read-only-property `Protocol`s the way the room server's is, which is what keeps
+every dispatch, limit, mode and gate test runnable with no database configured.
 
 `net/dm.py` handles inbound direct messages as a **bus subscriber**, never inside `net/rx.py`.
 Decryption needs local keys and a contact table; the decode stage stays a pure function of one
@@ -1270,6 +1445,120 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      naming as a class: **an inherited constant is not a constraint**, and this one was
      copied through three files before anyone asked what enforced it.
 7. **Greeter bot** and the bot plugin interface.
+   *Offline work done; the live exercise is pending.* `src/sighop/bots/` — `base.py` (the
+   `Bot` protocol, `BotContext`, the event and decision types), `runtime.py` (the bounded
+   dispatch queue, the token bucket, the observe/active mode, durable state), `drivers.py`
+   (the registry), `greeter.py` (the driver and its gates) — plus migration `0003` with
+   `bot` and `bot_state` and their repositories, an observation listener on the contact
+   store, the receiving entity on a `MessageReceived` report, and the `sighop bot` command
+   surface. The exit criterion — a greeting transmitted to a genuinely unknown test peer,
+   acknowledged, and no second greeting after a restart — is the live exercise, and the
+   runbook for it is written and reviewed. Findings the offline work produced:
+   - **§7's third handler could not be built, and saying so was the decision.**
+     `on_channel_message` has been in the sketch since the beginning, and there is no channel
+     key store and nothing in `net/` that decrypts `GRP_TXT` — so a hook declared on the
+     protocol could never fire. Shipping it would have been a promise the runtime cannot
+     keep, that a driver author would nonetheless write against. Two handlers, and the module
+     says why the third is absent. **An interface is a claim about what the runtime will do**,
+     and the cheapest place to be honest about a missing capability is the type.
+   - **The trigger for a transmission had to be a type, not a check.** §7 rule 3 says greet
+     only after verifying the signature, which as a rule is a line somebody has to remember
+     to write. `AdvertEvent` is built from a `ContactObservation`, and `ContactStore` produces
+     one only from a `VerifiedAdvert` — so there is no path along which an unverified advert
+     reaches a driver, and no check to forget. The same shape milestone 1's design D7
+     established for adverts, applied one layer out.
+   - **"New" and "not yet greeted" are different questions, and the design asked the wrong
+     one.** The gate started as *the advert created the contact* **and** *no greeting record
+     exists*, which reads as belt and braces and is actually a filter that refuses the cases
+     the greeter is for: a peer heard in milestone 2 can never be created again, so it could
+     never be greeted; a peer skipped once because the rate limit was exhausted was refused
+     forever by the same mechanism. Dropping `created` inverts the risk — a greeter created
+     on an established node then owes the whole contact table — and the answer was to make
+     that debt **data instead of a rule**: creation seeds a record for every existing
+     contact, and `sighop bot greeted` releases them one at a time. Worth naming as a class:
+     **a gate that also refuses what it was never meant to refuse is worse than a gate that
+     needs an explicit initial state**, because the second is visible and the first is not.
+   - **A rate limit discoverable only by attempting the send would have burned the record.**
+     The greeting record is written before the transmission (design D6), so a limit that only
+     answered when `send` was called would spend a contact's one chance on an action the
+     limit was going to refuse. Splitting `can_send` from `send` is the room server's
+     `check`/`spend` split arriving for a second, unrelated reason — which is the sign it was
+     the right shape the first time.
+   - **Observe mode has to spend from the rate limit or the dry run lies.** The whole point
+     of the observe stage is to decide the limit from what the mesh actually does. A bucket
+     that only drained when transmitting would make the dry run optimistic about exactly the
+     burst §7 warns about, and the operator would set the limit from numbers that could not
+     occur.
+   - **A second bus subscriber would have re-created milestone 6's worst bug.** A bot
+     subscribing for `TXT_MSG` would decrypt every inbound message a second time and, if it
+     acknowledged, put two acknowledgements on the air for one packet. Bots consume the
+     direct messenger's reports instead. And for adverts, a bot asking the contact store
+     *afterwards* whether a contact was new would be racing the store's own subscriber, whose
+     queue is independent — a race whose wrong branch greets a peer twice or not at all. The
+     store gained a synchronous listener rather than the bot gaining a subscription.
+   - **The hop gate is honest about what it does not do.** `max_hops` bounds *network*
+     distance; a ducted or tropospheric path delivers a zero-hop advert from hundreds of
+     kilometres away and no hop count separates that from a neighbour. `min_snr_db` is
+     offered and defaults to null because a strong ducted signal defeats it too. The gate
+     bounds how much of the mesh can trigger us, the once-ever rule bounds the damage when
+     one gets through, and neither claims to identify a duct — written into the module rather
+     than left for whoever reads the counters to work out.
+   - **The corpus is unchanged and says so mechanically.** A replay with a bot wired in
+     produces byte-identical considered, duplicate, contact and path counts to one without,
+     and an observe-mode bot driving a driver that tries to send for *every* advert produces
+     zero submissions across the whole replay. `protocol/` gained nothing: a greeting is an
+     ordinary `TXT_MSG` composed by code that has existed since milestone 4.
+   - **A greeting nobody could read looks exactly like a greeting nobody answered.** The
+     exercise's one greeting was transmitted four times to a peer at zero hops with a +13 dB
+     signal, and every attempt went unanswered. Nothing in this milestone's code was wrong:
+     a direct message is encrypted under a secret derived from the **sender's** key, so the
+     peer decrypts by trying the contacts it holds — and `[redacted]` had been created
+     eight minutes earlier with a 24 h flood interval, so it had never adverted and the peer
+     held nothing for it. **Greeting a stranger is a two-packet problem and the design had
+     modelled it as one.** The greeter now adverts first: zero-hop for a direct neighbour,
+     and a flood only on a retry to a peer heard over a repeater, because that one is
+     repeated by the whole mesh and is not spent on a guess. The advert is *awaited* — class
+     3 against the message's class 2 means an un-awaited send is transmitted first and lands
+     just as unreadable.
+   - **Deferring the flood to the next cooldown reproduced the same failure at one hop.** The
+     second exercise fixed the zero-hop case — two direct neighbours greeted and acknowledged
+     — and then `[redacted]`, at one hop, was greeted bare, four times, `announced=0`, and never
+     answered. The lazy-flood policy was working exactly as written; what was wrong was
+     treating that silence as *information to sleep on*. It is not ambiguous: a peer that
+     cannot decrypt us will not be able to in fifteen minutes either, and it is adverting
+     right now, which is the one moment it is known to be awake and reachable. **The
+     escalation belongs in the same reaction as the silence that justifies it** — flood
+     advert, greet again, once, and only then hand over to the cooldown.
+   - **Believing silence needed to cost something first.** The message path spends four
+     attempts in about forty seconds and reports failure, but the escalation it triggers is a
+     flood that the whole mesh pays to repeat. An acknowledgement returning over a longer path
+     than the one we sent on is late rather than absent, so `send` gained an opt-in grace
+     window (greeter default 30 s) that keeps the already-registered expectations armed past
+     the last attempt. It buys listening, never a packet: **the cheap way to avoid a wrong
+     transmission is to wait a little longer before deciding.** Opt-in because an interactive
+     send returning half a minute after it had already failed would read as a hang.
+   - **"Unacknowledged" had been recorded as a delivery, which made one silent failure
+     permanent.** The original design D6 wrote the outcome and never retried, reasoning that
+     an unacknowledged greeting may well have arrived and a duplicate is worse. The exercise
+     showed the premise was false in the case that actually happens: the greeting had not
+     arrived, could not have, and the record closed the contact forever. A restart then
+     reported `already_greeted` — the exit criterion appearing to pass for the wrong reason,
+     which is the part worth remembering. **A negative result that is indistinguishable from
+     the positive one is not evidence**, and the exit criterion had to be sharpened to say
+     the greeting must have been *acknowledged* before the restart proves anything.
+   - **Two of the suite's own tests turned out to assert probabilistic properties as
+     deterministic ones**, both from milestone 6 and both found only because this milestone's
+     work ran the full suite many times. `test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities`
+     generates a fresh room-server key per run and asserts no corpus frame produces an event
+     — measured at **16 failures in 300 runs**, because a 2-byte MAC false-matches at ~1 in
+     2^16 per candidate and the corpus offers many. `test_a_source_over_its_own_limit_does_not_consume_the_global_budget`
+     generates two peers and assumes distinct node hashes — measured at **0.38%**, which is
+     1/256 exactly, and §3 says a byte collides at that rate. Both are the design's own rules
+     showing up in tests written as if they did not apply.
+   - *Pending the observe stage's completion:* what the live mesh's advert volume and hop
+     distribution say about the default `max_hops` of 1, and whether the ducted-path case
+     predicted above actually appears. The first attempt at this stage ran for three minutes
+     against two nodes, which settles nothing.
 8. **WebUI**, in the §8 priority order.
 9. **Hardening.** Container, compose, build script, auth.
 

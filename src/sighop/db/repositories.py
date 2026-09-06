@@ -25,6 +25,8 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
+from sighop.db.models import Bot as BotRow
+from sighop.db.models import BotState as BotStateRow
 from sighop.db.models import Contact as ContactRow
 from sighop.db.models import Entity as EntityRow
 from sighop.db.models import Message as MessageRow
@@ -56,6 +58,13 @@ ENTITY_TYPES = {
     NodeType.SENSOR: "sensor",
 }
 DEFAULT_ENTITY_TYPE = "companion"
+
+BOT_ENTITY_TYPE = "bot"
+"""sighop's role for an identity a driver runs on. It is *not* derived from the
+node type and cannot be: a bot adverts as `NodeType.CHAT`, exactly as a
+companion does, because a bot is a companion to every other node on the mesh
+and its automation is sighop's business rather than the mesh's. Only the stored
+type tells the two apart, and it is set explicitly at creation."""
 
 
 class EntityLoadError(RuntimeError):
@@ -1268,3 +1277,326 @@ def _post(row: MessageRow) -> PostRecord:
         text=bytes(row.text),
         posted_at=row.posted_at,
     )
+
+
+# --- Bots and their durable state (milestone 7, design D3/D16) --------------
+#
+# `bot` follows `room` line for line, and that is the point of design D3: the
+# loader, the CLI noun and the startup reporting all have a direct analogue, so
+# this milestone writes little new structure. `bot_state` does not follow
+# `contact` or `path`: it is written *straight through* rather than through
+# `db/writer.py`, because losing a contact costs a re-learn and losing a
+# greeting record costs a duplicate greeting to a stranger — and the greeter
+# needs the write to have landed before it transmits (design D16, D6).
+
+
+class BotExistsError(RuntimeError):
+    """The identity already carries a bot. Names the driver that holds it."""
+
+
+class EntityHasRoleError(RuntimeError):
+    """The identity already plays another role — today, a room server's."""
+
+
+@dataclass(frozen=True, slots=True)
+class BotRecord:
+    """A bot as stored, with the identity it is bound to named beside it.
+
+    `entity_name` is not a column: it is read from `entity` on the same query,
+    because every place that shows a bot shows whose identity it speaks as, and
+    a bot has no name of its own — it *is* its entity.
+    """
+
+    id: uuid.UUID
+    entity_id: uuid.UUID
+    driver: str
+    enabled: bool
+    mode: str
+    config: dict
+    created_at: dt.datetime
+    entity_name: str = ""
+
+    @property
+    def active(self) -> bool:
+        """Whether this bot may transmit at all. `observe` runs everything else."""
+        return self.mode == "active"
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "bot_id": str(self.id),
+            "bot_name": self.entity_name,
+            "entity_id": str(self.entity_id),
+            "driver": self.driver,
+            "mode": self.mode,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(slots=True)
+class BotRepository:
+    """The `bot` table. One row per identity, enforced by the schema."""
+
+    database: Database
+
+    async def create(
+        self,
+        *,
+        entity_id: uuid.UUID,
+        driver: str,
+        config: dict[str, object],
+        mode: str = "observe",
+        enabled: bool = True,
+        entity_name: str = "",
+        created_at: dt.datetime | None = None,
+    ) -> Outcome[BotRecord]:
+        """Bind a driver to an identity that carries no other role.
+
+        Both refusals are checked before the insert so they can *name* what
+        already holds the entity, which is what `sighop bot create` prints. The
+        unique constraint stays the backstop: this check loses a race and the
+        constraint does not.
+        """
+        record = BotRecord(
+            id=uuid.uuid4(),
+            entity_id=entity_id,
+            driver=driver,
+            enabled=enabled,
+            mode=mode,
+            config=dict(config),
+            created_at=ensure_utc(created_at or dt.datetime.now(dt.UTC), field="bot.created_at"),
+            entity_name=entity_name,
+        )
+
+        existing = await self.get_for_entity(entity_id)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise BotExistsError(
+                f"this identity already carries the {existing.value.driver!r} bot; "
+                "one identity is one node to the mesh, and a node plays one role"
+            )
+        room = await RoomRepository(database=self.database).get_for_entity(entity_id)
+        if isinstance(room, Succeeded) and room.value is not None:
+            raise EntityHasRoleError(
+                f"this identity already serves the room {room.value.name!r}; an "
+                "identity has one role, and a room server answers its members "
+                "rather than acting on its own initiative"
+            )
+
+        async def work(session: object) -> BotRecord:
+            session.add(  # type: ignore[attr-defined]
+                BotRow(
+                    id=record.id,
+                    entity_id=record.entity_id,
+                    driver=record.driver,
+                    enabled=record.enabled,
+                    mode=record.mode,
+                    config=record.config,
+                    created_at=record.created_at,
+                )
+            )
+            return record
+
+        return await self.database.run("create_bot", work)
+
+    async def list_all(self) -> Outcome[list[BotRecord]]:
+        """Every bot, each carrying the name of the identity it speaks as."""
+
+        async def work(session: object) -> list[BotRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotRow, EntityRow.name)
+                    .join(EntityRow, EntityRow.id == BotRow.entity_id)
+                    .order_by(BotRow.created_at)
+                )
+            ).all()
+            return [_bot(row, name) for row, name in rows]
+
+        return await self.database.run("list_bots", work)
+
+    async def get_for_entity(self, entity_id: uuid.UUID) -> Outcome[BotRecord | None]:
+        async def work(session: object) -> BotRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotRow, EntityRow.name)
+                    .join(EntityRow, EntityRow.id == BotRow.entity_id)
+                    .where(BotRow.entity_id == entity_id)
+                )
+            ).one_or_none()
+            return None if row is None else _bot(row[0], row[1])
+
+        return await self.database.run("get_bot_for_entity", work)
+
+    async def get_by_name(self, name: str) -> Outcome[BotRecord | None]:
+        """One bot, by the name of the identity it runs on.
+
+        A bot has no name of its own by design (D3) — it is a role an identity
+        plays — so this is the only name there is to look one up by.
+        """
+
+        async def work(session: object) -> BotRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotRow, EntityRow.name)
+                    .join(EntityRow, EntityRow.id == BotRow.entity_id)
+                    .where(EntityRow.name == name)
+                )
+            ).one_or_none()
+            return None if row is None else _bot(row[0], row[1])
+
+        return await self.database.run("get_bot_by_name", work)
+
+    async def set_enabled(self, bot_id: uuid.UUID, enabled: bool) -> Outcome[bool]:
+        return await self._update(bot_id, "set_bot_enabled", enabled=enabled)
+
+    async def set_mode(self, bot_id: uuid.UUID, mode: str) -> Outcome[bool]:
+        """Move a bot between observe and active. The whole of the transmit
+        decision that belongs to the bot; the run's own gate is separate."""
+        return await self._update(bot_id, "set_bot_mode", mode=mode)
+
+    async def set_config(self, bot_id: uuid.UUID, config: dict[str, object]) -> Outcome[bool]:
+        """Replace the stored configuration whole.
+
+        Whole rather than merged: the caller has already read it, applied the
+        driver's validator to the change and rejected what the driver refused,
+        so a merge here would be a second, silent policy.
+        """
+        return await self._update(bot_id, "set_bot_config", config=dict(config))
+
+    async def _update(self, bot_id: uuid.UUID, operation: str, **values: object) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(BotRow).where(BotRow.id == bot_id).values(**values)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run(operation, work)
+
+
+def _bot(row: BotRow, entity_name: str = "") -> BotRecord:
+    return BotRecord(
+        id=row.id,
+        entity_id=row.entity_id,
+        driver=row.driver,
+        enabled=row.enabled,
+        mode=row.mode,
+        config=dict(row.config or {}),
+        created_at=row.created_at,
+        entity_name=entity_name,
+    )
+
+
+@dataclass(slots=True)
+class BotStateRepository:
+    """The `bot_state` table: a driver's only durable memory.
+
+    Every method is a bounded call under the connect and statement timeouts
+    `db/engine.py` already sets, made from the bot's worker task and never from
+    the reception path. Nothing is buffered and nothing is batched: design D6
+    needs a greeting record to have *landed* before the greeting is transmitted,
+    and a queue would answer "written" before that was true.
+    """
+
+    database: Database
+
+    async def get(self, bot_id: uuid.UUID, key: str) -> Outcome[object | None]:
+        async def work(session: object) -> object | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotStateRow).where(
+                        BotStateRow.bot_id == bot_id, BotStateRow.key == key
+                    )
+                )
+            ).scalar_one_or_none()
+            return None if row is None else row.value
+
+        return await self.database.run("get_bot_state", work)
+
+    async def set(
+        self, bot_id: uuid.UUID, key: str, value: object, *, at: dt.datetime | None = None
+    ) -> Outcome[int]:
+        """Write one key. Upserted, because writing a key twice is ordinary."""
+        updated = ensure_utc(at or dt.datetime.now(dt.UTC), field="bot_state.updated_at")
+        values = {"bot_id": bot_id, "key": key, "value": value, "updated_at": updated}
+
+        async def work(session: object) -> int:
+            statement = insert(BotStateRow).values([values])
+            await session.execute(  # type: ignore[attr-defined]
+                statement.on_conflict_do_update(
+                    constraint="pk_bot_state",
+                    set_={
+                        "value": statement.excluded.value,
+                        "updated_at": statement.excluded.updated_at,
+                    },
+                )
+            )
+            return 1
+
+        return await self.database.run("set_bot_state", work)
+
+    async def set_many(
+        self,
+        bot_id: uuid.UUID,
+        entries: dict[str, object],
+        *,
+        at: dt.datetime | None = None,
+    ) -> Outcome[int]:
+        """Write many keys at once, for seeding a new bot (design D7).
+
+        One statement rather than a call per key: a greeter created on an
+        established node seeds one row per contact, and a table of a few
+        thousand would otherwise be a few thousand round trips at a moment the
+        operator is watching. `DO NOTHING` on conflict, because seeding must
+        never overwrite a record that says a greeting was actually sent.
+        """
+        if not entries:
+            return Succeeded(value=0)
+        updated = ensure_utc(at or dt.datetime.now(dt.UTC), field="bot_state.updated_at")
+        values = [
+            {"bot_id": bot_id, "key": key, "value": value, "updated_at": updated}
+            for key, value in entries.items()
+        ]
+
+        async def work(session: object) -> int:
+            statement = insert(BotStateRow).values(values)
+            result = await session.execute(  # type: ignore[attr-defined]
+                statement.on_conflict_do_nothing(constraint="pk_bot_state")
+            )
+            return int(result.rowcount or 0)
+
+        return await self.database.run("seed_bot_state", work)
+
+    async def delete(self, bot_id: uuid.UUID, key: str) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(BotStateRow).where(
+                    BotStateRow.bot_id == bot_id, BotStateRow.key == key
+                )
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("delete_bot_state", work)
+
+    async def list(self, bot_id: uuid.UUID) -> Outcome[dict[str, object]]:
+        """Everything one bot has stored, which is what `sighop bot state` shows."""
+
+        async def work(session: object) -> dict[str, object]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotStateRow)
+                    .where(BotStateRow.bot_id == bot_id)
+                    .order_by(BotStateRow.key)
+                )
+            ).scalars()
+            return {row.key: row.value for row in rows}
+
+        return await self.database.run("list_bot_state", work)
+
+    async def clear(self, bot_id: uuid.UUID) -> Outcome[int]:
+        """Forget everything one bot knows. Reports how many keys went."""
+
+        async def work(session: object) -> int:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(BotStateRow).where(BotStateRow.bot_id == bot_id)
+            )
+            return int(result.rowcount or 0)
+
+        return await self.database.run("clear_bot_state", work)

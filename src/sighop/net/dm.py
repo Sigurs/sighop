@@ -113,6 +113,17 @@ ACK_POLL_SECONDS = 0.05
 injected clock rather than by `asyncio.wait_for`, so a simulated retry sequence
 runs in a test without four real timeouts elapsing."""
 
+DEFAULT_ACK_GRACE_MS = 0.0
+"""How long a resolved-unacknowledged send keeps listening, by default: not at all.
+
+A caller that asks for a grace window is saying its *decision* is expensive —
+the greeter's next move is a flood advert — and that it would rather wait than
+act on an acknowledgement that was merely late. Nothing extra is transmitted
+during the window; the expectations that are already registered simply stay
+registered, so a late acknowledgement is matched instead of being counted
+`ack_unmatched`. It is off by default because an interactive send that returned
+seconds after it had already failed would read as a hang."""
+
 
 class DirectMessageError(RuntimeError):
     """A message that could not be composed or routed as asked."""
@@ -388,7 +399,19 @@ class SendResolved:
 
 @dataclass(frozen=True, slots=True)
 class MessageReceived:
-    """A decrypted message. `contact` is a **claimed** sender, never a proven one."""
+    """A decrypted message. `contact` is a **claimed** sender, never a proven one.
+
+    `entity` is the local identity that received it, carried beside the display
+    name rather than instead of it (milestone 7 design D15). A consumer that
+    wants to *reply as* the addressed entity cannot resolve `entity_name` back
+    to an identity when two entities share a display name, and inventing a
+    lookup at the consumer would put the ambiguity somewhere it cannot be
+    resolved. `monitor/render.py` keeps using the name; nothing else changes,
+    and the acknowledgement is still submitted before this report is delivered.
+
+    Optional only so that a report constructed by hand — a renderer's test —
+    stays constructible; every report the messenger produces carries one.
+    """
 
     entity_name: str
     contact: Contact
@@ -396,6 +419,7 @@ class MessageReceived:
     packet_id: str
     candidates_tried: int
     acknowledged: bool
+    entity: LocalEntity | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,6 +542,7 @@ class DirectMessenger:
         *,
         allow_flood: bool | None = None,
         txt_type: TextType | int = TextType.PLAIN,
+        ack_grace_ms: float = DEFAULT_ACK_GRACE_MS,
     ) -> SendOutcome:
         """Send one message, retrying to `MAX_ATTEMPT`, and report the outcome.
 
@@ -525,6 +550,11 @@ class DirectMessenger:
         which is what the field exists for: an identical retransmission is what
         every repeater in the path would deduplicate, so the flags byte — hence
         the ciphertext, hence the packet hash — has to differ (design D9).
+
+        `ack_grace_ms` extends only the *listening*, never the transmitting: see
+        `DEFAULT_ACK_GRACE_MS`. The retry count is untouched, so a caller that
+        asks for a grace window still puts exactly `MAX_ATTEMPT + 1` packets on
+        the air at most.
         """
         raw = text.encode("utf-8") if isinstance(text, str) else text
         flooding = self.allow_flood if allow_flood is None else allow_flood
@@ -628,12 +658,21 @@ class DirectMessenger:
                     return self._resolve_send(
                         pending, SendResult.ACKNOWLEDGED, route, packet_ids
                     )
+            # Every attempt is spent. Before calling it unacknowledged, keep
+            # listening if the caller asked to: an acknowledgement returning
+            # over a different, longer path is late rather than absent, and the
+            # expectations for all four attempts are still registered.
+            if ack_grace_ms > 0 and await self._await_ack(pending, ack_grace_ms):
+                return self._resolve_send(
+                    pending, SendResult.ACKNOWLEDGED, route, packet_ids
+                )
             return self._resolve_send(
                 pending,
                 SendResult.UNACKNOWLEDGED,
                 route,
                 packet_ids,
-                f"no acknowledgement after {MAX_ATTEMPT + 1} attempts",
+                f"no acknowledgement after {MAX_ATTEMPT + 1} attempts"
+                + (f" and {ack_grace_ms / 1000:.0f}s grace" if ack_grace_ms > 0 else ""),
             )
         finally:
             for expectation in pending.expectations:
@@ -794,6 +833,7 @@ class DirectMessenger:
                         packet_id=record.packet_id,
                         candidates_tried=tried,
                         acknowledged=acknowledged,
+                        entity=entity,
                     )
                 )
                 return

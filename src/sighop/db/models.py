@@ -1,11 +1,12 @@
-"""The seven tables (milestone 5 design D3, milestone 6 design D2).
+"""The nine tables (milestone 5 design D3, milestone 6 design D2, milestone 7 D3).
 
 DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
-and writes on every packet — `entity`, `contact`, `path`, `packet_log` — and
-milestone 6 adds the three a room server needs: `room`, `room_member` and
-`message`. `bot_state` belongs to milestone 7 and its absence is still intent;
-§6 calls its list a sketch and "not final DDL", and committing a table nothing
-reads would make it final by accident.
+and writes on every packet — `entity`, `contact`, `path`, `packet_log` —
+milestone 6 added the three a room server needs — `room`, `room_member`,
+`message` — and milestone 7 adds the eighth, `bot_state`, together with a `bot`
+table §6 did not sketch. §6's list was called a sketch and "not final DDL"; a
+bot has a driver name, a mode and configuration to store, and those are per bot
+rather than per key, so they need a row of their own (milestone 7 design D3).
 
 Three details are deliberate rather than accidental:
 
@@ -335,3 +336,72 @@ class Message(Base):
         UniqueConstraint("room_id", "post_timestamp", name="uq_message_room_id_post_timestamp"),
         Index("ix_message_room_id_post_timestamp", "room_id", "post_timestamp"),
     )
+
+
+class Bot(Base):
+    """A driver bound to exactly one local identity (milestone 7 design D3).
+
+    The `room` shape, deliberately: `entity_id` is unique because one identity
+    is one node to the mesh and a node plays one role, so the loader, the CLI
+    and the startup reporting all follow code that already exists.
+
+    Two columns carry the safety posture rather than mere configuration:
+
+    * **`mode`** is `observe` or `active`, and a new row is `observe`. A bot
+      that transmits is an explicit operator act (`sighop bot mode`), stored
+      rather than passed per run, so a bot cannot become active because an
+      operator forgot which flags the last run had (design D4).
+    * **`enabled`** is the ordinary off switch, and is checked together with the
+      entity's own — a bot on a disabled identity does not run either.
+
+    `config` holds both the driver's configuration and the two limit values the
+    runtime owns (`rate_per_hour`, `burst`). They share one column because they
+    are configured, listed and validated together; the runtime's two keys are
+    reserved and a driver's validator may not claim them.
+    """
+
+    __tablename__ = "bot"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entity.id", ondelete="CASCADE", name="fk_bot_entity_id_entity"),
+        nullable=False,
+        unique=True,
+    )
+    driver: Mapped[str] = mapped_column(Text, nullable=False)
+    """The registry name of an in-tree driver class (design D14). Never an
+    import path: loading foreign code into the process holding the entity seeds
+    needs a better reason than convenience."""
+
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    mode: Mapped[str] = mapped_column(Text, nullable=False, default="observe")
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+
+class BotState(Base):
+    """§6's eighth table: the durable key/value store a driver may persist in.
+
+    The only place a driver may write anything, and the reason bots require a
+    database at all (design D5): the greeter's "greeted at most once for the
+    lifetime of that contact" is a row here, and a run that could not write one
+    would re-greet the neighbourhood after every restart.
+
+    `(bot_id, key)` is the primary key, so two bots may hold the same key with
+    different values — state is per bot, and the isolation is the schema's
+    rather than a convention the runtime remembers to apply.
+    """
+
+    __tablename__ = "bot_state"
+
+    bot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot.id", ondelete="CASCADE", name="fk_bot_state_bot_id_bot"),
+        nullable=False,
+    )
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (PrimaryKeyConstraint("bot_id", "key", name="pk_bot_state"),)

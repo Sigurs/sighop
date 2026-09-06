@@ -22,6 +22,7 @@ from tests.dbfixtures import SCHEMA_PREFIX, _connect, _create_schema, _drop_sche
 
 TABLES = ("entity", "contact", "path", "packet_log")
 ROOM_TABLES = ("room", "room_member", "message")
+BOT_TABLES = ("bot", "bot_state")
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -49,9 +50,10 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0002"
+    assert migrations.expected_revision() == "0003"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
+    assert migrations.knows_revision("0003")
     assert not migrations.knows_revision("beef")
 
 
@@ -95,6 +97,7 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
         )
         assert set(TABLES) <= present
         assert set(ROOM_TABLES) <= present
+        assert set(BOT_TABLES) <= present
 
         # Every timestamp column carries a time zone (design D7): the dev server's
         # own TimeZone is Europe/Helsinki, so a naive column would record local
@@ -142,7 +145,7 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     await _drop_schema(database_url, schema)
     await _create_schema(database_url, schema)
     try:
-        every = set(TABLES) | set(ROOM_TABLES)
+        every = set(TABLES) | set(ROOM_TABLES) | set(BOT_TABLES)
 
         await migrations.upgrade_async(config)
         assert await _tables_in(database_url, schema) >= every

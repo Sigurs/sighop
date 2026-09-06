@@ -459,6 +459,59 @@ async def test_a_late_acknowledgement_for_an_earlier_attempt_still_resolves() ->
     assert matched.attempt == 0, "a late ACK matched the wrong attempt's expectation"
 
 
+async def test_an_acknowledgement_arriving_inside_the_grace_window_still_counts() -> None:
+    """A caller whose next move on silence is expensive can keep listening.
+
+    Nothing extra is transmitted: the expectations of the attempts already sent
+    stay registered, so an acknowledgement that came home over a longer path is
+    matched instead of being counted `ack_unmatched`.
+    """
+    entity = Entity("us")
+    peer = Entity("them")
+    paths = PathStore()
+    zero_hop_route_to(paths, peer.identity.public_key)
+    clock = TickingClock()
+    submit = RecordingSubmit()
+    events: list = []
+    dm = messenger(entity, paths=paths, clock=clock, submit=submit, events=events)
+
+    task = asyncio.create_task(
+        dm.send(entity, contact_for(peer.identity), "hej", ack_grace_ms=60_000)
+    )
+    # Every attempt is spent and the send is now inside the grace window.
+    while len(submit.submissions) < MAX_ATTEMPT + 1:
+        await asyncio.sleep(0)
+    for _ in range(200):
+        await asyncio.sleep(0)
+    assert not task.done(), "the grace window had not been waited out"
+
+    last = [event for event in events if isinstance(event, MessageSent)][-1]
+    dm._handle_ack(
+        ack_record(last.expected_ack, at=clock.now()), Acknowledgement(last.expected_ack)
+    )
+    outcome = await asyncio.wait_for(task, 2)
+
+    assert outcome.result is SendResult.ACKNOWLEDGED
+    assert len(submit.submissions) == MAX_ATTEMPT + 1, "grace listens, never transmits"
+
+
+async def test_the_grace_window_ends_and_the_send_is_still_unacknowledged() -> None:
+    entity = Entity("us")
+    peer = Entity("them")
+    paths = PathStore()
+    zero_hop_route_to(paths, peer.identity.public_key)
+    submit = RecordingSubmit()
+    dm = messenger(entity, paths=paths, submit=submit)
+
+    outcome = await dm.send(
+        entity, contact_for(peer.identity), "hej", ack_grace_ms=1_000
+    )
+
+    assert outcome.result is SendResult.UNACKNOWLEDGED
+    assert len(submit.submissions) == MAX_ATTEMPT + 1
+    assert "grace" in outcome.reason
+
+
 async def test_a_dropped_submission_resolves_as_dropped_and_says_why() -> None:
     entity = Entity("us")
     peer = Entity("them")

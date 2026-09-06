@@ -23,14 +23,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from sighop.bots import drivers as bot_drivers
+from sighop.bots.base import BotRuntimeEvent, UnknownDriverError
+from sighop.bots.runtime import BotHost, BotWorker
 from sighop.db.engine import Succeeded
 from sighop.db.persistence import Persistence
-from sighop.db.repositories import LoadedEntity, RoomRecord
+from sighop.db.repositories import BotRecord, LoadedEntity, RoomRecord
 from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
+    BOTS_OFF,
     PERSISTENCE_OFF,
     ROOMS_OFF,
+    render_bot_event,
+    render_bot_startup,
+    render_bot_status,
     render_detail_line,
     render_dm_event,
     render_frame_line,
@@ -43,12 +50,20 @@ from sighop.monitor.render import (
     render_stubs,
 )
 from sighop.net.acks import AckDispatcher, AckRegistry
-from sighop.net.adverts import AdvertScheduler
+from sighop.net.adverts import AdvertScheduler, EntityStub
 from sighop.net.airtime import time_on_air_ms
 from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxOutcome
 from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
-from sighop.net.dm import DirectMessageError, DirectMessageEvent, DirectMessenger
+from sighop.net.dm import (
+    DirectMessageError,
+    DirectMessageEvent,
+    DirectMessenger,
+    MessageReceived,
+    NoRouteError,
+    SendOutcome,
+    choose_route,
+)
 from sighop.net.pathbodies import PathBodyReader
 from sighop.net.paths import PathStore
 from sighop.net.room import RoomEvent, RoomRetentionPruner, RoomServer
@@ -175,6 +190,8 @@ class Runtime:
     _room_messages: dict[str, int] = field(init=False, default_factory=dict)
     retention: RoomRetentionPruner | None = field(init=False, default=None)
     _unserved_rooms: list[str] = field(init=False, default_factory=list)
+    bots: BotHost = field(init=False)
+    _unrun_bots: list[str] = field(init=False, default_factory=list)
     _stop: asyncio.Event = field(init=False)
     _ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
@@ -253,6 +270,12 @@ class Runtime:
             acks=self.acks,
             logger=self.logger,
         )
+        # Design D1/D2: bots ride on the messenger's reports and the contact
+        # store's observations. The host exists before `_restore` so the
+        # listener can be wired before the first frame is handled; it holds no
+        # workers until `_load_bots` puts some in it.
+        self.bots = BotHost(logger=self.logger)
+        self.contacts.set_observation_listener(self.bots.on_observation)
         self.contacts.subscribe(self.bus)
         self.messenger.subscribe(self.bus)
         self.path_bodies.subscribe(self.bus)
@@ -310,6 +333,10 @@ class Runtime:
         # an earlier run is addressable before any traffic arrives rather than
         # racing it (contacts spec).
         await self._restore()
+        # Outside `_restore`, so the host's lifecycle is one thing rather than
+        # two: with no database it holds no workers and starting it is a no-op,
+        # and every worker it does hold is started and stopped by this method.
+        self.bots.start()
         send = asyncio.create_task(self._send_once(), name="send-once")
         tasks = [
             asyncio.create_task(self._print_startup(), name="runtime-startup"),
@@ -343,6 +370,9 @@ class Runtime:
             # logged rather than abandoned.
             for room in self.rooms:
                 await room.stop()
+            # Before the bus too: a bot mid-dispatch may be awaiting a send, and
+            # cancelling it here resolves that send rather than abandoning it.
+            await self.bots.stop()
             if self.retention is not None:
                 await self.retention.stop()
             await self.bus.aclose()
@@ -364,6 +394,9 @@ class Runtime:
             entities=len(self.config.stored_entities),
         )
         await self._load_rooms()
+        # After the rooms, because a bot may not run on an entity a room is
+        # bound to and this is where that is known (bot-runtime spec).
+        await self._load_bots()
         self.persistence.start()
         for room in self.rooms:
             room.start()
@@ -412,6 +445,152 @@ class Runtime:
             await self._serve_room(record, stored)
         if self.rooms:
             self.retention = RoomRetentionPruner(rooms=self.rooms, logger=self.logger)
+
+    async def _load_bots(self) -> None:
+        """Bind each stored bot to its entity, and say why any is not run.
+
+        Design D5: bots require a database, and every way a bot can fail to run
+        — no database at all, a disabled bot, a disabled or unloaded identity, an
+        identity a room already holds, a driver this build does not have — is
+        *stated*. A run that silently ran no bots would be indistinguishable
+        from one whose bots failed to load, and for a component whose correct
+        behaviour is usually to stay quiet that distinction is the whole of the
+        operator's view.
+        """
+        assert self.persistence is not None
+        bots = await self.persistence.bots.list_all()
+        if not isinstance(bots, Succeeded):
+            self._unrun_bots.append(f"bots could not be read: {bots.error}; none is run")
+            return
+
+        by_id = {stored.record.id: stored for stored in self.config.stored_entities}
+        room_entities = {room.entity.identity.public_key for room in self.rooms}
+        for record in bots.value:
+            stored = by_id.get(record.entity_id)
+            reason = ""
+            if stored is None:
+                reason = "its identity was not loaded"
+            elif not stored.record.enabled:
+                reason = "its identity is not enabled"
+            elif not record.enabled:
+                reason = "the bot is disabled"
+            elif stored.public_key in room_entities:
+                reason = "its identity serves a room, and an identity has one role"
+            if reason:
+                self._not_run(record, stored, reason)
+                continue
+            assert stored is not None
+            await self._run_bot(record, stored)
+
+    def _not_run(self, record: BotRecord, stored: LoadedEntity | None, reason: str) -> None:
+        self._unrun_bots.append(
+            render_bot_startup(
+                name=record.entity_name or ("?" if stored is None else stored.name),
+                driver=record.driver,
+                node_hash=0 if stored is None else stored.node_hash,
+                mode=record.mode,
+                limits={},
+                served=False,
+                not_served_because=reason,
+            )
+        )
+
+    async def _run_bot(self, record: BotRecord, stored: LoadedEntity) -> None:
+        """Give one stored bot its driver, its entity and its worker."""
+        entity = next(
+            (stub for stub in self.adverts.stubs if stub.identity.public_key == stored.public_key),
+            None,
+        )
+        if entity is None:  # pragma: no cover - a stored entity is always adopted
+            return
+        try:
+            driver = bot_drivers.build(record.driver, record.config)
+        except UnknownDriverError as exc:
+            # A row naming a driver this build does not have. Reported rather
+            # than crashing the run: the other bots are fine and the operator
+            # needs the name to fix it.
+            self._not_run(record, stored, str(exc))
+            return
+
+        assert self.persistence is not None
+        worker = BotWorker(
+            record=record,
+            driver=driver,
+            storage=self.persistence,
+            send_message=self._sender_for(entity),
+            announce_advert=self._announcer_for(entity),
+            # Never floods, and never asks to (design D10): a greeting is
+            # unsolicited traffic to a peer that has never contacted us, and
+            # shouting one across the whole mesh imposes its cost on everybody.
+            route_known=self._route_known,
+            lookup=self.contacts.get,
+            entity=entity,
+            clock=self.clock,
+            on_event=self._on_bot_event,
+            logger=self.logger,
+        )
+        self.bots.add(worker)
+
+    def _sender_for(
+        self, entity: EntityStub
+    ) -> Callable[[Contact, str, float], Awaitable[SendOutcome]]:
+        """A bot's send, bound to the identity it speaks as.
+
+        The ordinary outbound path and nothing else (`greeter-bot` spec): the
+        same composition, routing, retry, acknowledgement and timeout an
+        operator's `--send` uses, at `PriorityClass.MESSAGE` — §4.3's class for
+        originated traffic, which already names bot DMs. No retry policy is
+        introduced here and none may be.
+
+        The grace window a driver may ask for is not a retry policy: it adds
+        listening after the last attempt, never a packet.
+        """
+
+        async def send(
+            contact: Contact, text: str, ack_grace_seconds: float = 0.0
+        ) -> SendOutcome:
+            return await self.messenger.send(
+                entity,
+                contact,
+                text,
+                allow_flood=False,
+                ack_grace_ms=ack_grace_seconds * 1000.0,
+            )
+
+        return send
+
+    def _announcer_for(self, entity: EntityStub) -> Callable[[bool], Awaitable[bool]]:
+        """A bot's advert, bound to the identity it speaks as.
+
+        The live exercise established why a bot needs one at all: a direct
+        message is decrypted with a secret derived from the *sender's* public
+        key, so a peer that has never heard our advert cannot read a word of it
+        and cannot acknowledge. The greeting looked identical to a peer out of
+        range.
+
+        Awaited, and that is the load-bearing part: an advert is
+        `PriorityClass.ADVERT` (3) and a message is `MESSAGE` (2), so a send
+        queued without waiting would be transmitted *first* and arrive at a peer
+        that still could not read it.
+        """
+
+        async def announce(flood: bool) -> bool:
+            handle = (
+                self.adverts.request_flood(entity)
+                if flood
+                else self.adverts.request_zero_hop(entity)
+            )
+            outcome = await handle
+            return bool(outcome.sent)
+
+        return announce
+
+    def _route_known(self, contact: Contact) -> bool:
+        try:
+            choose_route(self.pipeline.paths, contact, allow_flood=False)
+        except NoRouteError:
+            return False
+        return True
 
     async def _serve_room(self, record: RoomRecord, stored: LoadedEntity) -> None:
         assert self.persistence is not None
@@ -486,6 +665,8 @@ class Runtime:
             await self.clock.sleep(self.config.status_interval)
             self._print(self._status_line())
             for line in self._room_status_lines():
+                self._print(line)
+            for line in self._bot_status_lines():
                 self._print(line)
 
     async def _send_once(self) -> None:
@@ -572,9 +753,18 @@ class Runtime:
 
     def _on_dm_event(self, event: DirectMessageEvent) -> None:
         self._print(render_dm_event(event))
+        if isinstance(event, MessageReceived):
+            # Design D1: the messenger owns decryption and acknowledgement, and
+            # this report is delivered *after* the acknowledgement was submitted.
+            # Offering here rather than subscribing separately is what keeps one
+            # decryption and one acknowledgement per packet true.
+            self.bots.on_message(event)
 
     def _on_room_event(self, event: RoomEvent) -> None:
         self._print(render_room_event(event))
+
+    def _on_bot_event(self, event: BotRuntimeEvent) -> None:
+        self._print(render_bot_event(event))
 
     @property
     def _telemetry(self) -> list[TelemetryEntry]:
@@ -647,6 +837,8 @@ class Runtime:
         self._write(self._persistence_line())
         for line in self._room_lines():
             self._write(line)
+        for line in self._bot_lines():
+            self._write(line)
         for entity in self.entities.entities:
             for warning in entity.warnings:
                 self._write(f"!! {warning}")
@@ -678,6 +870,40 @@ class Runtime:
         ]
         lines.extend(self._unserved_rooms)
         return lines or ["rooms: none configured"]
+
+    def _bot_lines(self) -> list[str]:
+        """What bots this run is running, said before any traffic (design D5)."""
+        if self.persistence is None:
+            return [BOTS_OFF]
+        lines = [
+            render_bot_startup(
+                name=worker.name,
+                driver=worker.driver_name,
+                node_hash=0 if worker.entity is None else worker.entity.node_hash,
+                mode=str(worker.mode),
+                limits=worker.limits(),
+            )
+            for worker in self.bots.workers
+        ]
+        lines.extend(self._unrun_bots)
+        return lines or ["bots: none configured"]
+
+    def _bot_status_lines(self) -> list[str]:
+        return [
+            render_bot_status(
+                name=worker.name,
+                driver=worker.driver_name,
+                mode=str(worker.mode),
+                actions=worker.counters.actions,
+                observations=worker.counters.observations,
+                suppressions=worker.counters.suppressions,
+                dropped=worker.counters.dropped,
+                failures=worker.counters.failures,
+                pending=worker.pending,
+                announces=worker.counters.announces,
+            )
+            for worker in self.bots.workers
+        ]
 
     def _room_status_lines(self) -> list[str]:
         return [

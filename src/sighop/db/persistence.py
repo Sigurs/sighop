@@ -33,6 +33,8 @@ from sighop.db.packetlog import (
 )
 from sighop.db.repositories import (
     DEFAULT_PACKET_LOG_MAX_ROWS,
+    BotRepository,
+    BotStateRepository,
     ContactRepository,
     EntityRepository,
     MessageRepository,
@@ -95,6 +97,14 @@ class Persistence:
     members: RoomMemberRepository = field(init=False)
     messages: MessageRepository = field(init=False)
 
+    # Bots have no write-behind queue either, and for a sharper reason than
+    # rooms (design D16): a dropped contact costs a re-learn, and a dropped
+    # greeting record costs a *second* unsolicited direct message to a stranger
+    # after the next restart. The greeter needs the record to have landed before
+    # it transmits, which a queue cannot promise.
+    bots: BotRepository = field(init=False)
+    bot_state: BotStateRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -116,6 +126,8 @@ class Persistence:
         self.rooms = RoomRepository(database=self.database)
         self.members = RoomMemberRepository(database=self.database)
         self.messages = MessageRepository(database=self.database)
+        self.bots = BotRepository(database=self.database)
+        self.bot_state = BotStateRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,
