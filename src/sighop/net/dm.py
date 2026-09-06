@@ -53,6 +53,7 @@ from enum import StrEnum
 from typing import Protocol
 
 from sighop.logging import Logger, get_logger
+from sighop.net.acks import AckMatch, AckRegistry, AckUnowned
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.contacts import Contact, ContactStore
@@ -102,6 +103,10 @@ DIRECT_SEND_PERHOP_EXTRA_MS = 250.0
 """`MyMesh.cpp:103-106`. These are `examples/companion_radio` defines rather than
 library constants, so a different peer build could differ; the measured
 acknowledgement latency in the first-transmit exercise is what settles it."""
+
+ACK_OWNER = "direct-messages"
+"""What this messenger registers its expectations under in the shared registry
+(design D11), and what a match is attributed to in the status line."""
 
 ACK_POLL_SECONDS = 0.05
 """How often the send loop looks at its own deadline. The wait is driven by the
@@ -463,6 +468,7 @@ class DirectMessenger:
         allow_flood: bool = False,
         on_event: Callable[[DirectMessageEvent], None] | None = None,
         logger: Logger | None = None,
+        acks: AckRegistry | None = None,
     ) -> None:
         self.contacts = contacts
         self.paths = paths
@@ -474,10 +480,23 @@ class DirectMessenger:
         self.allow_flood = allow_flood
         self._on_event = on_event
         self._log = logger or get_logger(component="dm")
-        self._outstanding: dict[bytes, _Pending] = {}
+        # Design D11: the expectation table is shared. When one is handed in,
+        # something else in the process also waits on acknowledgements and a
+        # dispatcher of its own is subscribed to the bus, so this messenger
+        # stops taking acknowledgement records off it — one subscriber matches
+        # them, or "unmatched" means two different things at once.
+        self.acks = acks or AckRegistry(logger=self._log)
+        self._owns_acks = acks is None
+        self._pending_by_checksum: dict[bytes, _Pending] = {}
+        self._room_entity_ids: set[str] = set()
         self.received = 0
         self.undecryptable = 0
         self.sent = 0
+
+    @property
+    def _outstanding(self) -> dict[bytes, _Pending]:
+        """This messenger's own share of the shared table, for reporting only."""
+        return self._pending_by_checksum
 
     def add_entity(self, entity: LocalEntity) -> None:
         self.entities.append(entity)
@@ -539,7 +558,10 @@ class DirectMessenger:
                 # `build_message_packet` encrypted, so the two cannot drift.
                 expected = ack_checksum_for(body, entity.identity.public_key)
                 pending.expectations.append(expected)
-                self._outstanding[expected] = pending
+                self._pending_by_checksum[expected] = pending
+                self.acks.register(
+                    expected, owner=ACK_OWNER, on_match=self._on_ack_match
+                )
 
                 try:
                     airtime = time_on_air_ms(len(packet), require_params(self.radio))
@@ -615,7 +637,8 @@ class DirectMessenger:
             )
         finally:
             for expectation in pending.expectations:
-                self._outstanding.pop(expectation, None)
+                self._pending_by_checksum.pop(expectation, None)
+                self.acks.release(expectation)
 
     async def _await_ack(self, pending: _Pending, timeout_ms: float) -> bool:
         """Wait out this attempt's acknowledgement window on the injected clock."""
@@ -669,7 +692,7 @@ class DirectMessenger:
                 envelope.payload_type is PayloadType.TXT_MSG
             ):
                 await self._handle_text_message(record, envelope)
-            case Payload(payload=Acknowledgement() as ack):
+            case Payload(payload=Acknowledgement() as ack) if self._owns_acks:
                 self._handle_ack(record, ack)
             case _:
                 return
@@ -677,12 +700,34 @@ class DirectMessenger:
     def subscribe(self, bus: NetworkBus, *, name: str = "direct-messages") -> Subscription:
         return bus.subscribe(name, handler=self.handle)
 
+    def claim_for_room(self, entity_id: str) -> None:
+        """Mark an entity as a room server's, so this messenger leaves it alone.
+
+        Design D10: without this, both subscribers decrypt a member's post and
+        both acknowledge it — two decryptions and two acknowledgements on the
+        air for one packet, with two contradictory log lines to explain it. The
+        rule is static and needs no coordination at reception time; the runtime
+        applies it once, at wiring time, which is when the ambiguity is
+        resolvable.
+        """
+        self._room_entity_ids.add(entity_id)
+
     def _candidates(
         self, envelope: DirectEnvelope
     ) -> tuple[list[LocalEntity], tuple[Contact, ...]]:
-        """(local entities on the destination hash) x (possible senders), design D7."""
+        """(local entities on the destination hash) x (possible senders), design D7.
+
+        An entity serving a room is not among them. Note that this filters
+        *entities*, not the destination hash: an ordinary entity that happens to
+        share a node hash with a room server is still tried, because one byte of
+        identity collides at 1 in 256 (§3) and dropping the packet for the
+        collision would be dropping someone's message.
+        """
         entities = [
-            entity for entity in self.entities if entity.node_hash == envelope.dest_hash
+            entity
+            for entity in self.entities
+            if entity.node_hash == envelope.dest_hash
+            and entity.entity_id not in self._room_entity_ids
         ]
         contacts = tuple(self.contacts.by_node_hash(envelope.src_hash))
         if not contacts:
@@ -811,55 +856,61 @@ class DirectMessenger:
         return True
 
     def _handle_ack(self, record: RxRecord, ack: Acknowledgement) -> None:
-        """Match an acknowledgement on its first 4 bytes (`BaseChatMesh.cpp:740`).
+        """Hand an acknowledgement to the shared registry (design D11).
 
-        `parse_ack` already splits the 4-or-6-byte payload into a 4-byte checksum
-        and a tail, so the tail — an extended attempt byte and a random one — is
-        never compared, which is exactly what the firmware does.
+        Matching is on the first 4 bytes and nothing else (`BaseChatMesh.cpp:740`);
+        `parse_ack` has already split the 4-or-6-byte payload into a checksum and
+        a tail, so the tail — an extended attempt byte and a random one — is
+        never compared, exactly as the firmware does not compare it.
+
+        The registry answers with the owner, so an acknowledgement another
+        component was waiting for reaches that component and is *not* reported
+        here as unmatched. `unmatched` keeps meaning nobody in this process was
+        waiting for it.
         """
-        pending = self._outstanding.get(ack.checksum)
-        payload_bytes = len(ack.checksum) + len(ack.tail)
-        if pending is None:
-            self._log.info(
-                "ack_unmatched",
-                packet_id=record.packet_id,
-                checksum=ack.checksum.hex(),
-                outstanding=len(self._outstanding),
-            )
+        result = self.acks.deliver(
+            ack, packet_id=record.packet_id, received_at=record.received_at
+        )
+        if isinstance(result, AckUnowned):
             self._emit(
                 AckUnmatched(
-                    checksum=ack.checksum,
-                    packet_id=record.packet_id,
-                    outstanding=len(self._outstanding),
+                    checksum=result.checksum,
+                    packet_id=result.packet_id,
+                    outstanding=result.outstanding,
                 )
             )
+
+    def _on_ack_match(self, match: AckMatch) -> None:
+        """Our own expectation matched: resolve the send that was waiting on it."""
+        pending = self._pending_by_checksum.get(match.checksum)
+        if pending is None or pending.matched.is_set():
             return
-        if pending.matched.is_set():
-            return
-        pending.matched_checksum = ack.checksum
-        pending.matched_at = record.received_at
-        pending.matched_attempt = pending.expectations.index(ack.checksum)
+        received_at = match.received_at or self.clock.now()
+        pending.matched_checksum = match.checksum
+        pending.matched_at = received_at
+        pending.matched_attempt = pending.expectations.index(match.checksum)
         pending.matched.set()
         latency = 0.0
         if pending.sent_at is not None:
-            latency = (record.received_at - pending.sent_at).total_seconds() * 1000.0
+            latency = (received_at - pending.sent_at).total_seconds() * 1000.0
         self._log.info(
             "ack_matched",
-            packet_id=record.packet_id,
+            packet_id=match.packet_id,
             message_id=pending.message_id,
-            checksum=ack.checksum.hex(),
+            checksum=match.checksum.hex(),
             matched_attempt=pending.matched_attempt,
             latency_ms=round(latency, 1),
+            bundled=match.bundled,
         )
         self._emit(
             AckMatched(
                 message_id=pending.message_id,
                 contact=pending.contact,
-                checksum=ack.checksum,
+                checksum=match.checksum,
                 attempt=pending.matched_attempt,
                 latency_ms=latency,
-                packet_id=record.packet_id,
-                payload_bytes=payload_bytes,
+                packet_id=match.packet_id,
+                payload_bytes=match.payload_bytes,
             )
         )
 
@@ -869,6 +920,6 @@ class DirectMessenger:
             "messages_sent": self.sent,
             "messages_received": self.received,
             "undecryptable": self.undecryptable,
-            "outstanding_acks": len(self._outstanding),
+            "outstanding_acks": len(self._pending_by_checksum),
             "secret_cache": len(self.secrets),
         }

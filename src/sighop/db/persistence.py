@@ -35,9 +35,12 @@ from sighop.db.repositories import (
     DEFAULT_PACKET_LOG_MAX_ROWS,
     ContactRepository,
     EntityRepository,
+    MessageRepository,
     PacketLogRepository,
     PacketLogRow,
     PathRepository,
+    RoomMemberRepository,
+    RoomRepository,
 )
 from sighop.db.writer import WriteBehind
 from sighop.logging import Logger, get_logger
@@ -84,6 +87,14 @@ class Persistence:
     packet_log: PacketLogRepository = field(init=False)
     pruner: PacketLogPruner = field(init=False)
 
+    # Rooms have no write-behind queue of their own, and that is design D5
+    # rather than an omission: an ACL write is rare and must land before the
+    # member is told it landed, and a post is not acknowledged until its row is
+    # there. Neither is a thing to drop when a queue is full.
+    rooms: RoomRepository = field(init=False)
+    members: RoomMemberRepository = field(init=False)
+    messages: MessageRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -102,6 +113,9 @@ class Persistence:
         self.pruner = PacketLogPruner(
             self.packet_log, interval=self.prune_interval, logger=self.logger
         )
+        self.rooms = RoomRepository(database=self.database)
+        self.members = RoomMemberRepository(database=self.database)
+        self.messages = MessageRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,
@@ -298,6 +312,17 @@ class Persistence:
     @property
     def state(self) -> str:
         return self.database.state
+
+    @property
+    def degraded(self) -> bool:
+        """Whether the database is currently unreachable (`RoomStorage`).
+
+        A room accepts nothing while this is true and says so, because a room is
+        exactly as available as its history (design D6). Read from the database's
+        own flag rather than mirrored, so it clears when the probe says it does
+        and not when someone remembers to reset it.
+        """
+        return self.database.degraded
 
     def as_json(self) -> dict[str, object]:
         return {

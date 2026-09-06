@@ -1,13 +1,16 @@
 """Corpus replay: the protocol layer verified against recorded reality.
 
-997 frames captured off the live mesh over four sessions (DESIGN.md §12) — the
-351 milestone 0 frames, the 91 the milestone 2 live runs recorded, which is
-where the first `ROUTE_TYPE_TRANSPORT_FLOOD` and the first CONTROL payloads
-came from, and the 555 from milestone 3's long receive-only session. What this
-proves and — just as importantly — what it does not, is
+1093 frame records captured off the live mesh and the air sighop itself used,
+over six sessions (DESIGN.md §12) — the 351 milestone 0 frames, the 91 the
+milestone 2 live runs recorded, which is where the first
+`ROUTE_TYPE_TRANSPORT_FLOOD` and the first CONTROL payloads came from, the 555
+from milestone 3's long receive-only session, the 6 from milestone 4's
+first-transmit exercise, and the 90 from milestone 6's live room-server
+exercise. What this proves and — just as importantly — what it does not, is
 written down in `CORPUS.md`. In short: it proves framing, adverts and signature
 verification; it cannot prove decryption, because every encrypted payload in it
-is addressed to a third party.
+is addressed to a third party or — for the room-server session — decryptable
+only with a key that lives outside the repository.
 """
 
 from __future__ import annotations
@@ -45,27 +48,35 @@ from tests.protocol.golden import render_corpus
 # an empty path, of which 3 are frames sighop itself transmitted. The deltas
 # against milestone 3's figures are therefore TXT_MSG +2, ACK +2, ADVERT +2,
 # DIRECT +6, hop count 0 +6, hash size 1 +6 — and nothing else moved.
+#
+# Milestone 6 added the live room-server exercise: 90 frames (58 received, 32
+# sighop transmitted) — a room login and its acknowledgement carried as
+# ANON_REQ, posts and refusals as TXT_MSG, pushes and their acknowledgements as
+# ACK, PATH exchanges either side learned a route from, a telemetry REQ, and
+# both boards' adverts. The deltas against milestone 4's figures are TXT_MSG
+# +36, ADVERT +4, ACK +19, ANON_REQ +15, PATH +14, REQ +2, FLOOD +51, DIRECT
+# +39, hop count 0 +67, hop count 1 +23, hash size 1 +26, hash size 3 +64.
 EXPECTED_PAYLOAD_TYPES = {
     PayloadType.GRP_TXT: 341,
-    PayloadType.TXT_MSG: 193,
+    PayloadType.TXT_MSG: 229,
     PayloadType.CONTROL: 168,
-    PayloadType.ADVERT: 94,
-    PayloadType.ACK: 69,
-    PayloadType.ANON_REQ: 42,
-    PayloadType.PATH: 38,
+    PayloadType.ADVERT: 98,
+    PayloadType.ACK: 88,
+    PayloadType.ANON_REQ: 57,
+    PayloadType.PATH: 52,
     PayloadType.RESPONSE: 36,
-    PayloadType.REQ: 12,
+    PayloadType.REQ: 14,
     PayloadType.GRP_DATA: 5,
     PayloadType.TRACE: 5,
 }
 EXPECTED_ROUTE_TYPES = {
-    RouteType.FLOOD: 502,
-    RouteType.DIRECT: 500,
+    RouteType.FLOOD: 553,
+    RouteType.DIRECT: 539,
     RouteType.TRANSPORT_FLOOD: 1,
 }
-EXPECTED_HOP_COUNTS = {0: 424, 1: 326, 2: 177, 3: 69, 4: 5, 5: 2}
-EXPECTED_HASH_SIZES = {1: 493, 2: 109, 3: 401}
-EXPECTED_ADVERT_COUNT = 94
+EXPECTED_HOP_COUNTS = {0: 491, 1: 349, 2: 177, 3: 69, 4: 5, 5: 2}
+EXPECTED_HASH_SIZES = {1: 519, 2: 109, 3: 465}
+EXPECTED_ADVERT_COUNT = 98
 # The one transport-routed frame in the corpus, sighted on 2026-09-04: a
 # TRANSPORT_FLOOD advert. Its codes are recorded here so a codec change that
 # stops reading them fails on evidence rather than on a synthetic fixture.

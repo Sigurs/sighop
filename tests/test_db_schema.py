@@ -21,6 +21,7 @@ from sighop.db.engine import Database
 from tests.dbfixtures import SCHEMA_PREFIX, _connect, _create_schema, _drop_schema
 
 TABLES = ("entity", "contact", "path", "packet_log")
+ROOM_TABLES = ("room", "room_member", "message")
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -48,8 +49,9 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0001"
+    assert migrations.expected_revision() == "0002"
     assert migrations.knows_revision("0001")
+    assert migrations.knows_revision("0002")
     assert not migrations.knows_revision("beef")
 
 
@@ -66,11 +68,20 @@ def test_the_initial_migration_names_the_tables_it_deliberately_omits() -> None:
         assert milestone in source
 
 
+def test_the_room_migration_records_what_now_exists_and_what_still_does_not() -> None:
+    """1.5: absence still reads as intent once three of the four arrive."""
+    source = (migrations.migrations_dir() / "versions" / "0002_room_server.py").read_text()
+    for table in ROOM_TABLES:
+        assert f"``{table}``" in source, f"{table} is not named as now existing"
+    assert "``bot_state``" in source, "bot_state's absence is no longer stated as intent"
+    assert "milestone 7" in source
+
+
 # --- 2.2 / 2.4 The migration against a real server --------------------------
 
 
 @pytest.mark.database
-async def test_the_four_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
+async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
     database: Database, test_schema: str, database_url: str
 ) -> None:
     async with database.sessions() as session:
@@ -83,6 +94,7 @@ async def test_the_four_tables_exist_with_timestamptz_and_a_non_unique_node_hash
             ).scalars()
         )
         assert set(TABLES) <= present
+        assert set(ROOM_TABLES) <= present
 
         # Every timestamp column carries a time zone (design D7): the dev server's
         # own TimeZone is Europe/Helsinki, so a naive column would record local
@@ -99,9 +111,10 @@ async def test_the_four_tables_exist_with_timestamptz_and_a_non_unique_node_hash
         ).all()
         assert naive == []
 
-        # node_hash is indexed and NOT unique on either table: one byte collides
-        # at 1 in 256 and the design is built on candidate sets (§3).
-        for table in ("entity", "contact"):
+        # node_hash is indexed and NOT unique on any of the three tables that
+        # carry one: a byte collides at 1 in 256 and the design is built on
+        # candidate sets (§3). Two members of one room may share one.
+        for table in ("entity", "contact", "room_member"):
             indexes = (
                 (
                     await session.execute(
@@ -129,15 +142,17 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     await _drop_schema(database_url, schema)
     await _create_schema(database_url, schema)
     try:
+        every = set(TABLES) | set(ROOM_TABLES)
+
         await migrations.upgrade_async(config)
-        assert await _tables_in(database_url, schema) >= set(TABLES)
+        assert await _tables_in(database_url, schema) >= every
 
         await migrations.downgrade_async(config)
         left = await _tables_in(database_url, schema)
-        assert not (left & set(TABLES)), f"downgrade left {sorted(left & set(TABLES))}"
+        assert not (left & every), f"downgrade left {sorted(left & every)}"
 
         await migrations.upgrade_async(config)
-        assert await _tables_in(database_url, schema) >= set(TABLES)
+        assert await _tables_in(database_url, schema) >= every
 
         handle = Database(config=config)
         try:

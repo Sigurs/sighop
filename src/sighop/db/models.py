@@ -1,11 +1,11 @@
-"""The four tables (design D3), and the reasons three of their details are odd.
+"""The seven tables (milestone 5 design D3, milestone 6 design D2).
 
-DESIGN.md §6 sketches eight tables. This milestone builds the four the runtime
-actually reads and writes — `entity`, `contact`, `path`, `packet_log` — so every
-table ships with behaviour and a test behind it. `room`, `room_member` and
-`message` belong to milestone 6 and `bot_state` to milestone 7, each in its own
-migration; §6 calls its list a sketch and "not final DDL", and committing four
-tables nothing reads would make it final by accident.
+DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
+and writes on every packet — `entity`, `contact`, `path`, `packet_log` — and
+milestone 6 adds the three a room server needs: `room`, `room_member` and
+`message`. `bot_state` belongs to milestone 7 and its absence is still intent;
+§6 calls its list a sketch and "not final DDL", and committing a table nothing
+reads would make it final by accident.
 
 Three details are deliberate rather than accidental:
 
@@ -38,10 +38,12 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     LargeBinary,
     MetaData,
+    PrimaryKeyConstraint,
     SmallInteger,
     Text,
     UniqueConstraint,
@@ -197,4 +199,139 @@ class PacketLog(Base):
     __table_args__ = (
         Index("ix_packet_log_packet_id", "packet_id"),
         Index("ix_packet_log_at", "at"),
+    )
+
+
+class Room(Base):
+    """A room, bound to exactly one local identity (milestone 6 design D2).
+
+    `entity_id` is unique because one identity is one node to the mesh and a
+    node is a room — the Non-Goal that keeps `dest_hash` from being ambiguous
+    about which room a packet is for.
+
+    The two password columns say three different things between them, and the
+    difference is §7's *"an empty guest password is legal… but must be an
+    explicit choice, never the default"* expressed as columns an operator has to
+    set on purpose:
+
+    * `guest_password_hash` set — that password admits a guest.
+    * NULL with `guest_open` false — guest logins are refused. This is what a
+      newly created room is.
+    * NULL with `guest_open` true — any password admits a guest, including an
+      empty one.
+
+    Both retention bounds are nullable and default to NULL, which is
+    "keep everything" (design D15). Nothing is ever deleted until an operator
+    sets a policy, because §13's unknown #1 — what retention is sensible —
+    is answered from observed volume and a default would answer it by accident.
+    """
+
+    __tablename__ = "room"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    entity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entity.id", ondelete="CASCADE", name="fk_room_entity_id_entity"),
+        nullable=False,
+        unique=True,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    admin_password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    """An encoded `$argon2id$v=19$m=…,t=…,p=…$salt$tag` string (design D1): the
+    parameters travel with the hash, so changing them needs no schema change."""
+
+    guest_password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
+    guest_open: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    allow_read_only: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retention_messages: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+
+class RoomMember(Base):
+    """One member of one room — the ACL, and also the routing and cursor table.
+
+    §6's sketch had this as a permission table. The firmware's `ClientInfo`
+    (`src/helpers/ClientACL.h`) keeps `sync_since`, `last_timestamp`,
+    `permissions` and `out_path` on the same record, and so must we: the sync
+    cursor and the replay guard are per member and have nowhere else to live.
+    The route itself stays in `path`, which already knows how to hold candidates.
+
+    `node_hash` is indexed and **not** unique, for the reason §3 gives and
+    `entity`/`contact` already apply: one byte collides at 1 in 256, and two
+    members of one room may perfectly well share one.
+
+    `sync_since` and `last_timestamp` are `BIGINT` because they are MeshCore's
+    unsigned 32-bit epoch seconds *as they appear on the wire*, not instants.
+    `first_login` and `last_activity` are ours and are `TIMESTAMPTZ`; mixing the
+    two representations in one column is how a comparison silently changes
+    meaning.
+    """
+
+    __tablename__ = "room_member"
+
+    room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("room.id", ondelete="CASCADE", name="fk_room_member_room_id_room"),
+        nullable=False,
+    )
+    public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    node_hash: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    permissions: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    """MeshCore's permission byte, stored as it travels."""
+
+    sync_since: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    """The ordering value up to which history is confirmed delivered. Advances
+    only on an acknowledgement (design D3), so a restart resends nothing the
+    member already has and skips nothing it does not."""
+
+    last_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    """The replay guard, persisted so a restart does not reopen the window the
+    firmware's transient copy opens on every reboot (design D9)."""
+
+    first_login: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    last_activity: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("room_id", "public_key", name="pk_room_member"),
+        Index("ix_room_member_node_hash", "node_hash"),
+    )
+
+
+class Message(Base):
+    """One post, ordered within its room by a value the wire protocol can name.
+
+    `post_timestamp` is the cursor, not decoration (design D3). The push carries
+    it, the acknowledgement advances `room_member.sync_since` to it, and a
+    keep-alive may force a cursor to a specific one — so it has to be exactly
+    this value and it has to be a total order. `UNIQUE (room_id, post_timestamp)`
+    is what makes `max(now, last + 1)` safe rather than hopeful: a clock that
+    steps backwards produces a stall in stamping, never a duplicate.
+
+    `text` is `bytea` because text off the wire is `WireText` and is not
+    guaranteed valid UTF-8 (design D4). A room server re-transmits a post to
+    every member and must reproduce it byte for byte; rendering to a string
+    happens at the edges, marked as a rendering.
+
+    `sender_timestamp` is the author's own claim and is nullable because a post
+    the server itself makes has no sender. It is what a retry is recognised by.
+    """
+
+    __tablename__ = "message"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    room_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("room.id", ondelete="CASCADE", name="fk_message_room_id_room"),
+        nullable=False,
+    )
+    author_public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    post_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sender_timestamp: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    posted_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("room_id", "post_timestamp", name="uq_message_room_id_post_timestamp"),
+        Index("ix_message_room_id_post_timestamp", "room_id", "post_timestamp"),
     )

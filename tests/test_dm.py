@@ -776,6 +776,94 @@ async def test_an_unknown_source_hash_falls_back_to_every_contact() -> None:
     assert received.contact.public_key == alice.identity.public_key
 
 
+# --- An entity a room server serves is not this messenger's (design D10) ----
+
+
+def _colliding_pair(first: str, second: str) -> tuple[Entity, Entity]:
+    """Two entities whose node hashes are equal — the 1-in-256 case (§3).
+
+    Generated rather than contrived, because the property under test is that the
+    *entity* is filtered and the destination hash is not; two entities that do
+    not actually collide would let the test pass for the wrong reason.
+    """
+    by_hash: dict[int, Entity] = {}
+    for index in range(4096):
+        entity = Entity(f"{first}-{index}")
+        existing = by_hash.get(entity.node_hash)
+        if existing is not None:
+            existing.entity_id = existing.name = first
+            entity.entity_id = entity.name = second
+            return existing, entity
+        by_hash[entity.node_hash] = entity
+    raise AssertionError("no node-hash collision in 4096 identities")
+
+
+def _text_packet_to(*, sender: Entity, recipient: Entity, text: bytes) -> bytes:
+    secret = SharedSecretCache().get(sender.identity, recipient.identity.public_key)
+    packet, _ = message_packet(
+        sender=sender,
+        recipient_node_hash=recipient.node_hash,
+        secret=secret,
+        text=text,
+    )
+    return packet
+
+
+async def test_a_message_to_a_room_server_entity_is_neither_decrypted_nor_acknowledged() -> None:
+    """4.3, design D10: exactly one component decrypts a packet.
+
+    Without the rule both subscribers decrypt a member's post and both
+    acknowledge it — two acknowledgements on the air for one packet, and two
+    contradictory log lines to explain them afterwards.
+    """
+    alice, lounge = Entity("alice"), Entity("lounge")
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(alice.identity.public_key)
+    paths = PathStore()
+    zero_hop_route_to(paths, alice.identity.public_key)
+    submit = RecordingSubmit()
+    events: list = []
+    dm = messenger(lounge, contacts=contacts, paths=paths, submit=submit, events=events)
+    dm.claim_for_room(lounge.entity_id)
+
+    await dm.handle(_packet_for(_text_packet_to(sender=alice, recipient=lounge, text=b"hi")))
+
+    assert not [event for event in events if isinstance(event, MessageReceived)]
+    assert submit.submissions == [], "the direct messenger acknowledged a room's post"
+    assert dm.received == 0
+    # Not even reported as undecryptable: it was not this component's packet to
+    # decrypt, which is a different statement from failing to decrypt it.
+    assert not [event for event in events if isinstance(event, MessageUndecryptable)]
+
+
+async def test_an_ordinary_entity_sharing_a_room_servers_node_hash_is_still_tried() -> None:
+    """4.3: the rule filters entities, not destination hashes.
+
+    One byte of identity collides at 1 in 256 (§3). Dropping the packet because
+    a room server happens to share the hash would be dropping someone's message.
+    """
+    alice = Entity("alice")
+    lounge, bob = _colliding_pair("lounge", "bob")
+    assert lounge.node_hash == bob.node_hash
+
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(alice.identity.public_key)
+    paths = PathStore()
+    zero_hop_route_to(paths, alice.identity.public_key)
+    submit = RecordingSubmit()
+    events: list = []
+    dm = messenger(lounge, bob, contacts=contacts, paths=paths, submit=submit, events=events)
+    dm.claim_for_room(lounge.entity_id)
+
+    packet = _text_packet_to(sender=alice, recipient=bob, text=b"for bob")
+    await dm.handle(_packet_for(packet))
+
+    received = next(event for event in events if isinstance(event, MessageReceived))
+    assert received.entity_name == "bob"
+    assert received.body.text.raw == b"for bob"
+    assert len(submit.submissions) == 1, "exactly one acknowledgement"
+
+
 # --- The decode stage stays stateless --------------------------------------
 
 

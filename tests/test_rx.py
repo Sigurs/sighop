@@ -38,10 +38,11 @@ from tests.protocol.corpus import (
     EXPECTED_TRANSMITTED_COUNT,
 )
 
-EXPECTED_RECEIVED_ADVERT_COUNT = 93
-"""Adverts the mesh sent us. One fewer than the corpus holds: the corpus also
-carries the zero-hop advert sighop itself transmitted, and this stage only ever
-sees receptions."""
+EXPECTED_RECEIVED_ADVERT_COUNT = 95
+"""Adverts the mesh sent us. Three fewer than the corpus holds: the
+first-transmit and room-server sessions between them carry three adverts
+sighop itself transmitted (one zero-hop advert each, the room-server session's
+sent twice), and this stage only ever sees receptions."""
 
 
 @pytest.fixture(scope="module")
@@ -111,10 +112,18 @@ def test_replayed_timestamps_are_used_rather_than_the_wall_clock():
 # --- Every frame produces an outcome ---------------------------------------
 
 
-def test_every_corpus_frame_produces_an_outcome_and_none_fail(corpus_records):
+def test_every_corpus_frame_produces_an_outcome_and_none_unexpectedly_fail(corpus_records):
+    """Every reception produces some outcome, and the only failure among them
+    is the one known `ModemUnparsed` artifact at the start of the room-server
+    session — a stray `RxMeta` the modem reported before any Data frame,
+    forwarded rather than dropped (`net/rx.py`'s own docstring for the case).
+    Any other failure means a real frame stopped decoding.
+    """
     assert len(corpus_records) == EXPECTED_RECEIVED_COUNT
     failures = [r for r in corpus_records if r.failed]
-    assert failures == [], [outcome_fields(r) for r in failures]
+    unexpected = [r for r in failures if not isinstance(r.outcome, ModemUnparsed)]
+    assert unexpected == [], [outcome_fields(r) for r in unexpected]
+    assert len(failures) == 1, [outcome_fields(r) for r in failures]
 
 
 def test_a_structurally_invalid_frame_reports_the_violated_rule():

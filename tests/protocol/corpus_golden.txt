@@ -1004,3 +1004,93 @@
 2026-09-04-first-transmit.jsonl[004] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=2b03574b tail=0091
 2026-09-04-first-transmit.jsonl[005] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=1df0f21a tail=-
 2026-09-04-first-transmit.jsonl[006] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788558548 sig=ok flags=0x81 type=CHAT name='[redacted]'
+2026-09-06-room-server.jsonl[002] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788647527 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
+2026-09-06-room-server.jsonl[003] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788648645 sig=ok flags=0x83 type=ROOM_SERVER name='[redacted]'
+2026-09-06-room-server.jsonl[004] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=0b0f len=32 sha=630f33eb368e0706
+2026-09-06-room-server.jsonl[005] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=0b0f len=32 sha=630f33eb368e0706
+2026-09-06-room-server.jsonl[006] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=c464 len=16 sha=bc34701253519438
+2026-09-06-room-server.jsonl[007] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=c464 len=16 sha=bc34701253519438
+2026-09-06-room-server.jsonl[008] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=a280 len=16 sha=855198c92a111894
+2026-09-06-room-server.jsonl[009] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=a280 len=16 sha=855198c92a111894
+2026-09-06-room-server.jsonl[010] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=396e len=16 sha=a34eb86c78b02535
+2026-09-06-room-server.jsonl[011] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=5101 len=16 sha=e085eab03f4e5434
+2026-09-06-room-server.jsonl[012] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=396e len=16 sha=a34eb86c78b02535
+2026-09-06-room-server.jsonl[013] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=38 src=48 mac=5101 len=16 sha=e085eab03f4e5434
+2026-09-06-room-server.jsonl[014] route=DIRECT type=PATH v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=17b4 len=16 sha=f85c3ad334b756f5
+2026-09-06-room-server.jsonl[015] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=5cd5 len=32 sha=f6d8c85a0836c0aa
+2026-09-06-room-server.jsonl[016] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=5cd5 len=32 sha=f6d8c85a0836c0aa
+2026-09-06-room-server.jsonl[017] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=6e1c1257 tail=-
+2026-09-06-room-server.jsonl[018] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=a8d8 len=176 sha=9e91a98839167f99
+2026-09-06-room-server.jsonl[019] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=a8d8 len=176 sha=9e91a98839167f99
+2026-09-06-room-server.jsonl[020] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=7e34 len=176 sha=3247d25c5ef2cc72
+2026-09-06-room-server.jsonl[021] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=7e34 len=176 sha=3247d25c5ef2cc72
+2026-09-06-room-server.jsonl[022] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=ebc0 len=176 sha=b1c9466195316506
+2026-09-06-room-server.jsonl[023] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=ebc0 len=176 sha=b1c9466195316506
+2026-09-06-room-server.jsonl[024] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=4b5b len=32 sha=f03567234f40c909
+2026-09-06-room-server.jsonl[025] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=6d7f7d44 tail=-
+2026-09-06-room-server.jsonl[026] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=b750 len=48 sha=b0e23fedfa695982
+2026-09-06-room-server.jsonl[027] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=3f16 len=176 sha=dea17280152ed10d
+2026-09-06-room-server.jsonl[028] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=2b371a3a tail=-
+2026-09-06-room-server.jsonl[029] route=FLOOD type=ACK v1 tc=- hops=1x3 path=[redacted] | ack checksum=2b371a3a tail=-
+2026-09-06-room-server.jsonl[030] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=3f16 len=176 sha=dea17280152ed10d
+2026-09-06-room-server.jsonl[031] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=798a len=48 sha=9c999fcf6bcf9ac2
+2026-09-06-room-server.jsonl[032] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=a5730a51 tail=-
+2026-09-06-room-server.jsonl[033] route=FLOOD type=ACK v1 tc=- hops=1x3 path=[redacted] | ack checksum=a5730a51 tail=-
+2026-09-06-room-server.jsonl[034] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=5951 len=176 sha=5abe753bb640fcff
+2026-09-06-room-server.jsonl[035] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=5951 len=176 sha=5abe753bb640fcff
+2026-09-06-room-server.jsonl[036] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=4716 len=48 sha=4e5843f9ef1c949e
+2026-09-06-room-server.jsonl[037] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=ffe9c0b4 tail=-
+2026-09-06-room-server.jsonl[038] route=FLOOD type=ACK v1 tc=- hops=1x3 path=[redacted] | ack checksum=ffe9c0b4 tail=-
+2026-09-06-room-server.jsonl[039] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=96b0 len=48 sha=e702bea1ebac82d3
+2026-09-06-room-server.jsonl[040] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=7408d756 tail=-
+2026-09-06-room-server.jsonl[041] route=FLOOD type=ACK v1 tc=- hops=1x3 path=[redacted] | ack checksum=7408d756 tail=-
+2026-09-06-room-server.jsonl[042] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=8344 len=16 sha=c0e75b128c6c1928
+2026-09-06-room-server.jsonl[043] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=8344 len=16 sha=c0e75b128c6c1928
+2026-09-06-room-server.jsonl[044] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=db48 len=16 sha=cab1fafd08ccd185
+2026-09-06-room-server.jsonl[045] route=DIRECT type=PATH v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=5716 len=16 sha=2803620d99d05b50
+2026-09-06-room-server.jsonl[046] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=38 src=48 mac=db48 len=16 sha=cab1fafd08ccd185
+2026-09-06-room-server.jsonl[047] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=5b24 len=48 sha=410940d9bc766793
+2026-09-06-room-server.jsonl[048] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=250106f7 tail=-
+2026-09-06-room-server.jsonl[049] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=88b9 len=16 sha=8b5f0f30d5b2a997
+2026-09-06-room-server.jsonl[050] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=cc97 len=16 sha=fa1fb00343f42215
+2026-09-06-room-server.jsonl[051] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=88b9 len=16 sha=8b5f0f30d5b2a997
+2026-09-06-room-server.jsonl[052] route=DIRECT type=PATH v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=f96f len=16 sha=f522f1154071e99f
+2026-09-06-room-server.jsonl[053] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=dd81 len=32 sha=e277c5c15f77eda0
+2026-09-06-room-server.jsonl[054] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=ec2c len=32 sha=9dd8ec5ede63d346
+2026-09-06-room-server.jsonl[055] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=77e4 len=32 sha=0704393e959c228f
+2026-09-06-room-server.jsonl[056] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=c7c6 len=16 sha=f2c5cd8e7d2362d7
+2026-09-06-room-server.jsonl[057] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=77e4 len=32 sha=0704393e959c228f
+2026-09-06-room-server.jsonl[058] route=FLOOD type=ACK v1 tc=- hops=0x3 path=- | ack checksum=74bff790 tail=-
+2026-09-06-room-server.jsonl[059] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=5e6c len=16 sha=41efd604ddd74be7
+2026-09-06-room-server.jsonl[060] route=FLOOD type=ACK v1 tc=- hops=1x3 path=[redacted] | ack checksum=74bff790 tail=-
+2026-09-06-room-server.jsonl[061] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=29ba len=32 sha=10f6244cc1c02fe4
+2026-09-06-room-server.jsonl[062] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=fbcc len=32 sha=3147138f1c1e1932
+2026-09-06-room-server.jsonl[063] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=021d85a9 tail=-
+2026-09-06-room-server.jsonl[064] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=13a1 len=32 sha=31d7c3afe3c03e43
+2026-09-06-room-server.jsonl[065] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=b3e8b191 tail=-
+2026-09-06-room-server.jsonl[066] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=bfd5 len=32 sha=48ad7f3f2bd97ff8
+2026-09-06-room-server.jsonl[067] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=bfd5 len=32 sha=48ad7f3f2bd97ff8
+2026-09-06-room-server.jsonl[068] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=bfd5 len=32 sha=48ad7f3f2bd97ff8
+2026-09-06-room-server.jsonl[069] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788649500 sig=ok flags=0x83 type=ROOM_SERVER name='[redacted]'
+2026-09-06-room-server.jsonl[070] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=4133 len=32 sha=459214b9aa452cc4
+2026-09-06-room-server.jsonl[071] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=b185 len=32 sha=e301a1bb44602309
+2026-09-06-room-server.jsonl[072] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=2995 len=32 sha=2b0e17c25c39c39a
+2026-09-06-room-server.jsonl[073] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788649608 sig=ok flags=0x81 type=CHAT name='Sigurs'
+2026-09-06-room-server.jsonl[074] route=FLOOD type=ANON_REQ v1 tc=- hops=0x3 path=- | anon_req dest=48 sender=[redacted] mac=2db0 len=16 sha=ac4806dd24a74539
+2026-09-06-room-server.jsonl[075] route=FLOOD type=ANON_REQ v1 tc=- hops=1x3 path=[redacted] | anon_req dest=48 sender=[redacted] mac=2db0 len=16 sha=ac4806dd24a74539
+2026-09-06-room-server.jsonl[076] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=3dd5 len=16 sha=8e56140ca3e29913
+2026-09-06-room-server.jsonl[077] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=48 mac=bfd5 len=32 sha=48ad7f3f2bd97ff8
+2026-09-06-room-server.jsonl[078] route=DIRECT type=PATH v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=e414 len=16 sha=a1354c7dcb4822b3
+2026-09-06-room-server.jsonl[079] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=f512c9a7 tail=-
+2026-09-06-room-server.jsonl[080] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=e7ed len=32 sha=94fe7eb12721a061
+2026-09-06-room-server.jsonl[081] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=82bde984 tail=-
+2026-09-06-room-server.jsonl[082] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=fcc1 len=32 sha=c2d9c8517b462bf1
+2026-09-06-room-server.jsonl[083] route=DIRECT type=ACK v1 tc=- hops=0x3 path=- | ack checksum=bc846c92 tail=-
+2026-09-06-room-server.jsonl[084] route=FLOOD type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=2359 len=16 sha=a199070608672406
+2026-09-06-room-server.jsonl[085] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=1dce165a tail=-
+2026-09-06-room-server.jsonl[086] route=FLOOD type=TXT_MSG v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=2359 len=16 sha=a199070608672406
+2026-09-06-room-server.jsonl[087] route=FLOOD type=REQ v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=24f2 len=16 sha=a8491d13f72abcb9
+2026-09-06-room-server.jsonl[088] route=FLOOD type=PATH v1 tc=- hops=0x1 path=- | envelope dest=38 src=48 mac=b3cc len=16 sha=466cf64984bec181
+2026-09-06-room-server.jsonl[089] route=FLOOD type=REQ v1 tc=- hops=1x3 path=[redacted] | envelope dest=48 src=38 mac=24f2 len=16 sha=a8491d13f72abcb9
+2026-09-06-room-server.jsonl[090] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=38 src=48 mac=b3cc len=16 sha=466cf64984bec181
+2026-09-06-room-server.jsonl[091] route=DIRECT type=PATH v1 tc=- hops=0x3 path=- | envelope dest=48 src=38 mac=bffe len=16 sha=0a7ebb8e9d5f4500

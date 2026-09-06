@@ -1,7 +1,7 @@
 # The protocol regression corpus
 
-1003 frame records in seven files: **1000 received** off the live mesh, and
-**3 that sighop itself transmitted**.
+1093 frame records in eight files: **1058 received** off the live mesh, and
+**35 that sighop itself transmitted**.
 
 | File | Frames | Recorded | Provenance |
 |---|---|---|---|
@@ -12,6 +12,7 @@
 | `captures/2026-09-04-03.jsonl` | 33 | milestone 2, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-05.jsonl` | 555 | milestone 3, Heltec V4 OLED | `capture_meta` header |
 | `captures/2026-09-04-first-transmit.jsonl` | 6 (3 rx, 3 tx) | milestone 4, V4 OLED ↔ V3 peer | `capture_meta` header, both boards |
+| `captures/2026-09-06-room-server.jsonl` | 90 (58 rx, 32 tx) | milestone 6, V4 OLED ↔ stock `v1.17.1` client | `capture_meta` header |
 
 Per DESIGN.md §12 these files are the permanent regression corpus for the
 protocol layer. The two milestone 0 files predate the `capture_meta` header
@@ -35,6 +36,20 @@ The 2026-09-04 files are one overnight session split by device restarts. The
 carried live advert load behind a closed gate. All of them were kept whole
 rather than filtered down to their novel frames: a corpus of hand-picked
 interesting frames stops being a sample of what the mesh actually carries.
+
+The 2026-09-06 file is milestone 6's live room-server exercise, run in three
+`sighop run` invocations against the same capture file: receive-only, then
+transmit enabled with a zero-hop advert, then a restart partway through to
+exercise the exit criterion. It holds the first live room login (`ANON_REQ`
+carrying the login envelope), the first live room post and refusal (`TXT_MSG`
+to the room's own node hash), the first pushes and their acknowledgements
+(`ACK`, both 4-byte forms — this session never saw the 6-byte form the other
+sessions did), and the two `PATH` exchanges either side used to learn a route
+home. It also caught the discovery that drove design D4's revision: five posts
+refused `too_long` at 156–158 bytes, before the fix that truncates and
+acknowledges instead. Kept whole for the same reason as the rest: the refused
+posts are exactly the evidence that the original design was wrong, and a
+corpus edited down to only the "working" frames would have erased it.
 
 **They are read-only evidence.** The harness opens them for reading and never
 writes to them or their sidecars. Nothing regenerates them.
@@ -118,24 +133,31 @@ The 2026-09-05 session added three more, and settled how ordinary one of the
 Asserted by `test_corpus.py`; a decoder change that shifts classification fails
 loudly even when every frame still decodes.
 
-Counted over all 1003 records, receptions and transmissions alike — the
+Counted over all 1093 records, receptions and transmissions alike — the
 first-transmit session's 6 frames are every one `DIRECT` with an empty path, so
 its whole contribution is `TXT_MSG` +2, `ACK` +2, `ADVERT` +2, `DIRECT` +6, hop
-count 0 +6 and hash size 1 +6.
+count 0 +6 and hash size 1 +6. The room-server session's 90 frames contribute
+`TXT_MSG` +36, `ADVERT` +4, `ACK` +19, `ANON_REQ` +15, `PATH` +14, `REQ` +2,
+`FLOOD` +51, `DIRECT` +39, hop count 0 +67, hop count 1 +23, hash size 1 +26,
+hash size 3 +64.
 
-- **Payload types**: GRP_TXT 341, TXT_MSG 193, CONTROL 168, ADVERT 94, ACK 69,
-  ANON_REQ 42, PATH 38, RESPONSE 36, REQ 12, GRP_DATA 5, TRACE 5.
-- **Route types**: FLOOD 502, DIRECT 500, TRANSPORT_FLOOD 1. No
+- **Payload types**: GRP_TXT 341, TXT_MSG 229, CONTROL 168, ADVERT 98, ACK 88,
+  ANON_REQ 57, PATH 52, RESPONSE 36, REQ 14, GRP_DATA 5, TRACE 5.
+- **Route types**: FLOOD 553, DIRECT 539, TRANSPORT_FLOOD 1. No
   `TRANSPORT_DIRECT`.
-- **Hop counts**: 0→424, 1→326, 2→177, 3→69, 4→5, 5→2.
-- **Path hash sizes**: 1-byte 493, 2-byte 109, 3-byte 401.
-- **Adverts**: 94, all verifying and all named; 77 with flags `0x92` (repeater,
-  located, named), 9 with `0x81` (chat, named, no location), 6 with `0x93` (room
-  server, located, named), 2 with `0x91` (chat, located, named). Ten distinct
-  names — the two new ones are the peer and sighop's own burned test identity.
-- **ACK payload lengths**: 4 bytes ×49, 6 bytes ×20. The 6-byte form is now
-  confirmed as an acknowledgement of something sighop sent, not only as
-  third-party traffic.
+- **Hop counts**: 0→491, 1→349, 2→177, 3→69, 4→5, 5→2.
+- **Path hash sizes**: 1-byte 519, 2-byte 109, 3-byte 465.
+- **Adverts**: 98, all verifying and all named; 78 with flags `0x92` (repeater,
+  located, named — the room-server session added one more `[redacted]`, no new
+  name), 10 with `0x81` (chat, named, no location — one more `Sigurs`, also not
+  new), 6 with `0x93` (room server, located, named), 2 with `0x91` (chat,
+  located, named), and 2 with `0x83` — **room server, named, no location** — a
+  shape not seen before this session: `[redacted]`'s zero-hop advert carries no
+  lat/lon, where every earlier room-server advert did. Eleven distinct names —
+  the room-server session's only new one is `[redacted]` itself.
+- **ACK payload lengths**: 4 bytes ×68, 6 bytes ×20. The room-server session's
+  19 acknowledgements were every one 4 bytes, the plain checksum form; the
+  6-byte form with a tail stays confirmed only by the first-transmit session.
 
 ## Flood repetition rate (input to the milestone 3 dedup cache)
 

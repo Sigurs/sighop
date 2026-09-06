@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from sighop.config import (
     SECRET_KEY_VARIABLE,
@@ -19,7 +19,14 @@ from sighop.config import (
     parse_secret_key,
 )
 from sighop.db import migrations
-from sighop.db.engine import Database, DatabaseError, Failed, Outcome, classify
+from sighop.db.engine import (
+    Database,
+    DatabaseError,
+    Failed,
+    Outcome,
+    Succeeded,
+    classify,
+)
 from sighop.db.migrations import MigrationsNotFoundError
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
@@ -28,6 +35,8 @@ from sighop.db.repositories import (
     EntityRecord,
     EntityRepository,
     LoadedEntity,
+    RoomExistsError,
+    RoomRecord,
 )
 from sighop.db.sealing import SealError
 from sighop.keystore import (
@@ -41,7 +50,9 @@ from sighop.monitor.render import render_replay_startup, render_startup
 from sighop.monitor.run import MonitorRun
 from sighop.net.airtime import cross_check_airtime
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
+from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
+from sighop.passwords import hash_password
 from sighop.protocol.payloads import NodeType
 from sighop.radio.capture import CaptureRun, CaptureWriter
 from sighop.radio.kiss import KissTransport, serial_connector
@@ -328,6 +339,129 @@ def build_parser() -> argparse.ArgumentParser:
     keys_export.add_argument("path", type=Path, help="keyfile to write (never overwritten)")
     for store_parser in (keys_list, keys_import, keys_export):
         _add_database_url_argument(store_parser)
+
+    room = subparsers.add_parser(
+        "room",
+        help="create and administer rooms on stored room-server identities",
+    )
+    room_actions = room.add_subparsers(dest="room_command", required=True)
+
+    room_create = room_actions.add_parser(
+        "create", help="bind a room to a stored room-server identity"
+    )
+    room_create.add_argument(
+        "identity", help="the stored entity, by exact name or hex public key prefix"
+    )
+    room_create.add_argument("--name", required=True, help="the room's name")
+    room_create.add_argument(
+        "--guest-password",
+        action="store_true",
+        help=(
+            "also read a guest password from the prompt or from standard input "
+            "after the admin one. Without this and without --open, guest logins "
+            "are refused"
+        ),
+    )
+    room_create.add_argument(
+        "--open",
+        action="store_true",
+        dest="guest_open",
+        help=(
+            "admit any password as a guest, including an empty one. An explicit "
+            "choice, never the default (DESIGN.md §7)"
+        ),
+    )
+    room_create.add_argument(
+        "--allow-read-only",
+        action="store_true",
+        help=(
+            "admit a sender whose password matched nothing as a read-only "
+            "spectator, which may receive history and may not post"
+        ),
+    )
+
+    room_actions.add_parser("list", help="list the rooms this database holds")
+
+    room_show = room_actions.add_parser("show", help="show one room's configuration")
+    room_show.add_argument("room", help="the room, by name")
+
+    room_passwd = room_actions.add_parser(
+        "passwd",
+        help=(
+            "change a room's admin or guest password. Read from a prompt or "
+            "from standard input, never from an argument"
+        ),
+    )
+    room_passwd.add_argument("room", help="the room, by name")
+    room_passwd.add_argument(
+        "--guest",
+        action="store_true",
+        help="change the guest password rather than the admin one",
+    )
+    room_passwd.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove the guest password, so guest logins are refused again",
+    )
+    room_passwd.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="read the password from standard input rather than prompting",
+    )
+
+    room_members = room_actions.add_parser("members", help="list a room's members")
+    room_members.add_argument("room", help="the room, by name")
+
+    room_revoke = room_actions.add_parser(
+        "revoke", help="remove a member; it must log in again to return"
+    )
+    room_revoke.add_argument("room", help="the room, by name")
+    room_revoke.add_argument("member", help="the member's hex public key, or a prefix of it")
+
+    room_retention = room_actions.add_parser(
+        "retention", help="set or clear a room's retention bounds"
+    )
+    room_retention.add_argument("room", help="the room, by name")
+    room_retention.add_argument(
+        "--days", type=int, default=None, metavar="N", help="delete messages older than N days"
+    )
+    room_retention.add_argument(
+        "--messages",
+        type=int,
+        default=None,
+        metavar="N",
+        help="keep only the newest N messages",
+    )
+    room_retention.add_argument(
+        "--clear",
+        action="store_true",
+        help="remove both bounds, returning the room to keeping everything",
+    )
+
+    room_post = room_actions.add_parser(
+        "post", help="post to a room as the room's own identity"
+    )
+    room_post.add_argument("room", help="the room, by name")
+    room_post.add_argument("text", help="the message text")
+
+    room_history = room_actions.add_parser("history", help="read a room's stored messages")
+    room_history.add_argument("room", help="the room, by name")
+    room_history.add_argument(
+        "--limit", type=int, default=50, help="how many messages to show (default: %(default)s)"
+    )
+
+    for room_parser in (
+        room_create,
+        room_actions.choices["list"],
+        room_show,
+        room_passwd,
+        room_members,
+        room_revoke,
+        room_retention,
+        room_post,
+        room_history,
+    ):
+        _add_database_url_argument(room_parser)
 
     database = subparsers.add_parser(
         "db", help="apply and report database migrations (never done by `run`)"
@@ -795,6 +929,444 @@ async def _read_revision(database: DatabaseConfig) -> str | None:
         await handle.dispose()
 
 
+# --- Rooms (milestone 6) ----------------------------------------------------
+#
+# One rule here is not a convenience and is enforced by the parser above: **a
+# password is never a command-line argument** (design D16). `ps` publishes
+# `argv` to every user on the host, and a password that reaches it has been
+# disclosed to everyone logged in whether or not anybody looked. Every password
+# comes from a prompt or from standard input, and there is no flag that would
+# take one otherwise.
+
+
+ROTATION_EVICTS_NOBODY = (
+    "existing members keep their access: membership is keyed on the public key "
+    "recorded at first login, so a new password gates only new logins. Removing "
+    "a member takes `sighop room revoke`."
+)
+"""§7's counterintuitive rule, printed at the moment it matters rather than
+documented somewhere an operator would have to already suspect it."""
+
+REVOKE_DISCARDS_EVERYTHING = (
+    "it must log in again to return, and its sync position and replay guard are "
+    "discarded with it — so it receives history from wherever its next login says."
+)
+
+
+async def _with_rooms[T](
+    database: DatabaseConfig, work: Callable[[Persistence], Awaitable[T]]
+) -> T:
+    handle = Database(config=database)
+    try:
+        await handle.open()
+        return await work(Persistence(database=handle))
+    finally:
+        await handle.dispose()
+
+
+def _read_password(prompt: str, *, from_stdin: bool) -> str:
+    """A password, from standard input or from a prompt that does not echo."""
+    if from_stdin or not sys.stdin.isatty():
+        return sys.stdin.readline().rstrip("\n")
+    import getpass
+
+    return getpass.getpass(prompt)
+
+
+def _render_room(record: RoomRecord, *, members: int, messages: int, out: IO[str]) -> None:
+    """One room's configuration. Never a password, and never a hash."""
+    print(f"room       {record.name}", file=out)
+    print(f"room_id    {record.id}", file=out)
+    print(f"entity_id  {record.entity_id}", file=out)
+    print(f"members    {members}", file=out)
+    print(f"messages   {messages}", file=out)
+    print(f"guest      {record.guest_access}", file=out)
+    print(f"read_only  {'allowed' if record.allow_read_only else 'refused'}", file=out)
+    print(f"retention  {record.retention}", file=out)
+
+
+async def _find_room(persistence: Persistence, name: str) -> Any:
+    rooms = await persistence.rooms.list_all()
+    if isinstance(rooms, Failed):
+        return rooms
+    for record in rooms.value:
+        if record.name == name:
+            return record
+    return None
+
+
+def _room_command(args: argparse.Namespace, out: IO[str]) -> int:
+    database = _database_config(args, out)
+    if database is None:
+        return 2
+    match args.room_command:
+        case "create":
+            return _room_create(args, database, out)
+        case "list":
+            return _room_list(args, database, out)
+        case "show":
+            return _room_show(args, database, out)
+        case "passwd":
+            return _room_passwd(args, database, out)
+        case "members":
+            return _room_members(args, database, out)
+        case "revoke":
+            return _room_revoke(args, database, out)
+        case "retention":
+            return _room_retention(args, database, out)
+        case "post":
+            return _room_post(args, database, out)
+        case _:
+            return _room_history(args, database, out)
+
+
+def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    admin = _read_password("admin password: ", from_stdin=False)
+    if not admin:
+        print(
+            "an admin password is required: it is the only credential that admits "
+            "an administrator, and §7 asks for a distinct one per room server",
+            file=sys.stderr,
+        )
+        return 2
+    guest = (
+        _read_password("guest password: ", from_stdin=False)
+        if args.guest_password
+        else None
+    )
+
+    async def work(persistence: Persistence) -> Any:
+        entities = EntityRepository(database=persistence.database)
+        found = await entities.list_all()
+        if isinstance(found, Failed):
+            return found
+        matches = [
+            record
+            for record in found.value
+            if record.name == args.identity
+            or record.public_key.hex().startswith(args.identity.lower())
+        ]
+        if len(matches) != 1:
+            raise EntityLoadError(
+                f"{args.identity!r} matches {len(matches)} stored identities; "
+                "name one exactly, or give a longer public key prefix"
+            )
+        entity = matches[0]
+        if entity.node_type is not NodeType.ROOM_SERVER:
+            raise EntityLoadError(
+                f"{entity.name!r} adverts as {entity.node_type!r}, not a room server; "
+                "create the identity with --node-type ROOM_SERVER, because being a "
+                "room server is an explicit choice and never a side effect of "
+                "having a room bound to it"
+            )
+        return await persistence.rooms.create(
+            entity_id=entity.id,
+            name=args.name,
+            admin_password_hash=hash_password(admin),
+            guest_password_hash=None if guest is None else hash_password(guest),
+            guest_open=args.guest_open,
+            allow_read_only=args.allow_read_only,
+        )
+
+    try:
+        outcome = asyncio.run(_with_rooms(database, work))
+    except (RoomExistsError, EntityLoadError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    _render_room(outcome.value, members=0, messages=0, out=out)
+    print("the passwords are stored as Argon2id hashes and cannot be recovered", file=out)
+    return 0
+
+
+def _room_list(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        rooms = await persistence.rooms.list_all()
+        if isinstance(rooms, Failed):
+            return rooms
+        rows = []
+        for record in rooms.value:
+            members = await persistence.members.load_for_room(record.id)
+            messages = await persistence.messages.count(record.id)
+            rows.append(
+                (
+                    record,
+                    len(members.value) if isinstance(members, Succeeded) else 0,
+                    messages.value if isinstance(messages, Succeeded) else 0,
+                )
+            )
+        return rows
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome:
+        print("no rooms are configured", file=out)
+        return 0
+    for record, members, messages in outcome:
+        print(
+            f"{record.name}  entity={record.entity_id}  members={members}  "
+            f"messages={messages}  guest={record.guest_access}  "
+            f"retention={record.retention}",
+            file=out,
+        )
+    return 0
+
+
+def _room_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        members = await persistence.members.load_for_room(record.id)
+        messages = await persistence.messages.count(record.id)
+        return (
+            record,
+            len(members.value) if isinstance(members, Succeeded) else 0,
+            messages.value if isinstance(messages, Succeeded) else 0,
+        )
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record, members, messages = outcome
+    _render_room(record, members=members, messages=messages, out=out)
+    return 0
+
+
+def _room_passwd(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    which = "guest" if args.guest else "admin"
+    if args.clear and not args.guest:
+        print(
+            "the admin password cannot be cleared: a room with no admin password "
+            "has no administrator and no way to gain one",
+            file=sys.stderr,
+        )
+        return 2
+    password = (
+        None
+        if args.clear
+        else _read_password(f"{which} password: ", from_stdin=args.password_stdin)
+    )
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        hashed = None if password is None else hash_password(password)
+        return await persistence.rooms.set_passwords(
+            record.id,
+            admin_password_hash=None if args.guest else hashed,
+            guest_password_hash=hashed if args.guest else None,
+            clear_guest_password=args.clear and args.guest,
+        )
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if args.clear:
+        print("the guest password is removed; guest logins are refused again", file=out)
+    else:
+        print(f"the {which} password is changed and stored as an Argon2id hash", file=out)
+    print(ROTATION_EVICTS_NOBODY, file=out)
+    return 0
+
+
+def _room_members(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        return await persistence.members.load_for_room(record.id)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print("no members have logged in", file=out)
+        return 0
+    for member in outcome.value:
+        print(
+            f"{member.public_key.hex()}  node_hash=0x{member.node_hash:02x}  "
+            f"{member.permission.name.lower()}  sync_since={member.sync_since}  "
+            f"last_activity={member.last_activity.isoformat()}",
+            file=out,
+        )
+    return 0
+
+
+def _room_revoke(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        members = await persistence.members.load_for_room(record.id)
+        if isinstance(members, Failed):
+            return members
+        wanted = args.member.lower()
+        matches = [
+            member
+            for member in members.value
+            if member.public_key.hex().startswith(wanted)
+        ]
+        if len(matches) != 1:
+            return matches
+        removed = await persistence.members.delete(record.id, matches[0].public_key)
+        return (matches[0], removed)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if isinstance(outcome, list):
+        print(
+            f"{args.member!r} matches {len(outcome)} members; give a longer prefix",
+            file=sys.stderr,
+        )
+        return 2
+    member, removed = outcome
+    if isinstance(removed, Failed):
+        print(str(removed.error), file=sys.stderr)
+        return 2
+    print(f"revoked {member.public_key.hex()}", file=out)
+    print(REVOKE_DISCARDS_EVERYTHING, file=out)
+    return 0
+
+
+def _room_retention(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    days = None if args.clear else args.days
+    messages = None if args.clear else args.messages
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        applied = await persistence.rooms.set_retention(
+            record.id, retention_days=days, retention_messages=messages
+        )
+        if isinstance(applied, Failed):
+            return applied
+        return await _find_room(persistence, args.room)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    print(f"retention  {outcome.retention}", file=out)
+    if outcome.retention == "unlimited":
+        print("nothing will be deleted, however old or numerous", file=out)
+    else:
+        print(
+            "messages beyond the policy are removed by a periodic task. A member "
+            "whose sync position predates what is removed misses those messages, "
+            "and the count is reported when it happens",
+            file=out,
+        )
+    return 0
+
+
+def _room_post(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    text = args.text.encode("utf-8")
+    if len(text) > STORED_POST_TEXT_LEN:
+        print(
+            f"the post is {len(text)} bytes and a room keeps "
+            f"{STORED_POST_TEXT_LEN}, which is all a stock client can show; "
+            "shorten it and post again. A post arriving over the air is "
+            "truncated instead, because its author cannot be told; you can be",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        entities = EntityRepository(database=persistence.database)
+        rows = await entities.list_all()
+        if isinstance(rows, Failed):
+            return rows
+        author = next(
+            (row.public_key for row in rows.value if row.id == record.entity_id), None
+        )
+        if author is None:  # pragma: no cover - the FK makes this unreachable
+            return None
+        return await persistence.messages.store(
+            room_id=record.id, author_public_key=author, text=text
+        )
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    post = outcome.value
+    print(f"posted     @{post.post_timestamp}", file=out)
+    print(f"author     {post.author_public_key.hex()}  (the room's own identity)", file=out)
+    print(
+        "it becomes deliverable to every member after the reference "
+        f"implementation's {POST_SYNC_DELAY_SECS}s hold",
+        file=out,
+    )
+    return 0
+
+
+def _room_history(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        return await persistence.messages.history(record.id, limit=args.limit)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print("the room holds no messages", file=out)
+        return 0
+    for post in outcome.value:
+        # §4.1 at the display edge: what is shown is a *rendering* of the bytes,
+        # and text that is not valid UTF-8 says so rather than passing our guess
+        # off as the author's words.
+        rendered = post.rendered
+        text = (
+            repr(rendered.text)
+            if rendered.is_valid_utf8
+            else f"{rendered.text!r} (rendering of {len(post.text)} bytes, not valid UTF-8)"
+        )
+        print(
+            f"@{post.post_timestamp}  {post.author_public_key.hex()[:16]}  {text}",
+            file=out,
+        )
+    return 0
+
+
 async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:
     """The platform against a live link. The gate is closed unless asked for."""
     transport = KissTransport(serial_connector(args.device))
@@ -837,6 +1409,9 @@ async def _live_startup(modem: Modem, runtime: Runtime) -> str:
     """
     await modem.probe_ready.wait()
     probe_result = modem.probe_result
+    # Adopted before the radio, so `set_radio` can hand a room server the
+    # telemetry the board actually answered with (design D14).
+    runtime.probe_result = probe_result
     runtime.set_radio(probe_result.observed_radio if probe_result is not None else None)
     if probe_result is not None:
         await cross_check_airtime(modem, runtime.radio or modem.radio_params)
@@ -910,6 +1485,10 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
                 return _keys_import(args, stream)
             case _:
                 return _keys_export(args, stream)
+
+    if args.command == "room":
+        configure_logging(stream=sys.stderr)
+        return _room_command(args, stream)
 
     if args.command == "db":
         configure_logging(stream=sys.stderr)

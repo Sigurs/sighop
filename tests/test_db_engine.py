@@ -203,6 +203,35 @@ async def test_a_database_behind_the_code_fails_naming_both_and_the_command(
 
 
 @pytest.mark.database
+async def test_a_database_one_revision_behind_names_both_revisions_and_the_command(
+    database_url: str,
+) -> None:
+    """1.6: a half-migrated deployment fails at startup, not at the first login.
+
+    The "no migrations applied" case above is the empty database. This is the
+    one a milestone-5 deployment actually meets after a milestone-6 binary is
+    rolled out: the schema is real, it is simply one revision short.
+    """
+    schema = "sighop_test_one_behind"
+    await _drop_schema(database_url, schema)
+    await _create_schema(database_url, schema)
+    config = DatabaseConfig(url=database_url, schema=schema)
+    await migrations.upgrade_async(config, revision="0001")
+
+    handle = Database(config=config)
+    try:
+        with pytest.raises(SchemaVersionError) as excinfo:
+            await handle.open()
+        message = str(excinfo.value)
+        assert "0001" in message, "the message must name where the database is"
+        assert migrations.expected_revision() in message, "and where the code expects it to be"
+        assert migrations.UPGRADE_COMMAND in message, "and the command that reconciles them"
+    finally:
+        await handle.dispose()
+        await _drop_schema(database_url, schema)
+
+
+@pytest.mark.database
 async def test_a_database_ahead_of_the_code_fails_naming_both(
     database_url: str,
 ) -> None:

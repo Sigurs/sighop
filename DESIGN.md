@@ -454,8 +454,8 @@ must not render channel sender names in a way that implies verified identity.
 
 ## 6. Persistence
 
-Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one; four
-of them exist as of milestone 5 and four do not yet, and the split is deliberate.
+Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one; seven
+of them exist as of milestone 6 and one does not yet, and the split is deliberate.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -468,21 +468,58 @@ of them exist as of milestone 5 and four do not yet, and the split is deliberate
 - **packet_log** — ring buffer of recent RX/TX for the observability UI (bounded; not the
   audit trail), with `raw` and `reason` for frames that could not be decoded
 
-**Not built yet, each in the milestone that owns it and each named in `0001`'s docstring so
-absence reads as intent:**
+**Built (milestone 6, migration `0002`):**
 
-- **room**, **room_member**, **message** — milestone 6
+- **room** — id, **unique** entity id, name, admin password hash, nullable guest password
+  hash, `guest_open`, `allow_read_only`, nullable `retention_days` and `retention_messages`,
+  created_at
+- **room_member** — PK (room id, public key), node hash, permissions, `sync_since`,
+  `last_timestamp`, first login, last activity
+- **message** — id, room id, author public key, `post_timestamp`, nullable
+  `sender_timestamp`, text as **bytes**, posted_at, unique on (room, `post_timestamp`)
+
+**Not built yet, named in `0002`'s docstring so absence still reads as intent:**
+
 - **bot_state** — milestone 7
 
-The list above was always a sketch and never final DDL, and milestone 6 will discover things
-about ACLs and retention that change those four tables; shipping them untested would make
-the first real migration a rewrite rather than an addition.
+The list above was always a sketch and never final DDL, and milestone 6 was right that
+building the three untested would have made the first real migration a rewrite. **Three
+shapes turned out to differ from the sketch**, and each is a thing the firmware forced
+rather than a preference:
 
-Three details of the built four are worth stating because they look like mistakes:
+- **The ACL is a routing and cursor table, not a permission table.** The firmware's
+  `ClientInfo` (`src/helpers/ClientACL.h`) keeps `sync_since`, `last_timestamp`,
+  `permissions` and `out_path` on one record, and `room_member` has to as well: the sync
+  cursor and the replay guard are per member and have nowhere else to live. One consequence
+  is better than it looks — revocation removes membership, permissions, cursor and replay
+  guard together, because all four are one row, so there is no partial revocation to get
+  wrong.
+- **`message` needs an ordering value the wire protocol can name, not a bare timestamp.**
+  `post_timestamp` *is* the cursor: the push carries it, the acknowledgement advances
+  `sync_since` to it, and a keep-alive may force a cursor to a specific one. So it has to be
+  a **total order within its room** — `max(now, last + 1)`, enforced by `UNIQUE (room_id,
+  post_timestamp)`, which is what makes a clock that steps backwards produce a *stall in
+  stamping* rather than a duplicate or a reordering. The alternative — row id as the cursor,
+  timestamp cosmetic — was rejected because the id is ours and the timestamp is the peer's,
+  and a cursor the peer cannot name is not a cursor.
+- **Retention needs two independent bounds, not one policy field.** Age and count bound
+  different things and an operator wants either or both; both are nullable and default to
+  NULL, which is "keep everything". §13's unknown #1 asks what a sensible default is, and it
+  is answerable only from observed volume — a default that deleted history before the
+  question was asked would have answered it by accident.
 
-- **`node_hash` is indexed but not unique**, on either table. §3 says one byte of identity
-  collides at 1 in 256 and the whole design is built on candidate sets; a unique constraint
-  there is a bug waiting for a busy mesh.
+A fourth detail is not a shape but a type: `sync_since`, `last_timestamp` and
+`post_timestamp` are **`BIGINT`, not `TIMESTAMPTZ`**, because they are MeshCore's unsigned
+32-bit epoch seconds *as they appear on the wire* rather than instants. Mixing the two
+representations in one column is how a comparison silently changes meaning.
+
+Three details of milestone 5's four are worth stating because they look like mistakes:
+
+- **`node_hash` is indexed but not unique**, on any of the three tables that carry one —
+  `entity`, `contact` and now `room_member`. §3 says one byte of identity collides at 1 in
+  256 and the whole design is built on candidate sets; a unique constraint there is a bug
+  waiting for a busy mesh. Two members of one room may share a node hash, and eventually
+  will.
 - **`path.path_bytes` may be empty**, and an empty path is a *zero-hop route* — the most
   useful route a node can have — which is a different thing from no row at all.
 - **Every timestamp is `TIMESTAMPTZ`** and every value crossing the boundary is
@@ -573,6 +610,76 @@ so the server sees plaintext only momentarily at login and never needs it recove
   joins. This is counterintuitive enough that the UI must say so, and it means removing a
   member requires explicit ACL deletion. The room member list therefore needs a revoke
   action, or there is no way to remove anyone.
+
+**What the firmware actually does, where it differs from the summary above** (milestone 6,
+read from `examples/simple_room_server/MyMesh.cpp` and `src/helpers/ClientACL.h` rather than
+from `docs/payloads.md`). Four of these are not what the section above would lead you to
+build, and each is matched deliberately:
+
+- **A failed login is answered with silence** (`:353`) — no refusal payload, no error, no
+  acknowledgement. That behaviour is load-bearing rather than incidental: it is what makes
+  *an unauthenticated stranger cannot make sighop transmit* true, which is the same rule §7
+  states for the greeter bot, one milestone early. A *successful* login can make sighop
+  transmit, and a replayed one too, so the reply path is bounded three ways — a per-source
+  token bucket, a global rate, and the Argon2id concurrency semaphore — and every refusal is
+  counted by reason and reported. A throttle that drops silently is indistinguishable from a
+  mesh that went quiet.
+- **An existing member logging in with an *empty* password skips the timestamp check
+  entirely.** `:335-342` short-circuits before both the password check and the replay guard.
+  It is how a client re-establishes a lost route, a client that cannot re-establish one has
+  silently left the room, and diverging would break interop with every stock client. It is
+  also the single most replayable packet in the protocol, which is precisely why the
+  throttle exists. Matched on purpose, and the trade is stated rather than hidden.
+- **The read-only fallback is `PERM_ACL_GUEST`, which is zero.** A wrong password with
+  `allow_read_only` set is admitted at `:350` as the level whose posts are refused at
+  `:479`. So what this section calls *read-only* is the byte `0`, and `PERM_ACL_READ_ONLY`
+  (1) is declared by the firmware and never assigned by the room server. Byte 7 of the login
+  response carries the permission byte in `v1.17.1`, where older firmware read it as an
+  unsynced count; we emit the current form, and a client old enough to disagree shows a
+  wrong badge rather than failing to log in.
+- **A room keeps 156 bytes of post text, and truncates rather than refuses.** The receive
+  path has **no length check at all**: `addPost` runs and `send_ack = true` whatever the
+  length (`:484-488`), and the acknowledgement is computed over the **full received** text
+  (`:461-462`), not over what was kept — which is exactly what lets a client stop retrying a
+  post the room shortened. We originally refused an over-long post instead; the milestone 6
+  live exercise showed a stock client composing 156 bytes and reading our silence as a lost
+  packet, retrying until it gave up with its user told nothing. On this protocol a refusal
+  *is* silence. Three numbers are in play and only one of them is a limit:
+  **167** is the hard ceiling — a push payload is `dest_hash(1) + src_hash(1) + MAC(2) +
+  ciphertext` within `MAX_PACKET_PAYLOAD` (184), so 176 bytes of ciphertext, less the push
+  prefix of 9. **156** is what a stock client can send and be shown: `queueMessage`
+  (`companion_radio/MyMesh.cpp:432`) bounds the frame the radio hands the phone app against
+  `MAX_FRAME_SIZE` (176) and spends `4 + 6 + 1 + 1 + 4 + 4 = 20` on prefix, which is why the
+  composer stops there. **150** is what stock firmware keeps —
+  `StrHelper::strncpy(text, postData, MAX_POST_TEXT_LEN)` (`:57`) copies while `buf_sz > 1`
+  (`TxtDataHelpers.cpp:3-9`), one below the 151 its constant reads as, and that 151 is
+  `MAX_TEXT_LEN` (160, ten cipher blocks chosen for *chat*) less the same 9. We store 156,
+  the only one derived from what a client can actually do, so nothing stock composes is ever
+  shortened. It costs byte-identity with a firmware-served room for posts of 151–156 bytes,
+  and one extra cipher block of airtime on posts above 150. Truncation above 156 is reported
+  alongside the post with the length as received, so the operator sees the drop even though
+  the author cannot be told. A post made *locally* is still refused, because that author is
+  present to shorten it.
+
+**The push loop's constants**, copied as-is (`:5-11`, `:995-1039`): round-robin over
+members at `SYNC_PUSH_INTERVAL` 1200 ms, one outstanding delivery per member, eight times
+faster when the current member had nothing to send, a new post held `POST_SYNC_DELAY_SECS`
+(6 s) before it is eligible at all, an author never sent its own post, and three consecutive
+unacknowledged deliveries before a member is left alone until it is next heard from. The
+acknowledgement window is the firmware's own — 12 s flooded, `4000 + 2000 × (hops + 1)` ms
+direct — rather than an airtime multiple, because a push may be the first packet a returning
+member has seen in a week. The push's `attempt` field is drawn at **random**, not counted:
+that is what gives a retried push a different packet hash, and therefore a different
+expected acknowledgement, so a repeater cannot deduplicate the retry away.
+
+**One thing sighop does that the firmware cannot.** The firmware acknowledges a post after
+putting it in a 32-entry RAM ring, which cannot fail. Ours can, so the acknowledgement is
+sent **only once the row has landed**, bounded by the sender's own acknowledgement window
+and never on the bus handler. An acknowledgement is a promise the client will not retry and
+will show the message as delivered; sending it before the row lands would make sighop lie
+about the one property a room server exists to provide. While the database is degraded a
+room accepts nothing and says so — a room is exactly as available as its history, which is
+the price of the history being real.
 
 ### Companion
 
@@ -1072,6 +1179,96 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      does — the exchange no longer has to complete inside one process lifetime — and it is
      left open rather than closed on inference.
 6. **Room server.** Login/ACL, history storage and sync, retention.
+   *Offline work done; the live exercise is pending.* `src/sighop/net/room.py` (login, posts,
+   the push loop, the request surface, retention), `src/sighop/net/acks.py` (the shared
+   expectation registry), `src/sighop/net/pathbodies.py` (explicit path bodies and what they
+   bundle), `src/sighop/passwords.py` (Argon2id off the loop, bounded), migration `0002` with
+   its three tables and repositories, five new byte codecs in `protocol/payloads.py`, and the
+   `sighop room` command surface. The exit criterion — a stock client logging in, posting,
+   and after a restart receiving the history it missed — is the live exercise, and the
+   runbook for it is written and reviewed. Findings the offline work produced, all of them
+   from reading the firmware rather than the payload documentation:
+   - **`docs/payloads.md` describes a room server that does not exist.** Four behaviours are
+     not in it and all four are load-bearing: a failed login is answered with **silence**
+     rather than an error, an existing member's *empty-password* login skips the replay check
+     entirely (`MyMesh.cpp:335-342`), the read-only fallback is `PERM_ACL_GUEST` — **zero**,
+     not `PERM_ACL_READ_ONLY` — and a post's text is capped near **150 bytes**, not 160,
+     because the push body spends nine bytes before the text starts. Building from the
+     documentation would have produced a server that answered strangers, refused legitimate
+     re-logins, assigned a permission level the firmware never assigns, and stored posts it
+     could not push. All four are recorded in §7.
+   - **The room-server statistics struct diverges from the generic client parser, and both
+     are right.** At offsets 48..52 a room server writes `n_posted` and `n_post_push`
+     (`:175-176`); `meshcore_py`'s `parse_status` reads the same four bytes as a *repeater's*
+     `rx_airtime`. We emit the room-server form, because interop is with the firmware — a
+     client using the generic parser misreads those bytes against a stock room server exactly
+     as it will against ours. Named in a constant with a test asserting **both** readings, so
+     the divergence cannot later be "fixed" into a bug.
+   - **CayenneLPP is the one big-endian encoding in this protocol.** Every other integer in
+     MeshCore is little-endian; an LPP frame written with the project's usual byte order
+     parses as garbage on the client and looks like a hardware fault. Costing a dozen lines
+     rather than a dependency was the easy half of that decision; getting the byte order
+     right was the half worth a test against a hand-built vector.
+   - **Two components waiting on acknowledgements broke a counter's meaning.** `dm.py` owned
+     a private expectation table and logged `ack_unmatched` for anything absent from it, so a
+     room server waiting on push acknowledgements would have made every one of its matches
+     look unmatched to the direct messenger, and vice versa. The table moved to `net/acks.py`
+     with an owner per expectation; `unmatched` again means *nobody in this process was
+     waiting for that*. The same table is the one place the acknowledgement-inside-a-`PATH`
+     case has to reach, rather than two.
+   - **A `PATH` body has to be decrypted for what is inside it, not for the route.** The
+     firmware bundles an acknowledgement in a path return (`:601-620`): a client that answers
+     a flooded push that way. Without decrypting the body the acknowledgement is invisible,
+     the push is retried three times for nothing, and the member's cursor never advances —
+     which is indistinguishable from a client that is not receiving. The route is the cheap
+     half of that feature.
+   - **A room server and the direct messenger would both have answered the same packet.**
+     `DirectMessenger` filters inbound `TXT_MSG` by destination hash across every local
+     entity, and a room-server entity is in that list: two decryptions, two acknowledgements
+     on the air for one post, and two contradictory log lines. Resolved statically at wiring
+     time — an entity a room server serves is skipped by the direct messenger and by the
+     path-body reader — because the ambiguity is resolvable then, and a duplicate suppressed
+     after the fact is still a second decryption of a message with a different meaning.
+   - **A keep-alive answer is a 5-byte acknowledgement, which our own parser refuses.** The
+     firmware appends the unsynced count to the ACK payload (`:574`), where `parse_ack`
+     accepts the 4- and 6-byte forms the chat protocol uses. Nothing in this milestone
+     receives one — being a *client* of someone else's room server is milestone 8's — so it
+     is recorded rather than fixed, with the assertion that currently proves the refusal
+     carrying the note. It is the one thing milestone 8 must add before it can keep-alive.
+   - **The corpus is unchanged and says so mechanically.** Its 42 anonymous requests still
+     parse as anonymous requests, none of them is mistaken for a login to one of our
+     entities, and a replay with a room server wired in produces byte-identical delivered,
+     duplicate, contact and path counts to one without. The reception path stayed a pure
+     decode, which is what design D6 has been buying since milestone 2.
+   - **The first live run overturned a design decision within minutes.** A stock client
+     composed a **156-byte** post — past the 151 design D4 took from the firmware — and
+     sighop refused it. The client showed it as undelivered and retried, and nothing on
+     either side said why, because a refusal here *is* silence. Reading the firmware again
+     for the case rather than the rule: the receive path has no length check at all,
+     `addPost` runs and `send_ack = true` whatever the length (`:484-488`), and the
+     acknowledgement is computed over the **full received** text (`:461-462`). D4 was
+     revised to truncate and acknowledge over the text as sent, with the drop reported to
+     the operator, and a local `sighop room post` still refused because *that* author is
+     present to shorten it. "Refuse rather than corrupt" is right where a refusal can be
+     *heard*, and this protocol has no way to say no.
+   - **Then the limit itself turned out to be two conventions stacked on each other.** The
+     first fix truncated at **150**, matching what stock firmware keeps —
+     `StrHelper::strncpy(text, postData, MAX_POST_TEXT_LEN)` (`:57`) copies while
+     `buf_sz > 1`, one below the 151 its own constant reads as, and that 151 is
+     `MAX_TEXT_LEN` (160, ten cipher blocks chosen for *chat* messages, whose comment asks
+     only that it stay under 177) less the push prefix. Neither number is a limit. The
+     packet format allows **167**: 184 bytes of payload, less 4 for hashes and MAC, rounded
+     down to 176 of ciphertext, less the 9-byte push prefix. And the client's own receive
+     path allows exactly **156** — `queueMessage` bounds the frame the radio hands the phone
+     app against `MAX_FRAME_SIZE` (176) and spends 20 bytes on prefix
+     (`companion_radio/MyMesh.cpp:432`). 176 − 20 = 156, which is precisely the composer
+     limit the exercise ran into: the same budget sizes both ends, so the number the client
+     stopped at was derivable from the firmware all along. Storing 156 means nothing a stock
+     client can compose is ever shortened, and the truncation rule guards only a range
+     nothing stock reaches. The cost is byte-identity with a firmware-served room for posts
+     of 151–156 bytes, and one extra cipher block on the air for posts above 150. Worth
+     naming as a class: **an inherited constant is not a constraint**, and this one was
+     copied through three files before anyone asked what enforced it.
 7. **Greeter bot** and the bot plugin interface.
 8. **WebUI**, in the §8 priority order.
 9. **Hardening.** Container, compose, build script, auth.
@@ -1143,7 +1340,17 @@ something and forgetting, which is exactly the behaviour the floor exists to pre
 
 These need real hardware or real traffic to answer, and are cheap to resolve in-flight:
 
-1. Sensible default retention policy per room — depends on observed message volume.
+1. Sensible default retention policy per room — depends on observed message
+   volume. **Still open after milestone 6, and deliberately a non-observation
+   rather than a measurement.** The live exercise's three runs spanned roughly
+   20 minutes end to end and carried 14 stored posts — 2 from the client, 12
+   pushed from the server, several of them posted deliberately in a burst to
+   drive a member into backoff — against 17 s of airtime out of the 360 s
+   hourly ceiling. Both numbers are artifacts of testing a push loop and a
+   restart, not of how a room is actually used, in exactly the sense milestone
+   3's dedup-cache sizing warned about: a duration this short cannot sample a
+   volume distribution, only fail to contradict any default. No retention
+   policy was set for the exercise room, and none is recommended from it.
 2. ~~Whether the dedup cache should be sized by entries or by time~~ — **settled in milestone
    3, and the question was a false choice.** It needs both, because they bound different
    things. *Time* governs correctness, and it is bounded from **both** sides. The widest gap
@@ -1177,11 +1384,21 @@ These need real hardware or real traffic to answer, and are cheap to resolve in-
    a node does with the advert-learned form is untested. It matters the first time sighop is
    reachable by a node it has not been introduced to over a cable — milestone 5 or 6 —
    and the answer decides whether an entity must solicit a path before it can be replied to
-   cheaply. **Still open after milestone 5**, deliberately: that milestone's live work was
-   receive-only and involved no peer exchange, so no opportunity to observe it arose, and it
-   is not closed on inference. What did change is the cost of testing it — durable contacts
-   mean the exchange no longer has to complete inside one process lifetime, so the peer can
-   be adverted to on one run and answered on another.
+   cheaply. **Settled, asymmetrically, by milestone 6's live exercise** — the first
+   opportunity to observe it, since the client learned `[redacted]` purely from its zero-hop
+   advert. Read off the captured frames rather than the client's UI: every one of the
+   client's own outbound frames — every `ANON_REQ` login, every posted `TXT_MSG`, its one
+   `REQ` — arrived `FLOOD`-routed for the full ~20-minute session, including long after the
+   server had a learned path back to it. The server's downlink did **not** stay flooded: its
+   very first push after the initial login already went out `DIRECT`, having learned the
+   client's path from the `PATH` return bundled with the login reply (design D7/D12). The
+   client's own acknowledgements of those pushes started `FLOOD` (the first two) and then
+   switched to `DIRECT` for the rest of the session, including across the restart — so a
+   learned path gets used for acknowledging a direct delivery, but not for the client's own
+   logins, posts or requests, which is either firmware policy or a path the client never
+   solicited for its own uplink. So: yes, a peer that learns us only from a zero-hop advert
+   floods its replies, and keeps flooding its own transmissions for at least 20 minutes of
+   active use afterward, even once the exchange has an established two-way direct route.
 
 **Telemetry sub-command availability**, previously unknown #1, is settled from the firmware
 source: `getMCUTemperature()` comes from the shared `src/helpers/ESP32Board.h` and both the

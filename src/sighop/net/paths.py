@@ -34,6 +34,7 @@ import datetime as dt
 from collections import OrderedDict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Protocol
 
 from sighop.net.rx import AdvertOutcome, Payload, RxRecord
@@ -72,23 +73,52 @@ class PathKey:
         }
 
 
+class PathSource(StrEnum):
+    """How a route came to be known. Both are candidates; neither is proof.
+
+    `REVERSE` is the frame's own path, reversed — what §4.2 has always learned.
+    `PATH_BODY` is the peer's *explicit* statement of a route, decrypted from a
+    `PATH` payload (design D12). The distinction is worth carrying because a
+    path body is content a MAC match selected a key for, and **a MAC match
+    selects a key, it never authenticates a sender** (§5, milestone 4's design
+    D7): the route is claimed by whoever holds that key, and the renderer says
+    so in the same convention it uses for every other unverified claim.
+    """
+
+    REVERSE = "reverse"
+    PATH_BODY = "path_body"
+
+
 @dataclass(frozen=True, slots=True)
 class LearnedPath:
     """One candidate route back, as observed from one reception."""
 
     path: bytes
-    """The *reverse* of the received path — the route out, not the route in."""
+    """The *reverse* of the received path — the route out, not the route in.
+
+    For a `PATH_BODY` route this is the route the peer declared, verbatim: it is
+    already the route *out*, because that is what the peer was telling us."""
 
     hash_size: int
     hop_count: int
     snr_db: float | None
     confirmed_at: dt.datetime
     packet_id: str
+    source: PathSource = PathSource.REVERSE
+    """Not persisted, and deliberately so: the `path` table stores a route, and
+    a restored route is not being claimed by anyone at the moment it is read
+    back. It comes back as `REVERSE`, which is the store's own default and the
+    weaker statement of the two."""
 
     @property
     def is_zero_hop(self) -> bool:
         """Direct reception. A route, and not the absence of one."""
         return self.hop_count == 0
+
+    @property
+    def claimed(self) -> bool:
+        """Whether a sender asserted this route rather than a reception showing it."""
+        return self.source is PathSource.PATH_BODY
 
     def as_json(self) -> dict[str, object]:
         return {
@@ -98,6 +128,7 @@ class LearnedPath:
             "snr_db": self.snr_db,
             "confirmed_at": self.confirmed_at.isoformat(),
             "packet_id": self.packet_id,
+            "source": str(self.source),
         }
 
 

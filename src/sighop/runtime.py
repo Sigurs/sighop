@@ -23,27 +23,35 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
+from sighop.db.engine import Succeeded
 from sighop.db.persistence import Persistence
-from sighop.db.repositories import LoadedEntity
+from sighop.db.repositories import LoadedEntity, RoomRecord
 from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
     PERSISTENCE_OFF,
+    ROOMS_OFF,
     render_detail_line,
     render_dm_event,
     render_frame_line,
     render_persistence,
+    render_room_event,
+    render_room_startup,
+    render_room_status,
     render_run_startup,
     render_status,
     render_stubs,
 )
+from sighop.net.acks import AckDispatcher, AckRegistry
 from sighop.net.adverts import AdvertScheduler
 from sighop.net.airtime import time_on_air_ms
 from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxOutcome
 from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
 from sighop.net.dm import DirectMessageError, DirectMessageEvent, DirectMessenger
+from sighop.net.pathbodies import PathBodyReader
 from sighop.net.paths import PathStore
+from sighop.net.room import RoomEvent, RoomRetentionPruner, RoomServer
 from sighop.net.rx import RxRecord, decode_event
 from sighop.net.tx import (
     DEFAULT_CEILING_FRACTION,
@@ -53,10 +61,16 @@ from sighop.net.tx import (
     SystemClock,
     TxScheduler,
 )
-from sighop.protocol.payloads import NodeType
+from sighop.protocol.payloads import (
+    NodeType,
+    ServerStats,
+    TelemetryEntry,
+    temperature_entry,
+    voltage_entry,
+)
 from sighop.radio.capture import CaptureWriter
 from sighop.radio.modem import ModemEvent, RadioParams
-from sighop.radio.probe import ProbeResult
+from sighop.radio.probe import Absent, ProbeResult
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
 DEFAULT_ADVERT_TICK_SECONDS = 5.0
@@ -133,6 +147,11 @@ class Runtime:
     capture_probe: Callable[[], Awaitable[ProbeResult | None]] | None = None
     """Supplies the provenance header. Events are held until it resolves."""
 
+    probe_result: ProbeResult | None = None
+    """The board's own readback, when one was taken. Also what a room server's
+    telemetry answer is built from — a value the board did not give is absent
+    there rather than defaulted (§4.1)."""
+
     persistence: Persistence | None = None
     """The durable backing, already opened and version-checked by the caller.
 
@@ -150,6 +169,12 @@ class Runtime:
     entities: EntityRegistry = field(init=False)
     contacts: ContactStore = field(init=False)
     messenger: DirectMessenger = field(init=False)
+    acks: AckRegistry = field(init=False)
+    path_bodies: PathBodyReader = field(init=False)
+    rooms: list[RoomServer] = field(init=False, default_factory=list)
+    _room_messages: dict[str, int] = field(init=False, default_factory=dict)
+    retention: RoomRetentionPruner | None = field(init=False, default=None)
+    _unserved_rooms: list[str] = field(init=False, default_factory=list)
     _stop: asyncio.Event = field(init=False)
     _ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
@@ -205,6 +230,10 @@ class Runtime:
         )
         if self.persistence is not None:
             self.persistence.attach_contacts(self.contacts)
+        # Design D11: one expectation table, shared by everything that waits on
+        # an acknowledgement, and one subscriber that matches them — so
+        # "unmatched" keeps meaning nobody in this process was waiting.
+        self.acks = AckRegistry(logger=self.logger)
         self.messenger = DirectMessenger(
             contacts=self.contacts,
             paths=self.pipeline.paths,
@@ -215,9 +244,19 @@ class Runtime:
             allow_flood=self.config.allow_flood,
             on_event=self._on_dm_event,
             logger=self.logger,
+            acks=self.acks,
+        )
+        self.path_bodies = PathBodyReader(
+            paths=self.pipeline.paths,
+            contacts=self.contacts,
+            entities=self.adverts.stubs,
+            acks=self.acks,
+            logger=self.logger,
         )
         self.contacts.subscribe(self.bus)
         self.messenger.subscribe(self.bus)
+        self.path_bodies.subscribe(self.bus)
+        AckDispatcher(registry=self.acks).subscribe(self.bus)
         if self.config.advert_override_seconds is not None:
             for stub in self.adverts.stubs:
                 self.adverts.set_override(
@@ -257,6 +296,9 @@ class Runtime:
         self.scheduler.set_radio(radio)
         self.pipeline.radio = radio
         self.messenger.set_radio(radio)
+        for room in self.rooms:
+            room.radio = radio
+            room.telemetry = self._telemetry
 
     @property
     def _one_shot_requested(self) -> bool:
@@ -297,6 +339,12 @@ class Runtime:
             for task in (consume, stopping, *tasks):
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+            # Before the bus closes, so an outstanding delivery is resolved and
+            # logged rather than abandoned.
+            for room in self.rooms:
+                await room.stop()
+            if self.retention is not None:
+                await self.retention.stop()
             await self.bus.aclose()
             if self.persistence is not None:
                 # After the bus, so nothing is still producing rows, and before
@@ -307,7 +355,7 @@ class Runtime:
             self._write(self._status_line())
 
     async def _restore(self) -> None:
-        """Load contacts and paths, then start the writers, pruner and probe."""
+        """Load contacts, paths and rooms, then start the writers and probe."""
         if self.persistence is None:
             return
         await self.persistence.restore(
@@ -315,7 +363,93 @@ class Runtime:
             self.pipeline.paths,
             entities=len(self.config.stored_entities),
         )
+        await self._load_rooms()
         self.persistence.start()
+        for room in self.rooms:
+            room.start()
+        if self.retention is not None:
+            self.retention.start()
+
+    async def _load_rooms(self) -> None:
+        """Bind each stored room to its entity, and say why any is not served.
+
+        Design D5: rooms require a database, and the two ways a room can fail to
+        be served — no database at all, and an entity that is not enabled — are
+        both *stated*. A run that silently served no rooms would be
+        indistinguishable from one whose rooms failed to load.
+        """
+        assert self.persistence is not None
+        rooms = await self.persistence.rooms.list_all()
+        if not isinstance(rooms, Succeeded):
+            self._unserved_rooms.append(
+                f"rooms could not be read: {rooms.error}; none is served"
+            )
+            return
+
+        by_id = {stored.record.id: stored for stored in self.config.stored_entities}
+        for record in rooms.value:
+            stored = by_id.get(record.entity_id)
+            if stored is None or not stored.record.enabled:
+                reason = (
+                    "its identity is not enabled"
+                    if stored is not None
+                    else "its identity was not loaded"
+                )
+                self._unserved_rooms.append(
+                    render_room_startup(
+                        name=record.name,
+                        entity_name="?" if stored is None else stored.name,
+                        node_hash=0 if stored is None else stored.node_hash,
+                        members=0,
+                        messages=0,
+                        guest_access=record.guest_access,
+                        retention=record.retention,
+                        served=False,
+                        not_served_because=reason,
+                    )
+                )
+                continue
+            await self._serve_room(record, stored)
+        if self.rooms:
+            self.retention = RoomRetentionPruner(rooms=self.rooms, logger=self.logger)
+
+    async def _serve_room(self, record: RoomRecord, stored: LoadedEntity) -> None:
+        assert self.persistence is not None
+        entity = next(
+            (stub for stub in self.adverts.stubs if stub.identity.public_key == stored.public_key),
+            None,
+        )
+        if entity is None:  # pragma: no cover - a stored entity is always adopted
+            return
+        members = await self.persistence.members.load_for_room(record.id)
+        server = RoomServer(
+            entity=entity,
+            room=record,
+            storage=self.persistence,
+            paths=self.pipeline.paths,
+            submit=self.bus.submit,
+            acks=self.acks,
+            members=members.value if isinstance(members, Succeeded) else [],
+            clock=self.clock,
+            radio=self.radio,
+            telemetry=self._telemetry,
+            runtime_stats=self._server_stats,
+            on_event=self._on_room_event,
+            logger=self.logger,
+        )
+        counted = await self.persistence.messages.count(record.id)
+        self._room_messages[record.name] = (
+            counted.value if isinstance(counted, Succeeded) else 0
+        )
+        server.subscribe(self.bus)
+        # Design D10: this entity's packets are the room server's, so the direct
+        # messenger and the shared path-body reader both leave it alone. Applied
+        # here, at wiring time, which is when the ambiguity is resolvable.
+        self.messenger.claim_for_room(entity.entity_id)
+        self.path_bodies.entities = [
+            stub for stub in self.path_bodies.entities if stub is not entity
+        ]
+        self.rooms.append(server)
 
     # --- Loops -------------------------------------------------------------
 
@@ -351,6 +485,8 @@ class Runtime:
         while True:
             await self.clock.sleep(self.config.status_interval)
             self._print(self._status_line())
+            for line in self._room_status_lines():
+                self._print(line)
 
     async def _send_once(self) -> None:
         """The `--send` one-shot, and the one-shot zero-hop advert with it.
@@ -437,6 +573,47 @@ class Runtime:
     def _on_dm_event(self, event: DirectMessageEvent) -> None:
         self._print(render_dm_event(event))
 
+    def _on_room_event(self, event: RoomEvent) -> None:
+        self._print(render_room_event(event))
+
+    @property
+    def _telemetry(self) -> list[TelemetryEntry]:
+        """What the board reported about itself, and nothing else (§4.1).
+
+        Built from the §4.1 probe readback, whose whole design is that an
+        unanswered query is `Absent` rather than a default. So a frame omitting
+        temperature means the board did not answer `GetMCUTemp`, and never that
+        it answered zero — which is what makes the telemetry answer honest by
+        construction rather than by care (design D14).
+        """
+        probe = self.probe_result
+        if probe is None:
+            return []
+        entries: list[TelemetryEntry] = []
+        if not isinstance(probe.battery_mv, Absent):
+            entries.append(voltage_entry(probe.battery_mv / 1000.0))
+        if not isinstance(probe.mcu_temp_tenths_c, Absent):
+            entries.append(temperature_entry(probe.mcu_temp_tenths_c / 10.0))
+        return entries
+
+    def _server_stats(self) -> ServerStats:
+        """The shared-radio counters a status request is answered with (D13).
+
+        Runtime-wide, because one modem serves every entity in the process and
+        there is no per-entity radio to report. The room's own posted and pushed
+        counts are added by the room server itself.
+        """
+        status = self.scheduler.status()
+        dedup = self.pipeline.dedup.stats
+        return ServerStats(
+            curr_tx_queue_len=min(sum(status.queue_depths.values()), 0xFFFF),
+            # `noise_floor` has no equivalent on a KISS modem and is left at
+            # zero, which is what this field's absence looks like on the wire.
+            n_packets_sent=status.stats.transmitted,
+            total_air_time_secs=int(status.duty_cycle_used_ms / 1000),
+            n_direct_dups=min(dedup.duplicates, 0xFFFF),
+        )
+
     # --- Output ------------------------------------------------------------
 
     def _status_line(self) -> str:
@@ -468,16 +645,55 @@ class Runtime:
         )
         self._write(render_stubs(self.adverts.stubs))
         self._write(self._persistence_line())
+        for line in self._room_lines():
+            self._write(line)
         for entity in self.entities.entities:
             for warning in entity.warnings:
                 self._write(f"!! {warning}")
         self._release()
         if self.capture_writer is not None:
             probe_result = await self.capture_probe() if self.capture_probe else None
+            if probe_result is not None:
+                self.probe_result = probe_result
             self.capture_writer.start(probe_result)
         # Only now is the board's readback adopted, so only now may anything be
         # queued: the scheduler drops what it cannot compute airtime for.
         self._ready.set()
+
+    def _room_lines(self) -> list[str]:
+        """What rooms this run serves, said before any traffic (11.2, 11.3)."""
+        if self.persistence is None:
+            return [ROOMS_OFF]
+        lines = [
+            render_room_startup(
+                name=room.room.name,
+                entity_name=room.entity.name,
+                node_hash=room.entity.node_hash,
+                members=len(room.members),
+                messages=self._room_messages.get(room.room.name, 0),
+                guest_access=room.room.guest_access,
+                retention=room.room.retention,
+            )
+            for room in self.rooms
+        ]
+        lines.extend(self._unserved_rooms)
+        return lines or ["rooms: none configured"]
+
+    def _room_status_lines(self) -> list[str]:
+        return [
+            render_room_status(
+                name=room.room.name,
+                members=len(room.members),
+                messages_stored=room.posts_stored,
+                deliveries_outstanding=room.deliveries_outstanding,
+                members_behind=room.members_behind(),
+                accepting_posts=room.accepting_posts,
+                refusals=room.throttle.refusals,
+                pruned=room.storage.messages.pruned,
+                pruned_unsynced=room.storage.messages.pruned_unsynced,
+            )
+            for room in self.rooms
+        ]
 
     def _persistence_line(self) -> str:
         """What the run's durability is, said once, before any traffic."""

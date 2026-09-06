@@ -21,7 +21,7 @@ import collections
 
 import pytest
 
-from sighop.net.rx import AdvertOutcome, RxRecord, decode_event, outcome_fields
+from sighop.net.rx import AdvertOutcome, ModemUnparsed, RxRecord, decode_event, outcome_fields
 from sighop.protocol.crypto import VerifiedAdvert, verify_advert
 from sighop.protocol.packet import PayloadType, RouteType, decode
 from sighop.protocol.payloads import Advert, parse_payload
@@ -61,31 +61,51 @@ def test_every_corpus_frame_produces_an_outcome_through_the_live_pipeline(replay
     assert all(record.outcome is not None for record in replayed)
 
 
+def decoded_only(replayed: list[RxRecord]) -> list[RxRecord]:
+    """The receptions that produced a packet — what the offline harness sees.
+
+    The room-server session's capture carries one `ModemUnparsed` reception (a
+    stray `RxMeta` at modem startup, forwarded rather than dropped): it has no
+    packet and so no counterpart in `harness_packets()`, which only ever sees
+    the corpus's `rx_frame`/`tx_frame` records.
+    """
+    return [record for record in replayed if record.packet is not None]
+
+
 def test_the_aggregate_decode_failure_count_is_zero(replayed):
-    failures = [(record.raw.hex(), outcome_fields(record)) for record in replayed if record.failed]
+    """Zero failures among frames that reached the decoder. The one known
+    exception is `ModemUnparsed`, which never reached it at all — the modem
+    itself could not associate an `RxMeta` with a Data frame, so there is no
+    packet here for our decoder to have failed on.
+    """
+    failures = [
+        (record.raw.hex(), outcome_fields(record))
+        for record in replayed
+        if record.failed and not isinstance(record.outcome, ModemUnparsed)
+    ]
     assert failures == []
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_payload_types(replayed):
-    counts = collections.Counter(record.payload_type for record in replayed)
+    counts = collections.Counter(record.payload_type for record in decoded_only(replayed))
     harness = collections.Counter(packet.payload_type for packet in harness_packets())
     assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_route_types(replayed):
-    counts = collections.Counter(record.route_type for record in replayed)
+    counts = collections.Counter(record.route_type for record in decoded_only(replayed))
     harness = collections.Counter(packet.route_type for packet in harness_packets())
     assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_hop_counts(replayed):
-    counts = collections.Counter(record.hop_count for record in replayed)
+    counts = collections.Counter(record.hop_count for record in decoded_only(replayed))
     harness = collections.Counter(packet.hop_count for packet in harness_packets())
     assert dict(counts) == dict(harness)
 
 
 def test_the_pipeline_agrees_with_the_offline_harness_on_path_hash_sizes(replayed):
-    counts = collections.Counter(record.hash_size for record in replayed)
+    counts = collections.Counter(record.hash_size for record in decoded_only(replayed))
     harness = collections.Counter(packet.hash_size for packet in harness_packets())
     assert dict(counts) == dict(harness)
 
@@ -114,8 +134,14 @@ def test_the_pipeline_verifies_exactly_the_adverts_the_harness_does(replayed):
 
 
 def test_the_pipeline_carries_the_recorded_signal_values(replayed):
-    """SNR and RSSI survive capture, replay and decode unchanged."""
-    for record, frame in zip(replayed, received_frames(), strict=True):
+    """SNR and RSSI survive capture, replay and decode unchanged.
+
+    Paired against `received_frames()` rather than `replayed` directly: the
+    room-server session's `ModemUnparsed` reception has no `CorpusFrame`
+    counterpart (it is not a `rx_frame`/`tx_frame` record) and carries no
+    signal values of its own to compare.
+    """
+    for record, frame in zip(decoded_only(replayed), received_frames(), strict=True):
         assert record.snr_db == frame.snr_db
         assert record.rssi_dbm == frame.rssi_dbm
 

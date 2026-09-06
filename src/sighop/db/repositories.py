@@ -21,20 +21,28 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
 from sighop.db.models import Contact as ContactRow
 from sighop.db.models import Entity as EntityRow
+from sighop.db.models import Message as MessageRow
 from sighop.db.models import PacketLog as PacketLogRowModel
 from sighop.db.models import Path as PathRow
+from sighop.db.models import Room as RoomRow
+from sighop.db.models import RoomMember as RoomMemberRow
 from sighop.db.sealing import open_seed, seal_seed
 from sighop.db.times import ensure_utc
 from sighop.net.contacts import Contact
 from sighop.net.paths import LearnedPath, PathKey
 from sighop.protocol.identity import LocalIdentity
-from sighop.protocol.payloads import NodeType, WireText
+from sighop.protocol.payloads import (
+    PERMISSION_ROLE_MASK,
+    NodeType,
+    Permission,
+    WireText,
+)
 
 DEFAULT_PACKET_LOG_MAX_ROWS = 100_000
 """Design D3, open question 2. Derived from one 2 h 54 min session at ~191
@@ -631,3 +639,632 @@ class PacketLogRepository:
         if isinstance(outcome, Succeeded):
             self.pruned += outcome.value
         return outcome
+
+
+# --- Rooms, members and history (milestone 6, design D2/D3/D5) --------------
+#
+# The asymmetry here is design D5's and is the whole reason these are three
+# repositories rather than one. The ACL is read *inside* the MAC trial, once per
+# packet, so it is loaded into memory at startup and written through on change —
+# milestone 5's contact policy applied to the same kind of data. History is
+# unbounded, exists to outlive the process, and is read by the push loop, which
+# is a background task nothing waits on — so it is read from and written to the
+# database directly, with no in-memory mirror to fall out of sync.
+
+
+class RoomExistsError(RuntimeError):
+    """The identity already has a room. Names the existing one (`runtime-cli`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class RoomRecord:
+    """A room as stored, with the two password hashes it holds.
+
+    The hashes are here because rotation and login both need them and there is
+    nowhere else for them to live. Nothing renders this object: `as_json` is
+    what log events and status output carry, and it has no hash in it.
+    """
+
+    id: uuid.UUID
+    entity_id: uuid.UUID
+    name: str
+    admin_password_hash: str
+    guest_password_hash: str | None
+    guest_open: bool
+    allow_read_only: bool
+    retention_days: int | None
+    retention_messages: int | None
+    created_at: dt.datetime
+
+    @property
+    def guest_access(self) -> str:
+        """The three states the two guest columns encode between them (design D2)."""
+        if self.guest_password_hash is not None:
+            return "password"
+        return "open" if self.guest_open else "refused"
+
+    @property
+    def retention(self) -> str:
+        """"unlimited" said plainly when no policy is set (design D15)."""
+        bounds = []
+        if self.retention_days is not None:
+            bounds.append(f"{self.retention_days} days")
+        if self.retention_messages is not None:
+            bounds.append(f"{self.retention_messages} messages")
+        return " and ".join(bounds) if bounds else "unlimited"
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "room_id": str(self.id),
+            "room_name": self.name,
+            "entity_id": str(self.entity_id),
+            "guest_access": self.guest_access,
+            "allow_read_only": self.allow_read_only,
+            "retention": self.retention,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MemberRecord:
+    """One member of one room — permissions, cursor and replay guard together.
+
+    `sync_since` and `last_timestamp` are MeshCore's unsigned 32-bit epoch
+    seconds as they appear on the wire, not instants (design D2).
+    """
+
+    room_id: uuid.UUID
+    public_key: bytes
+    node_hash: int
+    permissions: int
+    sync_since: int
+    last_timestamp: int
+    first_login: dt.datetime
+    last_activity: dt.datetime
+
+    @property
+    def permission(self) -> Permission:
+        try:
+            return Permission(self.permissions & PERMISSION_ROLE_MASK)
+        except ValueError:  # pragma: no cover - the mask makes this unreachable
+            return Permission.GUEST
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "member": self.public_key.hex()[:16],
+            "node_hash": self.node_hash,
+            "permission": self.permission.name.lower(),
+            "sync_since": self.sync_since,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PostRecord:
+    """One stored post. `text` is bytes, because the wire's text is (design D4)."""
+
+    id: int
+    room_id: uuid.UUID
+    author_public_key: bytes
+    post_timestamp: int
+    sender_timestamp: int | None
+    text: bytes
+    posted_at: dt.datetime
+
+    @property
+    def rendered(self) -> WireText:
+        """The text as something displayable, *marked* as a rendering."""
+        return WireText.from_bytes(self.text)
+
+
+@dataclass(slots=True)
+class RoomRepository:
+    """The `room` table. One row per identity, enforced by the schema."""
+
+    database: Database
+
+    async def create(
+        self,
+        *,
+        entity_id: uuid.UUID,
+        name: str,
+        admin_password_hash: str,
+        guest_password_hash: str | None = None,
+        guest_open: bool = False,
+        allow_read_only: bool = False,
+        created_at: dt.datetime | None = None,
+    ) -> Outcome[RoomRecord]:
+        record = RoomRecord(
+            id=uuid.uuid4(),
+            entity_id=entity_id,
+            name=name,
+            admin_password_hash=admin_password_hash,
+            guest_password_hash=guest_password_hash,
+            guest_open=guest_open,
+            allow_read_only=allow_read_only,
+            # Both bounds unset: nothing is deleted until an operator sets a
+            # policy (design D15), and a default here would answer §13's first
+            # unknown by accident.
+            retention_days=None,
+            retention_messages=None,
+            created_at=ensure_utc(created_at or dt.datetime.now(dt.UTC), field="room.created_at"),
+        )
+
+        # Checked before the insert so the refusal can *name* the existing room,
+        # which is what `sighop room create` prints. The unique constraint stays
+        # the backstop: this check loses a race and the constraint does not.
+        existing = await self.get_for_entity(entity_id)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise RoomExistsError(
+                f"this identity already carries the room {existing.value.name!r}; "
+                "one identity is one node to the mesh, and a node is one room"
+            )
+
+        async def work(session: object) -> RoomRecord:
+            session.add(  # type: ignore[attr-defined]
+                RoomRow(
+                    id=record.id,
+                    entity_id=record.entity_id,
+                    name=record.name,
+                    admin_password_hash=record.admin_password_hash,
+                    guest_password_hash=record.guest_password_hash,
+                    guest_open=record.guest_open,
+                    allow_read_only=record.allow_read_only,
+                    created_at=record.created_at,
+                )
+            )
+            return record
+
+        return await self.database.run("create_room", work)
+
+    async def list_all(self) -> Outcome[list[RoomRecord]]:
+        async def work(session: object) -> list[RoomRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow).order_by(RoomRow.created_at)
+                )
+            ).scalars()
+            return [_room(row) for row in rows]
+
+        return await self.database.run("list_rooms", work)
+
+    async def get_for_entity(self, entity_id: uuid.UUID) -> Outcome[RoomRecord | None]:
+        async def work(session: object) -> RoomRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow).where(RoomRow.entity_id == entity_id)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _room(row)
+
+        return await self.database.run("get_room", work)
+
+    async def set_passwords(
+        self,
+        room_id: uuid.UUID,
+        *,
+        admin_password_hash: str | None = None,
+        guest_password_hash: str | None = None,
+        guest_open: bool | None = None,
+        clear_guest_password: bool = False,
+    ) -> Outcome[bool]:
+        """Rotate a password. **Evicts nobody**, because membership is keyed on
+        the public key recorded at first login (§7) — this changes only what a
+        *new* login is gated by."""
+
+        async def work(session: object) -> bool:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow).where(RoomRow.id == room_id)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            if admin_password_hash is not None:
+                row.admin_password_hash = admin_password_hash
+            if clear_guest_password:
+                row.guest_password_hash = None
+            elif guest_password_hash is not None:
+                row.guest_password_hash = guest_password_hash
+            if guest_open is not None:
+                row.guest_open = guest_open
+            return True
+
+        return await self.database.run("set_room_passwords", work)
+
+    async def set_retention(
+        self,
+        room_id: uuid.UUID,
+        *,
+        retention_days: int | None,
+        retention_messages: int | None,
+    ) -> Outcome[bool]:
+        """Set or clear both bounds. `None` for either is "unlimited" for that one."""
+
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(RoomRow)
+                .where(RoomRow.id == room_id)
+                .values(
+                    retention_days=retention_days,
+                    retention_messages=retention_messages,
+                )
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("set_room_retention", work)
+
+
+def _room(row: RoomRow) -> RoomRecord:
+    return RoomRecord(
+        id=row.id,
+        entity_id=row.entity_id,
+        name=row.name,
+        admin_password_hash=row.admin_password_hash,
+        guest_password_hash=row.guest_password_hash,
+        guest_open=row.guest_open,
+        allow_read_only=row.allow_read_only,
+        retention_days=row.retention_days,
+        retention_messages=row.retention_messages,
+        created_at=row.created_at,
+    )
+
+
+@dataclass(slots=True)
+class RoomMemberRepository:
+    """The `room_member` table: the ACL, the cursor and the replay guard."""
+
+    database: Database
+
+    async def load_for_room(self, room_id: uuid.UUID) -> Outcome[list[MemberRecord]]:
+        async def work(session: object) -> list[MemberRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomMemberRow)
+                    .where(RoomMemberRow.room_id == room_id)
+                    .order_by(RoomMemberRow.first_login)
+                )
+            ).scalars()
+            return [_member(row) for row in rows]
+
+        return await self.database.run("load_room_members", work)
+
+    async def upsert(self, member: MemberRecord) -> Outcome[int]:
+        values = {
+            "room_id": member.room_id,
+            "public_key": member.public_key,
+            "node_hash": member.node_hash,
+            "permissions": member.permissions,
+            "sync_since": member.sync_since,
+            "last_timestamp": member.last_timestamp,
+            "first_login": ensure_utc(member.first_login, field="room_member.first_login"),
+            "last_activity": ensure_utc(
+                member.last_activity, field="room_member.last_activity"
+            ),
+        }
+
+        async def work(session: object) -> int:
+            statement = insert(RoomMemberRow).values([values])
+            await session.execute(  # type: ignore[attr-defined]
+                statement.on_conflict_do_update(
+                    constraint="pk_room_member",
+                    set_={
+                        "node_hash": statement.excluded.node_hash,
+                        "permissions": statement.excluded.permissions,
+                        "sync_since": statement.excluded.sync_since,
+                        "last_timestamp": statement.excluded.last_timestamp,
+                        # first_login is deliberately absent: it is when this
+                        # member first joined, and logging in again does not
+                        # move it, exactly as re-hearing a contact does not move
+                        # `first_heard`.
+                        "last_activity": statement.excluded.last_activity,
+                    },
+                )
+            )
+            return 1
+
+        return await self.database.run("upsert_room_member", work)
+
+    async def delete(self, room_id: uuid.UUID, public_key: bytes) -> Outcome[bool]:
+        """Revoke: membership, permissions, cursor and replay guard go together.
+
+        One row holds all four, so there is no partial revocation to get wrong —
+        which is why the ACL keeping the cursor turned out to be the right shape
+        rather than merely a convenient one.
+        """
+
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(RoomMemberRow).where(
+                    RoomMemberRow.room_id == room_id,
+                    RoomMemberRow.public_key == public_key,
+                )
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("delete_room_member", work)
+
+
+def _member(row: RoomMemberRow) -> MemberRecord:
+    return MemberRecord(
+        room_id=row.room_id,
+        public_key=bytes(row.public_key),
+        node_hash=row.node_hash,
+        permissions=row.permissions,
+        sync_since=row.sync_since,
+        last_timestamp=row.last_timestamp,
+        first_login=row.first_login,
+        last_activity=row.last_activity,
+    )
+
+
+@dataclass(slots=True)
+class MessageRepository:
+    """The `message` table: durable, ordered, and read directly (design D5)."""
+
+    database: Database
+    pruned: int = field(default=0, init=False)
+    pruned_unsynced: int = field(default=0, init=False)
+    """Messages deleted whose ordering values were above at least one member's
+    cursor — retention outrunning sync, reported rather than hidden (D15)."""
+
+    async def store(
+        self,
+        *,
+        room_id: uuid.UUID,
+        author_public_key: bytes,
+        text: bytes,
+        sender_timestamp: int | None = None,
+        now: int | None = None,
+        posted_at: dt.datetime | None = None,
+    ) -> Outcome[PostRecord]:
+        """Store one post, stamping it `max(now, last + 1)` for its room.
+
+        The stamp is computed **in the statement** rather than read and then
+        written, so two concurrent posts cannot both read the same maximum. The
+        unique constraint is what makes that safe rather than hopeful (design
+        D3): a clock that steps backwards produces a stall in stamping, never a
+        duplicate or a reordering.
+        """
+        at = ensure_utc(posted_at or dt.datetime.now(dt.UTC), field="message.posted_at")
+        stamp = int(at.timestamp()) if now is None else now
+
+        async def work(session: object) -> PostRecord:
+            highest = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.max(MessageRow.post_timestamp)).where(
+                        MessageRow.room_id == room_id
+                    )
+                )
+            ).scalar_one_or_none()
+            post_timestamp = stamp if highest is None else max(stamp, int(highest) + 1)
+            row = MessageRow(
+                room_id=room_id,
+                author_public_key=author_public_key,
+                post_timestamp=post_timestamp,
+                sender_timestamp=sender_timestamp,
+                text=text,
+                posted_at=at,
+            )
+            session.add(row)  # type: ignore[attr-defined]
+            await session.flush()  # type: ignore[attr-defined]
+            return PostRecord(
+                id=row.id,
+                room_id=room_id,
+                author_public_key=author_public_key,
+                post_timestamp=post_timestamp,
+                sender_timestamp=sender_timestamp,
+                text=text,
+                posted_at=at,
+            )
+
+        return await self.database.run("store_message", work)
+
+    async def find_retry(
+        self, room_id: uuid.UUID, author_public_key: bytes, sender_timestamp: int
+    ) -> Outcome[PostRecord | None]:
+        """The post this sender already made at this timestamp, if any.
+
+        What makes a retry a retry is the sender's own timestamp, which the
+        firmware also uses (`MyMesh.cpp:449`): a resend carries the same one and
+        differs only in its attempt counter.
+        """
+
+        async def work(session: object) -> PostRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(MessageRow)
+                    .where(
+                        MessageRow.room_id == room_id,
+                        MessageRow.author_public_key == author_public_key,
+                        MessageRow.sender_timestamp == sender_timestamp,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _post(row)
+
+        return await self.database.run("find_message_retry", work)
+
+    async def next_for_member(
+        self, room_id: uuid.UUID, *, since: int, author_to_skip: bytes, not_after: int | None = None
+    ) -> Outcome[PostRecord | None]:
+        """The oldest post this member has not had, skipping its own.
+
+        `not_after` is the hold: a post is not eligible until it has been stored
+        for the reference implementation's delay (`POST_SYNC_DELAY_SECS`), so a
+        client that is about to receive the sender's own copy is not raced.
+        """
+
+        async def work(session: object) -> PostRecord | None:
+            statement = (
+                select(MessageRow)
+                .where(
+                    MessageRow.room_id == room_id,
+                    MessageRow.post_timestamp > since,
+                    MessageRow.author_public_key != author_to_skip,
+                )
+                .order_by(MessageRow.post_timestamp)
+                .limit(1)
+            )
+            if not_after is not None:
+                statement = statement.where(MessageRow.post_timestamp <= not_after)
+            row = (await session.execute(statement)).scalar_one_or_none()  # type: ignore[attr-defined]
+            return None if row is None else _post(row)
+
+        return await self.database.run("next_message_for_member", work)
+
+    async def unsynced_count(
+        self, room_id: uuid.UUID, *, since: int, author_to_skip: bytes
+    ) -> Outcome[int]:
+        """How many posts this member has yet to receive (`MyMesh.cpp:110-119`)."""
+
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count())
+                    .select_from(MessageRow)
+                    .where(
+                        MessageRow.room_id == room_id,
+                        MessageRow.post_timestamp > since,
+                        MessageRow.author_public_key != author_to_skip,
+                    )
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_unsynced", work)
+
+    async def history(
+        self, room_id: uuid.UUID, *, limit: int = 100, newest_first: bool = False
+    ) -> Outcome[list[PostRecord]]:
+        async def work(session: object) -> list[PostRecord]:
+            order = (
+                MessageRow.post_timestamp.desc()
+                if newest_first
+                else MessageRow.post_timestamp
+            )
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(MessageRow)
+                    .where(MessageRow.room_id == room_id)
+                    .order_by(order)
+                    .limit(limit)
+                )
+            ).scalars()
+            return [_post(row) for row in rows]
+
+        return await self.database.run("read_history", work)
+
+    async def count(self, room_id: uuid.UUID) -> Outcome[int]:
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count())
+                    .select_from(MessageRow)
+                    .where(MessageRow.room_id == room_id)
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_messages", work)
+
+    async def prune(
+        self,
+        room_id: uuid.UUID,
+        *,
+        retention_days: int | None,
+        retention_messages: int | None,
+        now: dt.datetime | None = None,
+    ) -> Outcome[tuple[int, int]]:
+        """Apply a room's retention policy. Returns (deleted, deleted-while-unsynced).
+
+        Both bounds unset deletes nothing, however old or numerous the history —
+        that is what "unlimited" is, and it is the state a room ships in.
+
+        The second number is the one design D15 insists on: retention wins over
+        sync, deliberately, and the count of messages removed while at least one
+        member was still behind them is what makes the trade visible instead of
+        letting a gap in a member's history look like a delivery failure.
+        """
+        if retention_days is None and retention_messages is None:
+            return Succeeded(value=(0, 0))
+        cutoff = ensure_utc(now or dt.datetime.now(dt.UTC), field="message.posted_at")
+
+        async def work(session: object) -> tuple[int, int]:
+            doomed: set[int] = set()
+            if retention_days is not None:
+                horizon = cutoff - dt.timedelta(days=retention_days)
+                doomed.update(
+                    (
+                        await session.execute(  # type: ignore[attr-defined]
+                            select(MessageRow.id).where(
+                                MessageRow.room_id == room_id,
+                                MessageRow.posted_at < horizon,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            if retention_messages is not None:
+                doomed.update(
+                    (
+                        await session.execute(  # type: ignore[attr-defined]
+                            select(MessageRow.id)
+                            .where(MessageRow.room_id == room_id)
+                            .order_by(MessageRow.post_timestamp.desc())
+                            .offset(retention_messages)
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+            if not doomed:
+                return 0, 0
+
+            # Counted before the delete, because afterwards there is nothing to
+            # count and the operator would never learn what the policy cost.
+            behind = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.min(RoomMemberRow.sync_since)).where(
+                        RoomMemberRow.room_id == room_id
+                    )
+                )
+            ).scalar_one_or_none()
+            unsynced = 0
+            if behind is not None:
+                unsynced = int(
+                    (
+                        await session.execute(  # type: ignore[attr-defined]
+                            select(func.count())
+                            .select_from(MessageRow)
+                            .where(
+                                MessageRow.id.in_(doomed),
+                                MessageRow.post_timestamp > int(behind),
+                            )
+                        )
+                    ).scalar_one()
+                )
+
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(MessageRow).where(MessageRow.id.in_(doomed))
+            )
+            return int(result.rowcount or 0), unsynced
+
+        outcome = await self.database.run("prune_messages", work)
+        if isinstance(outcome, Succeeded):
+            deleted, unsynced = outcome.value
+            self.pruned += deleted
+            self.pruned_unsynced += unsynced
+        return outcome
+
+
+def _post(row: MessageRow) -> PostRecord:
+    return PostRecord(
+        id=row.id,
+        room_id=row.room_id,
+        author_public_key=bytes(row.author_public_key),
+        post_timestamp=row.post_timestamp,
+        sender_timestamp=row.sender_timestamp,
+        text=bytes(row.text),
+        posted_at=row.posted_at,
+    )

@@ -27,6 +27,19 @@ from sighop.net.dm import (
     MessageUnparsable,
     SendResolved,
 )
+from sighop.net.room import (
+    DeliveryAcknowledged,
+    DeliverySent,
+    LoginAdmitted,
+    LoginRefused,
+    MemberBackedOff,
+    PostRefused,
+    PostStored,
+    RequestAnswered,
+    RequestRefused,
+    RetentionPruned,
+    RoomEvent,
+)
 from sighop.net.rx import (
     AdvertOutcome,
     ModemUnparsed,
@@ -47,6 +60,7 @@ from sighop.protocol.payloads import (
     NodeType,
     ParsedPayload,
     TracePayload,
+    WireText,
 )
 from sighop.radio.modem import DEVICE_REBOOT_REASON, RadioParams
 from sighop.radio.probe import Absent, FirmwareVersion, Probed, ProbeResult
@@ -575,3 +589,220 @@ def _provenance_field(provenance: dict, key: str) -> str:
     if key == "firmware_version" and isinstance(value, dict):
         return f"v{value['version']}"
     return str(value)
+
+
+# --- Rooms (milestone 6) ----------------------------------------------------
+#
+# Pure formatting, and two rules that are not cosmetic. **No password and no
+# password hash may appear here**, which is asserted against the actual output
+# rather than trusted to review (task 11.3). And a member is identified by a key
+# prefix rather than a name: a room server never learns a member's name from the
+# login exchange, and inventing one from a contact would present a claim as a
+# fact.
+
+ROOMS_OFF = (
+    "rooms: none — a room is bound to a stored identity, and stored identities "
+    "require durable storage"
+)
+"""What `sighop run` says with no database configured (design D5). Stated rather
+than omitted: a run that silently served no rooms would look identical to one
+whose rooms failed to load."""
+
+
+def render_room_startup(
+    *,
+    name: str,
+    entity_name: str,
+    node_hash: int,
+    members: int,
+    messages: int,
+    guest_access: str,
+    retention: str,
+    served: bool = True,
+    not_served_because: str = "",
+) -> str:
+    """One room, before any traffic is handled.
+
+    `retention` is expected to read "unlimited" when no policy is set, which is
+    said in words rather than shown as a blank: a bound nobody set and a bound
+    nobody can see are the same thing to an operator (design D15).
+    """
+    head = (
+        f"room {name!r} on {entity_name}[{node_hash:02x}]  "
+        f"members={members} messages={messages}  "
+        f"guest={guest_access}  retention={retention}"
+    )
+    if served:
+        return head
+    return f"{head}  NOT SERVED ({not_served_because})"
+
+
+def render_room_status(
+    *,
+    name: str,
+    members: int,
+    messages_stored: int,
+    deliveries_outstanding: int,
+    members_behind: int,
+    accepting_posts: bool,
+    refusals: dict[str, int],
+    pruned: int,
+    pruned_unsynced: int,
+) -> str:
+    """The periodic room line.
+
+    Every counter is rendered, zeros included, for the reason the persistence
+    counters are: a field that disappears when it is zero cannot be told from a
+    field nobody wrote. `refusals` is rendered whole rather than as a total —
+    "six refused" says nothing an operator can act on, and "bad_password=6" says
+    what to do about it.
+    """
+    line = (
+        f"== room {name!r} members={members} stored={messages_stored} "
+        f"outstanding={deliveries_outstanding} behind={members_behind} "
+        f"pruned={pruned} pruned_unsynced={pruned_unsynced}"
+    )
+    if not accepting_posts:
+        line += "  REFUSING POSTS (storage degraded)"
+    reasons = ",".join(f"{reason}={count}" for reason, count in sorted(refusals.items()))
+    line += f" refused={reasons or 'none'}"
+    return line
+
+
+def render_login_admitted(event: LoginAdmitted) -> str:
+    joined = "joined" if event.new_member else "returned"
+    arrival = "flooded" if event.flooded else "direct"
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  {joined} "
+        f"{CLAIMED_MARK}{event.public_key.hex()[:16]}  "
+        f"as {event.permission.name.lower()}  ({arrival})  id={event.packet_id}"
+    )
+
+
+def render_login_refused(event: LoginRefused) -> str:
+    """A refusal is silent on the air and never silent here (design D8)."""
+    who = "" if event.public_key is None else f"  {CLAIMED_MARK}{event.public_key.hex()[:16]}"
+    detail = f"  {event.detail}" if event.detail else ""
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  login refused: {event.reason}{who}"
+        f"{detail}  id={event.packet_id}"
+    )
+
+
+def render_post_stored(event: PostStored) -> str:
+    marks = []
+    if event.retry:
+        marks.append("retry")
+    if event.truncated_from is not None:
+        # The author's words were dropped, so say so on the line that claims to
+        # show the post rather than only in the log.
+        marks.append(f"TRUNCATED from {event.truncated_from} bytes")
+    if not event.acknowledged:
+        marks.append("NOT ACKNOWLEDGED")
+    suffix = f"  ({', '.join(marks)})" if marks else ""
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  post @{event.post_timestamp} "
+        f"from {CLAIMED_MARK}{event.author.hex()[:16]}  "
+        f"{_render_wire_text(event.text)}{suffix}"
+    )
+
+
+def render_post_refused(event: PostRefused) -> str:
+    who = "" if event.author is None else f"  {CLAIMED_MARK}{event.author.hex()[:16]}"
+    detail = f"  {event.detail}" if event.detail else ""
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  post refused: {event.reason}{who}"
+        f"{detail}  id={event.packet_id}"
+    )
+
+
+def render_delivery_sent(event: DeliverySent) -> str:
+    state = "pushed" if event.transmitted else "not sent (gate closed)"
+    return (
+        f"{_INDENT}-> room {event.room_name!r}  {state} @{event.post_timestamp} "
+        f"to {event.member.hex()[:16]}  {event.route.label}  "
+        f"expect={event.expected_ack.hex()}  id={event.packet_id}"
+    )
+
+
+def render_delivery_acknowledged(event: DeliveryAcknowledged) -> str:
+    how = " (bundled in a path return)" if event.bundled else ""
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  delivery acknowledged "
+        f"@{event.post_timestamp} by {event.member.hex()[:16]}{how}  "
+        f"id={event.packet_id}"
+    )
+
+
+def render_member_backed_off(event: MemberBackedOff) -> str:
+    return (
+        f"{_INDENT}!! room {event.room_name!r}  {event.member.hex()[:16]} backed off "
+        f"after {event.failures} unacknowledged deliveries; "
+        "delivery resumes when it is next heard from"
+    )
+
+
+def render_request_answered(event: RequestAnswered) -> str:
+    name = getattr(event.request_type, "name", str(event.request_type))
+    return (
+        f"{_INDENT}-> room {event.room_name!r}  answered {name.lower()} "
+        f"for {event.member.hex()[:16]}  {event.reply_bytes}B  id={event.packet_id}"
+    )
+
+
+def render_request_refused(event: RequestRefused) -> str:
+    name = getattr(event.request_type, "name", str(event.request_type))
+    who = "" if event.member is None else f"  {event.member.hex()[:16]}"
+    return (
+        f"{_INDENT}<- room {event.room_name!r}  request {name.lower()} unanswered: "
+        f"{event.reason}{who}  id={event.packet_id}"
+    )
+
+
+def render_retention_pruned(event: RetentionPruned) -> str:
+    """Design D15: what retention cost, including what it cost a member."""
+    line = (
+        f"{_INDENT}room {event.room_name!r}  retention removed {event.deleted} messages"
+    )
+    if event.deleted_unsynced:
+        line += (
+            f", {event.deleted_unsynced} of which a member had not yet received "
+            "— those members' history has a gap"
+        )
+    return line
+
+
+def render_room_event(event: RoomEvent) -> str:
+    match event:
+        case LoginAdmitted():
+            return render_login_admitted(event)
+        case LoginRefused():
+            return render_login_refused(event)
+        case PostStored():
+            return render_post_stored(event)
+        case PostRefused():
+            return render_post_refused(event)
+        case DeliverySent():
+            return render_delivery_sent(event)
+        case DeliveryAcknowledged():
+            return render_delivery_acknowledged(event)
+        case MemberBackedOff():
+            return render_member_backed_off(event)
+        case RequestAnswered():
+            return render_request_answered(event)
+        case RequestRefused():
+            return render_request_refused(event)
+        case RetentionPruned():
+            return render_retention_pruned(event)
+
+
+def _render_wire_text(text: WireText) -> str:
+    """Text off the wire, marked as a rendering when it is not valid UTF-8.
+
+    §4.1's rule at the display edge: the bytes are what was stored, and what is
+    shown is a rendering of them. Presenting a replacement-charactered string as
+    the author's text would be presenting our guess as their content.
+    """
+    if text.is_valid_utf8:
+        return repr(text.text)
+    return f"{text.text!r} (rendering of {len(text.raw)} bytes, not valid UTF-8)"

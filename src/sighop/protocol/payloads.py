@@ -20,6 +20,7 @@ levels, and the types keep them apart:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import IntEnum
 
@@ -87,6 +88,40 @@ class TextType(IntEnum):
     SIGNED_PLAIN = 2
 
 
+PERMISSION_ROLE_MASK = 0x03
+"""`PERM_ACL_ROLE_MASK` (`ClientACL.h:7`): the role is the low two bits, and the
+upper six are reserved for flags this milestone does not set."""
+
+
+class Permission(IntEnum):
+    """A member's role, as the byte the login response carries (`ClientACL.h`).
+
+    One name here is a trap worth reading twice. The firmware's `PERM_ACL_GUEST`
+    is **zero**, and it is what a room server grants a client whose password
+    matched nothing when `allow_read_only` is set (`MyMesh.cpp:350`); posts from
+    it are refused (`:479`). So `GUEST` is what everything else in sighop calls
+    *read-only* — a member that receives history and may not post.
+
+    `READ_ONLY` (1) is declared by the firmware and never assigned by the room
+    server. It is here because the byte can carry it and a member restored from
+    a database written by other firmware might, not because we produce it.
+    """
+
+    GUEST = 0
+    READ_ONLY = 1
+    READ_WRITE = 2
+    ADMIN = 3
+
+    @property
+    def may_post(self) -> bool:
+        """Whether this role may add to a room's history (`MyMesh.cpp:479`)."""
+        return self in (Permission.READ_WRITE, Permission.ADMIN)
+
+    @property
+    def is_admin(self) -> bool:
+        return self is Permission.ADMIN
+
+
 @dataclass(frozen=True, slots=True)
 class WireText:
     """Text lifted off the wire, which is not guaranteed to be valid UTF-8.
@@ -105,9 +140,7 @@ class WireText:
         try:
             return cls(raw=raw, text=raw.decode("utf-8"), is_valid_utf8=True)
         except UnicodeDecodeError:
-            return cls(
-                raw=raw, text=raw.decode("utf-8", errors="replace"), is_valid_utf8=False
-            )
+            return cls(raw=raw, text=raw.decode("utf-8", errors="replace"), is_valid_utf8=False)
 
 
 # --- Envelopes (stage 1) ---------------------------------------------------
@@ -186,9 +219,7 @@ class Advert:
     @property
     def signed_message(self) -> bytes:
         """The bytes the signature covers (`Mesh.cpp::createAdvert`)."""
-        return (
-            self.public_key + self.timestamp.to_bytes(4, "little") + self.appdata
-        )
+        return self.public_key + self.timestamp.to_bytes(4, "little") + self.appdata
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,9 +253,7 @@ type ParsedPayload = (
 )
 
 
-def parse_payload(
-    payload_type: PayloadType, payload: bytes
-) -> DecodeResult[ParsedPayload]:
+def parse_payload(payload_type: PayloadType, payload: bytes) -> DecodeResult[ParsedPayload]:
     """Parse payload bytes according to the packet header's payload type.
 
     Returns the envelope stage only: nothing here decrypts, and nothing here
@@ -317,9 +346,7 @@ def parse_anon_request(payload: bytes) -> DecodeResult[AnonRequestEnvelope]:
     )
 
 
-def parse_group_envelope(
-    payload_type: PayloadType, payload: bytes
-) -> DecodeResult[GroupEnvelope]:
+def parse_group_envelope(payload_type: PayloadType, payload: bytes) -> DecodeResult[GroupEnvelope]:
     if payload_type not in GROUP_ENVELOPE_TYPES:
         return DecodeFailure(
             reason=FailureReason.PAYLOAD_TYPE_MISMATCH,
@@ -358,9 +385,7 @@ def parse_ack(payload: bytes) -> DecodeResult[Acknowledgement]:
                 f"{ACK_CHECKSUM_SIZE} or {ACK_CHECKSUM_SIZE + ACK_TAIL_SIZE} are valid"
             ),
         )
-    return Acknowledgement(
-        checksum=payload[:ACK_CHECKSUM_SIZE], tail=payload[ACK_CHECKSUM_SIZE:]
-    )
+    return Acknowledgement(checksum=payload[:ACK_CHECKSUM_SIZE], tail=payload[ACK_CHECKSUM_SIZE:])
 
 
 def parse_advert(payload: bytes) -> DecodeResult[Advert]:
@@ -446,9 +471,7 @@ def parse_appdata(appdata: bytes) -> DecodeResult[AdvertAppData]:
         if len(appdata) - offset < 8:
             return truncated("a location", 8)
         latitude = int.from_bytes(appdata[offset : offset + 4], "little", signed=True)
-        longitude = int.from_bytes(
-            appdata[offset + 4 : offset + 8], "little", signed=True
-        )
+        longitude = int.from_bytes(appdata[offset + 4 : offset + 8], "little", signed=True)
         offset += 8
 
     feature1 = feature2 = None
@@ -530,8 +553,7 @@ def build_appdata(
 
     if len(out) > MAX_ADVERT_DATA_SIZE:
         raise EncodeError(
-            f"appdata of {len(out)} bytes exceeds MAX_ADVERT_DATA_SIZE "
-            f"{MAX_ADVERT_DATA_SIZE}"
+            f"appdata of {len(out)} bytes exceeds MAX_ADVERT_DATA_SIZE {MAX_ADVERT_DATA_SIZE}"
         )
     return bytes(out)
 
@@ -577,11 +599,7 @@ def build_direct_envelope(envelope: DirectEnvelope) -> bytes:
     if len(envelope.mac) != CIPHER_MAC_SIZE:
         raise EncodeError(f"cipher MAC must be {CIPHER_MAC_SIZE} bytes")
     _check_buildable_ciphertext(envelope.ciphertext)
-    return (
-        bytes([envelope.dest_hash, envelope.src_hash])
-        + envelope.mac
-        + envelope.ciphertext
-    )
+    return bytes([envelope.dest_hash, envelope.src_hash]) + envelope.mac + envelope.ciphertext
 
 
 def build_anon_request(envelope: AnonRequestEnvelope) -> bytes:
@@ -709,9 +727,7 @@ def build_text_message_body(message: TextMessageBody) -> bytes:
         if message.sender_key_prefix is None or len(message.sender_key_prefix) != 4:
             raise EncodeError("a signed text message needs a 4-byte sender key prefix")
     elif message.sender_key_prefix is not None:
-        raise EncodeError(
-            "a sender key prefix is only carried by txt_type SIGNED_PLAIN"
-        )
+        raise EncodeError("a sender key prefix is only carried by txt_type SIGNED_PLAIN")
     return message.ack_prefix
 
 
@@ -740,12 +756,8 @@ def parse_group_text_body(body: bytes) -> DecodeResult[GroupTextBody]:
     name, separator, remainder = message.text.text.partition(GROUP_NAME_SEPARATOR)
     if not separator:
         # No separator: report the whole text as the body rather than guess a split.
-        return GroupTextBody(
-            message=message, unverified_sender_name=None, body=message.text.text
-        )
-    return GroupTextBody(
-        message=message, unverified_sender_name=name, body=remainder
-    )
+        return GroupTextBody(message=message, unverified_sender_name=None, body=message.text.text)
+    return GroupTextBody(message=message, unverified_sender_name=name, body=remainder)
 
 
 @dataclass(frozen=True, slots=True)
@@ -803,10 +815,7 @@ def parse_returned_path_body(body: bytes) -> DecodeResult[ReturnedPathBody]:
             reason=FailureReason.PATH_SIZE_LIMIT,
             offset=0,
             raw=body,
-            detail=(
-                f"returned path of {path_extent} bytes exceeds MAX_PATH_SIZE "
-                f"{MAX_PATH_SIZE}"
-            ),
+            detail=(f"returned path of {path_extent} bytes exceeds MAX_PATH_SIZE {MAX_PATH_SIZE}"),
         )
 
     path_end = 1 + path_extent
@@ -843,13 +852,9 @@ def parse_returned_path_body(body: bytes) -> DecodeResult[ReturnedPathBody]:
 
 def build_returned_path_body(path_body: ReturnedPathBody) -> bytes:
     if not 1 <= path_body.hash_size <= 3:
-        raise EncodeError(
-            f"returned path hash size {path_body.hash_size} is not encodable (1-3)"
-        )
+        raise EncodeError(f"returned path hash size {path_body.hash_size} is not encodable (1-3)")
     if not 0 <= path_body.hop_count <= 0x3F:
-        raise EncodeError(
-            f"returned path hop count {path_body.hop_count} does not fit in 6 bits"
-        )
+        raise EncodeError(f"returned path hop count {path_body.hop_count} does not fit in 6 bits")
     if len(path_body.path) != path_body.hop_count * path_body.hash_size:
         raise EncodeError(
             f"returned path is {len(path_body.path)} bytes but "
@@ -896,3 +901,411 @@ def build_room_login_body(login: RoomLoginBody) -> bytes:
         + login.sync_timestamp.to_bytes(4, "little")
         + login.password.raw
     )
+
+
+# --- What a room server answers with (milestone 6) --------------------------
+
+
+ROOM_LOGIN_RESPONSE_SIZE = 13
+"""`MyMesh.cpp:382-394` writes exactly this many bytes and passes 13 to
+`createDatagram`."""
+
+RESP_SERVER_LOGIN_OK = 0
+"""`MyMesh.cpp:20`. The only result code the room server ever sends: a login
+that fails is answered with silence, not with a code."""
+
+FIRMWARE_VER_LEVEL = 1
+"""The protocol level we implement (`MyMesh.cpp:13`, MeshCore v1.17.1)."""
+
+
+class ClientKind(IntEnum):
+    """Byte 6 of the login response, computed at `MyMesh.cpp:387`.
+
+    Derived from the permission byte rather than independent of it: `1` for an
+    administrator, `2` for a member whose whole permission byte is zero — the
+    read-only spectator — and `0` for everyone else.
+    """
+
+    MEMBER = 0
+    ADMIN = 1
+    SPECTATOR = 2
+
+    @classmethod
+    def for_permissions(cls, permissions: int) -> ClientKind:
+        if permissions & PERMISSION_ROLE_MASK == Permission.ADMIN:
+            return cls.ADMIN
+        if permissions == 0:
+            return cls.SPECTATOR
+        return cls.MEMBER
+
+
+@dataclass(frozen=True, slots=True)
+class RoomLoginResponseBody:
+    """The 13 bytes a room server returns for a successful login.
+
+    Byte 7 is the one worth knowing about: firmware older than `v1.17.1` reads it
+    as the client's unsynced count, where this version puts the permission byte
+    (`MyMesh.cpp:390`, whose own comment keeps the legacy line beside the new
+    one). We emit the current form; a client old enough to disagree shows a
+    wrong badge rather than failing to log in.
+
+    `blob` is four random bytes whose only job is to make the packet hash unique
+    (`:391`), so a retried reply is not deduplicated as the first one.
+    """
+
+    server_timestamp: int
+    result: int = RESP_SERVER_LOGIN_OK
+    keep_alive_interval: int = 0
+    """Byte 5. Legacy: was a recommended keep-alive interval in units of 16 s,
+    and is written as zero (`MyMesh.cpp:386`)."""
+
+    client_kind: ClientKind | int = ClientKind.MEMBER
+    permissions: int = 0
+    blob: bytes = b"\x00\x00\x00\x00"
+    protocol_level: int = FIRMWARE_VER_LEVEL
+
+
+def parse_room_login_response_body(body: bytes) -> DecodeResult[RoomLoginResponseBody]:
+    if len(body) < ROOM_LOGIN_RESPONSE_SIZE:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail=(
+                f"room login response is {ROOM_LOGIN_RESPONSE_SIZE} bytes and {len(body)} arrived"
+            ),
+        )
+    try:
+        client_kind: ClientKind | int = ClientKind(body[6])
+    except ValueError:
+        client_kind = body[6]
+    return RoomLoginResponseBody(
+        server_timestamp=int.from_bytes(body[:4], "little"),
+        result=body[4],
+        keep_alive_interval=body[5],
+        client_kind=client_kind,
+        permissions=body[7],
+        blob=body[8:12],
+        protocol_level=body[12],
+    )
+
+
+def build_room_login_response_body(response: RoomLoginResponseBody) -> bytes:
+    if len(response.blob) != 4:
+        raise EncodeError(f"the login response blob is 4 bytes and {len(response.blob)} were given")
+    for name, value in (
+        ("result", response.result),
+        ("keep_alive_interval", response.keep_alive_interval),
+        ("client_kind", int(response.client_kind)),
+        ("permissions", response.permissions),
+        ("protocol_level", response.protocol_level),
+    ):
+        if not 0 <= int(value) <= 0xFF:
+            raise EncodeError(f"login response {name} {value} is not a byte")
+    return (
+        response.server_timestamp.to_bytes(4, "little")
+        + bytes(
+            [
+                response.result,
+                response.keep_alive_interval,
+                int(response.client_kind),
+                response.permissions,
+            ]
+        )
+        + response.blob
+        + bytes([response.protocol_level])
+    )
+
+
+class RequestType(IntEnum):
+    """`MyMesh.cpp:15-18`. `GET_ACCESS_LIST` is named and not implemented."""
+
+    GET_STATUS = 0x01
+    KEEP_ALIVE = 0x02
+    GET_TELEMETRY_DATA = 0x03
+    GET_ACCESS_LIST = 0x05
+
+
+@dataclass(frozen=True, slots=True)
+class RequestBody:
+    """A decrypted `REQ` body: a timestamp, a request type, and its arguments.
+
+    `arguments` is the remainder verbatim, block padding included. Nothing at
+    this layer can tell padding from content — the firmware has the same problem
+    and solves it per request type (`MyMesh.cpp:558-563` reads a keep-alive's
+    optional position only when the body is long enough, and notes that what it
+    reads "may be 0, if part of decrypted PADDING"). A type this codec does not
+    interpret keeps its arguments so the caller can report them.
+    """
+
+    timestamp: int
+    request_type: RequestType | int
+    arguments: bytes = b""
+
+    @property
+    def keep_alive_since(self) -> int | None:
+        """The sync position a keep-alive may carry, or None when it carries none.
+
+        Zero is None here rather than a position: the firmware treats
+        `forceSince > 0` as the condition for adopting it (`:565`), precisely
+        because a zero it read may be padding rather than a claim.
+        """
+        if self.request_type != RequestType.KEEP_ALIVE or len(self.arguments) < 4:
+            return None
+        since = int.from_bytes(self.arguments[:4], "little")
+        return since or None
+
+
+def parse_request_body(body: bytes) -> DecodeResult[RequestBody]:
+    if len(body) < 5:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail="request body needs a 4-byte timestamp and a request type byte",
+        )
+    try:
+        request_type: RequestType | int = RequestType(body[4])
+    except ValueError:
+        request_type = body[4]
+    return RequestBody(
+        timestamp=int.from_bytes(body[:4], "little"),
+        request_type=request_type,
+        arguments=body[5:],
+    )
+
+
+def build_request_body(request: RequestBody) -> bytes:
+    if not 0 <= int(request.request_type) <= 0xFF:
+        raise EncodeError(f"request type {request.request_type} is not a byte")
+    return (
+        request.timestamp.to_bytes(4, "little")
+        + bytes([int(request.request_type)])
+        + request.arguments
+    )
+
+
+SERVER_STATS_SIZE = 52
+"""`sizeof(ServerStats)` at `MyMesh.cpp:24-39`: four 16-bit fields, eight 32-bit
+fields and six 16-bit fields, naturally aligned with no padding."""
+
+STATUS_BODY_SIZE = 4 + SERVER_STATS_SIZE
+"""The whole answer: the echoed request timestamp, then the struct (`:155`, `:178`)."""
+
+_SERVER_STATS_FIELDS: tuple[tuple[str, int, bool], ...] = (
+    ("batt_milli_volts", 2, False),
+    ("curr_tx_queue_len", 2, False),
+    ("noise_floor", 2, True),
+    ("last_rssi", 2, True),
+    ("n_packets_recv", 4, False),
+    ("n_packets_sent", 4, False),
+    ("total_air_time_secs", 4, False),
+    ("total_up_time_secs", 4, False),
+    ("n_sent_flood", 4, False),
+    ("n_sent_direct", 4, False),
+    ("n_recv_flood", 4, False),
+    ("n_recv_direct", 4, False),
+    ("err_events", 2, False),
+    ("last_snr", 2, True),
+    ("n_direct_dups", 2, False),
+    ("n_flood_dups", 2, False),
+    ("n_posted", 2, False),
+    ("n_post_push", 2, False),
+)
+
+SERVER_STATS_OFFSETS = {
+    name: sum(size for _, size, _ in _SERVER_STATS_FIELDS[:index])
+    for index, (name, _, _) in enumerate(_SERVER_STATS_FIELDS)
+}
+"""Each field's offset within the 52-byte struct, so a test can assert layout
+rather than only round-tripping."""
+
+ROOM_SERVER_DIVERGENT_OFFSETS = (48, 52)
+"""**The four bytes two implementations disagree about** (design D13).
+
+At offsets 48..52 of the struct a *room server* writes `n_posted` and
+`n_post_push` (`MyMesh.cpp:175-176`). `meshcore_py`'s generic `parse_status`
+reads the same four bytes as a repeater's `rx_airtime`, because that is what a
+repeater puts there. Both readings are correct for their own firmware and there
+is nothing to reconcile.
+
+We emit what the room-server firmware emits, because interop is with the
+firmware: a client using the generic parser will misread these four bytes
+against a stock room server exactly as it will against ours. This constant and
+the test that names both interpretations exist so the divergence cannot later be
+"fixed" into a bug.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class ServerStats:
+    """The room server's own statistics struct, field for field.
+
+    Which of these sighop can honestly fill is a separate question from how they
+    are encoded, and it is answered where the values come from rather than here
+    — this is a byte layout and knows nothing about rooms or radios.
+    """
+
+    batt_milli_volts: int = 0
+    curr_tx_queue_len: int = 0
+    noise_floor: int = 0
+    last_rssi: int = 0
+    n_packets_recv: int = 0
+    n_packets_sent: int = 0
+    total_air_time_secs: int = 0
+    total_up_time_secs: int = 0
+    n_sent_flood: int = 0
+    n_sent_direct: int = 0
+    n_recv_flood: int = 0
+    n_recv_direct: int = 0
+    err_events: int = 0
+    last_snr: int = 0
+    """Signed, and scaled by four (`MyMesh.cpp:172`)."""
+
+    n_direct_dups: int = 0
+    n_flood_dups: int = 0
+    n_posted: int = 0
+    n_post_push: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class StatusBody:
+    """A status answer: the request's timestamp echoed as a tag, then the stats."""
+
+    tag: int
+    stats: ServerStats
+
+
+def build_status_body(status: StatusBody) -> bytes:
+    out = bytearray(status.tag.to_bytes(4, "little"))
+    for name, size, signed in _SERVER_STATS_FIELDS:
+        value = int(getattr(status.stats, name))
+        try:
+            out += value.to_bytes(size, "little", signed=signed)
+        except OverflowError as error:
+            raise EncodeError(
+                f"server stats {name}={value} does not fit in {size} "
+                f"{'signed' if signed else 'unsigned'} bytes"
+            ) from error
+    return bytes(out)
+
+
+def parse_status_body(body: bytes) -> DecodeResult[StatusBody]:
+    if len(body) < STATUS_BODY_SIZE:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail=(f"a status body is {STATUS_BODY_SIZE} bytes and {len(body)} arrived"),
+        )
+    values: dict[str, int] = {}
+    offset = 4
+    for name, size, signed in _SERVER_STATS_FIELDS:
+        values[name] = int.from_bytes(body[offset : offset + size], "little", signed=signed)
+        offset += size
+    return StatusBody(tag=int.from_bytes(body[:4], "little"), stats=ServerStats(**values))
+
+
+TELEM_CHANNEL_SELF = 1
+"""`SensorManager.h:10`: the LPP channel a device reports itself on."""
+
+
+class LppType(IntEnum):
+    """The CayenneLPP data types this milestone emits.
+
+    sighop exposes no external sensors, so this is the whole set: what the board
+    told us about itself and nothing else.
+    """
+
+    TEMPERATURE = 0x67
+    VOLTAGE = 0x74
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryEntry:
+    """One CayenneLPP reading: a channel, a type, and a scaled integer value."""
+
+    channel: int
+    lpp_type: LppType
+    value: int
+    """Already in the type's own units — hundredths of a volt, tenths of a
+    degree — because rounding a float is a decision the caller makes once, where
+    the reading came from, rather than one this codec makes silently."""
+
+
+def voltage_entry(volts: float, *, channel: int = TELEM_CHANNEL_SELF) -> TelemetryEntry:
+    return TelemetryEntry(channel=channel, lpp_type=LppType.VOLTAGE, value=round(volts * 100))
+
+
+def temperature_entry(celsius: float, *, channel: int = TELEM_CHANNEL_SELF) -> TelemetryEntry:
+    return TelemetryEntry(channel=channel, lpp_type=LppType.TEMPERATURE, value=round(celsius * 10))
+
+
+_LPP_WIDTHS = {LppType.VOLTAGE: (2, False), LppType.TEMPERATURE: (2, True)}
+
+
+def build_telemetry_frame(entries: Sequence[TelemetryEntry]) -> bytes:
+    """Build a CayenneLPP frame: channel, type, value — **most significant byte
+    first** (design D14).
+
+    This is the one place in MeshCore where the byte order is big-endian, and it
+    is the detail that gets built wrong: every other integer in the protocol is
+    little-endian, so a frame written with the project's usual order parses as
+    garbage on the client and looks like a hardware fault.
+    """
+    out = bytearray()
+    for entry in entries:
+        if not 0 <= entry.channel <= 0xFF:
+            raise EncodeError(f"telemetry channel {entry.channel} is not a byte")
+        size, signed = _LPP_WIDTHS[entry.lpp_type]
+        try:
+            encoded = entry.value.to_bytes(size, "big", signed=signed)
+        except OverflowError as error:
+            raise EncodeError(
+                f"telemetry {entry.lpp_type.name} value {entry.value} does not fit "
+                f"in {size} {'signed' if signed else 'unsigned'} bytes"
+            ) from error
+        out += bytes([entry.channel, int(entry.lpp_type)]) + encoded
+    return bytes(out)
+
+
+def parse_telemetry_frame(frame: bytes) -> DecodeResult[list[TelemetryEntry]]:
+    """Parse a frame back. Only the types above are known; anything else stops it."""
+    entries: list[TelemetryEntry] = []
+    offset = 0
+    while offset < len(frame):
+        if len(frame) - offset < 2:
+            return DecodeFailure(
+                reason=FailureReason.TRUNCATED,
+                offset=offset,
+                raw=frame,
+                detail="a telemetry entry needs a channel byte and a type byte",
+            )
+        channel, raw_type = frame[offset], frame[offset + 1]
+        try:
+            lpp_type = LppType(raw_type)
+        except ValueError:
+            return DecodeFailure(
+                reason=FailureReason.PAYLOAD_TYPE_MISMATCH,
+                offset=offset + 1,
+                raw=frame,
+                detail=f"telemetry type 0x{raw_type:02x} is not one this codec emits",
+            )
+        size, signed = _LPP_WIDTHS[lpp_type]
+        start = offset + 2
+        if len(frame) - start < size:
+            return DecodeFailure(
+                reason=FailureReason.TRUNCATED,
+                offset=start,
+                raw=frame,
+                detail=f"telemetry {lpp_type.name} needs {size} value bytes",
+            )
+        entries.append(
+            TelemetryEntry(
+                channel=channel,
+                lpp_type=lpp_type,
+                value=int.from_bytes(frame[start : start + size], "big", signed=signed),
+            )
+        )
+        offset = start + size
+    return entries

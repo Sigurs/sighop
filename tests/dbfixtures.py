@@ -161,5 +161,13 @@ async def _truncate(handle: Database) -> None:
     from sqlalchemy import text
 
     async with handle.sessions() as session:
-        await session.execute(text("TRUNCATE entity, contact, path, packet_log RESTART IDENTITY"))
+        # `room` cascades to `room_member` and `message`, and `entity` cascades
+        # to `room`; naming all of them anyway keeps the statement readable as
+        # the list of what a test may leave behind.
+        await session.execute(
+            text(
+                "TRUNCATE entity, contact, path, packet_log, room, room_member, message "
+                "RESTART IDENTITY CASCADE"
+            )
+        )
         await session.commit()

@@ -26,6 +26,7 @@ CAPTURE_FILES = (
     "2026-09-04-03.jsonl",
     "2026-09-05.jsonl",
     "2026-09-04-first-transmit.jsonl",
+    "2026-09-06-room-server.jsonl",
 )
 
 # Files from milestone 2 onward carry their provenance in-band, as a
@@ -41,13 +42,21 @@ subject is what the mesh sent us — a duplicate rate computed over our own
 transmissions would be measuring the wrong thing (milestone 4)."""
 
 # Recorded expectations. Asserted, never regenerated from a failing run.
-EXPECTED_FRAME_COUNT = 1003
-"""Every frame record: 1000 received, 3 transmitted."""
+EXPECTED_FRAME_COUNT = 1093
+"""Every `rx_frame`/`tx_frame` record: 1058 received, 35 transmitted."""
 
-EXPECTED_RECEIVED_COUNT = 1000
-EXPECTED_TRANSMITTED_COUNT = 3
-"""Three frames sighop put on the air in the first-transmit exercise: the DM, its
-acknowledgement of the peer's DM, and one zero-hop advert."""
+EXPECTED_RECEIVED_COUNT = 1059
+"""Receptions as the *live pipeline* (`CaptureReplay`/`decode_event`) counts
+them — one more than `EXPECTED_FRAME_COUNT`'s 1058 `rx_frame` records, because
+the room-server session's capture carries one `unparsed` line (a stray
+`RxMeta` at modem startup) that the pipeline turns into its own `ModemUnparsed`
+record. `CorpusFrame`-based counting (`EXPECTED_FRAME_COUNT`) skips that kind
+entirely, so the two totals no longer sum to the same thing; that's the
+capture, not a bug in either counter."""
+EXPECTED_TRANSMITTED_COUNT = 35
+"""3 frames from the first-transmit exercise (the DM, its acknowledgement of the
+peer's DM, and one zero-hop advert), plus 32 from milestone 6's live room-server
+exercise: adverts, room logins, post acknowledgements and pushes."""
 
 EXPECTED_FRAMES_PER_FILE = {
     "2026-09-02.jsonl": 152,
@@ -57,6 +66,7 @@ EXPECTED_FRAMES_PER_FILE = {
     "2026-09-04-03.jsonl": 33,
     "2026-09-05.jsonl": 555,
     "2026-09-04-first-transmit.jsonl": 6,
+    "2026-09-06-room-server.jsonl": 90,
 }
 
 FIRST_TRANSMIT_FILE = "2026-09-04-first-transmit.jsonl"
