@@ -1,0 +1,376 @@
+/* The instrument panel (DESIGN.md §8's four bullets, milestone 8 group 9.4).
+ *
+ * 1. Live state is the centre of gravity. The duty-cycle meter sits directly
+ *    under the header on every page, above the content, never a click deep.
+ * 2. Monospace and tabular. Node hashes, keys, paths, SNR/RSSI and hex are
+ *    fixed-width data with tabular figures, so columns of them align and a
+ *    changed digit is visible without reading the number.
+ * 3. Colour carries meaning, not decoration. It is used for exactly three
+ *    things — budget state, verification status and TX/RX direction — and
+ *    never alone: every one of them also has a glyph or a word.
+ * 4. Dark first, because this sits beside other radio tooling.
+ *
+ * §8's one exception is the chat client: inside a conversation, ordinary
+ * readable chat typography wins over instrumentation.
+ */
+
+:root {
+  --bg: #14161a;
+  --bg-raised: #1c1f25;
+  --bg-sunken: #101216;
+  --fg: #d8dce3;
+  --fg-dim: #8b93a1;
+  --rule: #2b303a;
+  --accent: #6ea8fe;
+
+  /* Budget state. */
+  --ok: #5fb37a;
+  --warn: #d8a657;
+  --alarm: #e06c75;
+
+  /* Verification status. */
+  --verified: #5fb37a;
+  --unverified: #d8a657;
+  --key-only: #8b93a1;
+
+  /* Direction. */
+  --rx: #6ea8fe;
+  --tx: #c586c0;
+
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+a {
+  color: var(--accent);
+}
+
+/* --- Header ------------------------------------------------------------- */
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 1.5rem;
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-raised);
+}
+
+.brand {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+  color: var(--fg);
+}
+
+.nav a {
+  color: var(--fg-dim);
+  text-decoration: none;
+  margin-right: 0.9rem;
+}
+
+.nav a:hover,
+.nav a:focus {
+  color: var(--accent);
+}
+
+/* --- The duty-cycle meter (§8's most important element) ------------------ */
+
+.meter {
+  padding: 0.5rem 0.9rem;
+  border-bottom: 1px solid var(--rule);
+  background: var(--bg-sunken);
+}
+
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.meter-label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+}
+
+.meter-track {
+  flex: 1 1 12rem;
+  max-width: 28rem;
+  height: 0.7rem;
+  background: #23262d;
+  border: 1px solid var(--rule);
+  display: block;
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--ok);
+}
+
+.meter-fill.meter-reserve {
+  background: var(--warn);
+}
+
+.meter-fill.meter-full {
+  background: var(--alarm);
+}
+
+.meter-figures {
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.meter-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+}
+
+.meter-state.meter-reserve {
+  color: var(--warn);
+}
+
+.meter-state.meter-full {
+  color: var(--alarm);
+}
+
+.meter-raised {
+  color: var(--warn);
+}
+
+.gate-closed {
+  color: var(--warn);
+}
+
+.gate-open {
+  color: var(--alarm);
+}
+
+.persistence-degraded {
+  color: var(--alarm);
+}
+
+/* --- Content ------------------------------------------------------------ */
+
+.panel {
+  padding: 0.9rem;
+}
+
+h1 {
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 0.6rem;
+  color: var(--fg-dim);
+}
+
+h2 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  margin: 1.2rem 0 0.4rem;
+}
+
+.note {
+  color: var(--fg-dim);
+  max-width: 60rem;
+}
+
+.empty,
+.unavailable {
+  color: var(--fg-dim);
+  border-left: 2px solid var(--rule);
+  padding-left: 0.6rem;
+}
+
+.unavailable {
+  border-left-color: var(--alarm);
+}
+
+/* --- Tables: dense, fixed-width where the data is ------------------------ */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.82rem;
+}
+
+th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.7rem;
+  border-bottom: 1px solid var(--rule);
+  padding: 0.25rem 0.6rem 0.25rem 0;
+}
+
+td {
+  padding: 0.2rem 0.6rem 0.2rem 0;
+  border-bottom: 1px solid #20242b;
+  vertical-align: top;
+}
+
+/* Everything that is a hash, a key, a path, a signal, a byte count or hex.
+ * Tabular figures so a column of numbers is a column. */
+.mono,
+td.mono,
+th.mono,
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.num {
+  text-align: right;
+}
+
+.absent {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+/* --- Identity marking (design D13) --------------------------------------- */
+
+.identity {
+  white-space: nowrap;
+}
+
+.identity-mark {
+  font-family: var(--mono);
+}
+
+.identity-status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+}
+
+.identity-key {
+  color: var(--fg-dim);
+}
+
+.identity-verified .identity-mark,
+.identity-verified .identity-status {
+  color: var(--verified);
+}
+
+.identity-unverified .identity-mark,
+.identity-unverified .identity-status {
+  color: var(--unverified);
+}
+
+.identity-key_only .identity-mark,
+.identity-key_only .identity-status {
+  color: var(--key-only);
+}
+
+.legend {
+  font-size: 0.78rem;
+}
+
+/* --- Direction ----------------------------------------------------------- */
+
+.dir-rx {
+  color: var(--rx);
+}
+
+.dir-tx {
+  color: var(--tx);
+}
+
+/* --- The live feed -------------------------------------------------------- */
+
+.feed-status {
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+  color: var(--fg-dim);
+}
+
+.feed-warn {
+  color: var(--warn);
+}
+
+.feed-alarm {
+  color: var(--alarm);
+}
+
+.feed-wrap {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  background: var(--bg-sunken);
+}
+
+table.feed {
+  font-size: 0.78rem;
+}
+
+table.feed th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-raised);
+  padding: 0.25rem 0.5rem;
+}
+
+table.feed td {
+  padding: 0.15rem 0.5rem;
+  white-space: nowrap;
+}
+
+/* Recorded history sits behind the boundary and is dimmer than the present. */
+.feed-history td {
+  color: var(--fg-dim);
+}
+
+.feed-duplicate td {
+  opacity: 0.75;
+}
+
+.feed-boundary td {
+  color: var(--accent);
+  text-align: center;
+  padding: 0.3rem;
+  border-top: 1px solid var(--accent);
+  border-bottom: 1px solid var(--accent);
+  font-family: var(--mono);
+}
+
+.counters {
+  max-width: 32rem;
+}
+
+.counters td:first-child {
+  color: var(--fg-dim);
+}
+
+.route-ambiguous {
+  color: var(--unverified);
+}
+
+.undisplayable {
+  color: var(--alarm);
+  font-style: italic;
+}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% import "_collection.html" as collection %}
+
+{% block title %}rooms · sighop{% endblock %}
+
+{% block content %}
+<h1>room history</h1>
+
+{{ collection.state(rooms, "rooms") }}
+{% if rooms.readable and rooms.items %}
+<table>
+  <thead>
+    <tr><th>room</th><th>served by this run</th><th>history</th><th>members</th></tr>
+  </thead>
+  <tbody>
+    {% for room in rooms %}
+    <tr>
+      <td>{{ room.name }}</td>
+      <td class="mono">
+        {%- if room.id|string in served -%}
+          yes
+        {%- else -%}
+          <span class="absent">unserved</span> — {{ reasons.get(room.id|string, '') }}
+        {%- endif -%}
+      </td>
+      <td><a href="/rooms/{{ room.id }}">browse</a></td>
+      <td><a href="/rooms/{{ room.id }}/members">members</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="note">
+  A room this run does not serve is still browsable: its history is in the
+  database and reading it needs no identity. What an unserved room cannot do is
+  answer a login or push history to anyone.
+</p>
+{% endif %}
+{% endblock %}

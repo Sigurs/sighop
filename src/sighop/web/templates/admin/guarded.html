@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} · sighop{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+  {% if subject %}
+  <p class="note">Target: <span class="mono">{{ subject }}</span></p>
+  {% endif %}
+  <p class="note">
+    It is confirmed here rather than performed by a link, and it is recorded as
+    its own event whether it succeeds or is refused. This build has no
+    authentication, so the event names no acting user — milestone 9 fills that
+    field in and nothing else about it changes.
+  </p>
+
+  <form method="post" action="{{ post_to }}">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    {% if ceiling_field %}
+    <p class="note">
+      In force now: <span class="mono">{{ '%g'|format(current_fraction * 100) }}%</span>
+      of the hour. Regulatory default:
+      <span class="mono">{{ '%g'|format(regulatory_default * 100) }}%</span>.
+    </p>
+    <label>
+      new ceiling, as a fraction of the hour
+      <input class="mono" type="text" name="fraction" value="{{ current_fraction }}">
+    </label>
+    {% endif %}
+    <button type="submit">confirm: {{ title }}</button>
+  </form>
+  <p><a href="/">cancel, and change nothing</a></p>
+</div>
+{% endblock %}

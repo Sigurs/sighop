@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% import "_collection.html" as collection %}
+
+{% block title %}identities · sighop{% endblock %}
+
+{% block content %}
+<h1>identities</h1>
+
+<h2>loaded by this run</h2>
+{% if loaded %}
+<table>
+  <thead>
+    <tr><th>name</th><th>type</th><th class="mono">node hash</th>
+        <th class="mono">public key</th><th>source</th><th>key material</th></tr>
+  </thead>
+  <tbody>
+    {% for stub in loaded %}
+    <tr>
+      <td>{{ stub.name }}</td>
+      <td class="mono">{{ stub.node_type.name }}</td>
+      <td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td>
+      <td class="mono">{{ stub.identity.public_key.hex() }}</td>
+      <td class="mono">{{ 'keyfile' if stub.persistent else 'ephemeral (generated this run)' }}</td>
+      <td><a href="/admin/reveal/{{ stub.entity_id }}">reveal private key…</a></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="note">
+  Revealing a private key is confirmed on its own page and recorded as its own
+  event. The link goes to that confirmation; it reveals nothing by being followed.
+</p>
+{% else %}
+<p class="empty"><strong>No identities loaded.</strong> This run holds none.</p>
+{% endif %}
+
+<h2>stored</h2>
+{{ collection.state(stored, "identities") }}
+{% if stored.readable and stored.items %}
+<table>
+  <thead>
+    <tr><th>name</th><th>role</th><th class="mono">public key</th>
+        <th class="mono">hash</th><th>enabled</th><th>created</th><th>serving</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for record in stored %}
+    {% set serving = bindings.get(record.id|string, []) %}
+    <tr>
+      <td>{{ record.name }}</td>
+      <td class="mono">{{ record.type }}</td>
+      <td class="mono">{{ record.public_key.hex() }}</td>
+      <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
+      <td class="mono">{{ 'yes' if record.enabled else 'no' }}</td>
+      <td class="mono">{{ record.created_at.isoformat() }}</td>
+      <td class="mono">{{ serving|join(', ') if serving else '—' }}</td>
+      <td>
+        <form method="post" action="/admin/identities/{{ record.id }}/enabled">
+          <input type="hidden" name="_token" value="{{ token }}">
+          <input type="hidden" name="enabled" value="{{ 'false' if record.enabled else 'true' }}">
+          {% if record.enabled and serving %}
+          <p class="unavailable">
+            Disabling this identity stops {{ serving|join(' and ') }}. That
+            room or bot has no other identity to run on.
+          </p>
+          {% endif %}
+          <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<h2>exporting an identity</h2>
+<p class="note">
+  An exported keyfile is an <strong>unencrypted seed</strong> protected only by
+  its file permissions. That is different protection from the entity store's,
+  where the seed is sealed under <span class="mono">SIGHOP_SECRET_KEY</span> and
+  a database dump alone does not yield it. Export with
+  <span class="mono">sighop keys export</span>.
+</p>
+{% endblock %}

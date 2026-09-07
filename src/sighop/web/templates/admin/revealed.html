@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}private key · sighop{% endblock %}
+
+{% block content %}
+<h1>private key: {{ entity_name }}</h1>
+
+<p class="unavailable">
+  <strong>This is the identity.</strong> Anyone holding the seed below can
+  transmit as this node and read every direct message sent to it. It is in this
+  response and in no other page; reloading will not show it again.
+</p>
+
+<h2>public key</h2>
+<p class="mono">{{ public_key }}</p>
+
+<h2>private seed</h2>
+<p class="mono revealed">{{ seed }}</p>
+
+<p class="note">
+  An exported keyfile carries this same seed <strong>unencrypted</strong>,
+  protected only by its file permissions — which is different protection from
+  the entity store's, where it is sealed under
+  <span class="mono">SIGHOP_SECRET_KEY</span> and a database dump alone does not
+  yield it.
+</p>
+<p><a href="/admin/identities">back to identities</a></p>
+{% endblock %}

@@ -97,9 +97,12 @@ def test_the_startup_line_for_a_persistent_run_names_the_database_and_counts() -
         entities=1,
         contacts=12,
         paths=7,
+        conversations=3,
+        direct_messages=41,
     ) == (
         "persistence: on — postgresql+asyncpg://role:***@db.example:5432/sighop  "
-        "schema=0001\nrestored: entities=1 contacts=12 paths=7"
+        "schema=0001\nrestored: entities=1 contacts=12 paths=7  "
+        "held: conversations=3 messages=41"
     )
 
 

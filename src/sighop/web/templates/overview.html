@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% import "_identity.html" as identity %}
+
+{% block title %}overview · sighop{% endblock %}
+
+{% block content %}
+<h1>live packet feed</h1>
+<p id="feed-status" class="feed-status feed-ok">connecting…</p>
+<div class="feed-wrap">
+  <table class="feed">
+    <thead>
+      <tr>
+        <th>time</th><th>dir</th><th>route</th><th>payload</th><th class="num">bytes</th>
+        <th>path</th><th class="num">hops</th><th class="num">snr</th><th class="num">rssi</th>
+        <th>dup</th><th>outcome</th><th>detail</th><th>packet id</th>
+      </tr>
+    </thead>
+    <tbody id="feed-rows"></tbody>
+  </table>
+</div>
+<p class="note">
+  Recorded history is painted first and the rule marks where the live stream
+  begins. A browser that cannot keep up loses its oldest records and is told how
+  many — the platform's own handling of those records is unaffected.
+</p>
+
+<h2>transmit queue</h2>
+<table class="counters">
+  <thead>
+    <tr><th>priority</th><th class="num">queued</th></tr>
+  </thead>
+  <tbody>
+    {% for queue in queues %}
+    <tr>
+      <td class="mono">{{ queue.priority }} · {{ queue.name }}</td>
+      <td class="num">{{ queue.depth }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>scheduler</h2>
+<table class="counters">
+  <tbody>
+    <tr><td>submitted</td><td class="num">{{ status.stats.submitted }}</td></tr>
+    <tr><td>transmitted</td><td class="num">{{ status.stats.transmitted }}</td></tr>
+    <tr><td>suppressed</td><td class="num">{{ status.stats.suppressed }}</td></tr>
+    <tr><td>dropped</td><td class="num">{{ status.stats.dropped }}</td></tr>
+    <tr><td>failed</td><td class="num">{{ status.stats.failed }}</td></tr>
+    <tr><td>busy retries</td><td class="num">{{ status.stats.busy_retries }}</td></tr>
+  </tbody>
+</table>
+
+<h2>reception</h2>
+<table class="counters">
+  <tbody>
+    <tr><td>delivered to subscribers</td><td class="num">{{ delivered }}</td></tr>
+    <tr><td>considered for duplication</td><td class="num">{{ dedup.considered }}</td></tr>
+    <tr><td>duplicates dropped</td><td class="num">{{ dedup.duplicates }}</td></tr>
+    <tr>
+      <td>duplicate cache</td>
+      <td class="num">{{ dedup.entries }} / {{ dedup.max_entries }}</td>
+    </tr>
+    <tr><td>learned path destinations</td><td class="num">{{ paths }}</td></tr>
+    <tr><td>contacts</td><td class="num">{{ contacts }}</td></tr>
+  </tbody>
+</table>
+
+<h2>persistence</h2>
+<p class="note persistence-{{ durability.level }}">
+  {{ durability.text }}{% if durability.losses_text %} — {{ durability.losses_text }}{% endif %}
+</p>
+
+<h2>identities</h2>
+{% if entities %}
+<table>
+  <thead>
+    <tr>
+      <th>name</th><th>type</th><th class="mono">node hash</th><th class="mono">public key</th>
+      <th class="num">adverts</th><th class="num">transmitted</th>
+      <th class="num">suppressed</th><th class="num">addressed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for entity in entities %}
+    <tr>
+      <td>{{ entity.name }}</td>
+      <td class="mono">{{ entity.node_type }}{% if not entity.persistent %} (ephemeral){% endif %}</td>
+      <td class="mono">{{ '0x%02x'|format(entity.node_hash) }}</td>
+      <td class="mono">{{ entity.public_key[:16] }}</td>
+      <td class="num">{{ entity.adverts_sent }}</td>
+      <td class="num">{{ entity.transmitted }}</td>
+      <td class="num">{{ entity.suppressed }}</td>
+      <td class="num">{{ entity.addressed }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="note">
+  <strong>transmitted</strong> and <strong>suppressed</strong> are exact — every
+  submission carries the identity that made it. <strong>addressed</strong> counts
+  frames addressed to this identity's <em>node hash</em>, which is one byte: a
+  hash collides at 1 in 256, so it is not the same claim as "frames for this
+  identity".
+</p>
+{% else %}
+<p class="empty"><strong>No identities loaded.</strong> This run holds none.</p>
+{% endif %}
+
+{{ identity.verification_legend() }}
+
+<script src="/static/feed.js" defer></script>
+{% endblock %}

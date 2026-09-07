@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}room retention · sighop{% endblock %}
+
+{% block content %}
+{% if room %}
+<h1>retention: {{ room.name }}</h1>
+
+<p class="unavailable">
+  This room holds <strong class="mono">{{ stored }}</strong> stored message(s).
+  A bound below <span class="mono">{{ stored }}</span> removes the difference —
+  <strong>{{ stored }} message(s) are what a bound of 0 would remove</strong> —
+  and retention wins over sync: a message removed while a member was still
+  behind it is a message that member will never receive.
+</p>
+
+<form method="post" action="/admin/rooms/{{ room.id }}/retention">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>keep messages for this many days
+      <input class="mono" type="text" name="retention_days"
+             value="{{ room.retention_days if room.retention_days is not none else '' }}">
+    </label>
+  </p>
+  <p>
+    <label>keep at most this many messages
+      <input class="mono" type="text" name="retention_messages"
+             value="{{ room.retention_messages if room.retention_messages is not none else '' }}">
+    </label>
+  </p>
+  <p class="note">
+    Both blank is <strong>unlimited</strong>, which is what a room ships with:
+    nothing is deleted until an operator asks for a policy.
+  </p>
+  <button type="submit">apply</button>
+</form>
+<p><a href="/admin/rooms">cancel</a></p>
+{% else %}
+<h1>room not found</h1>
+<p class="unavailable">No room with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}sighop{% endblock %}</title>
+  {# The provenance token (design D9). Present only in pages this process
+     served, which is the whole of what it proves: a state-changing request
+     carrying it came from here, and one that does not did not. #}
+  <meta name="sighop-token" content="{{ token }}">
+  <link rel="stylesheet" href="/static/panel.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+{# Every HTMX request from this page carries the token as a header. A plain
+   <form> carries it as a hidden field instead, so the panel keeps working when
+   a script does not run. #}
+<body hx-headers='{"X-Sighop-Token": "{{ token }}"}'>
+  <header class="panel-head">
+    <a class="brand" href="/">sighop</a>
+    <nav class="nav">
+      <a href="/">overview</a>
+      <a href="/contacts">contacts</a>
+      <a href="/modem">modem</a>
+      <a href="/admin/identities">identities</a>
+      <a href="/chat">chat</a>
+      <a href="/rooms">rooms</a>
+      <a href="/admin/rooms">room config</a>
+      <a href="/admin/bots">bots</a>
+      <a href="/admin/radio">radio</a>
+    </nav>
+  </header>
+
+  {# On every page, by construction rather than by discipline (design D12). #}
+  {% include "_meter.html" %}
+
+  <main class="panel">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

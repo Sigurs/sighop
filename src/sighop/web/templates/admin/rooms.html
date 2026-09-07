@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% import "_collection.html" as collection %}
+
+{% block title %}rooms · sighop{% endblock %}
+
+{% block content %}
+<h1>rooms</h1>
+
+{{ collection.state(rooms, "rooms") }}
+{% if rooms.readable and rooms.items %}
+<table>
+  <thead>
+    <tr><th>room</th><th>served</th><th class="num">members</th><th class="num">messages</th>
+        <th>guest access</th><th>read-only fallback</th><th>retention</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for room in rooms %}
+    <tr>
+      <td>{{ room.name }}</td>
+      <td class="mono">{{ 'yes' if room.id|string in served else 'not by this run' }}</td>
+      <td class="num">{{ counts.get(room.id|string, (0, 0))[0] }}</td>
+      <td class="num">{{ counts.get(room.id|string, (0, 0))[1] }}</td>
+      <td class="mono">{{ room.guest_access }}</td>
+      <td class="mono">{{ 'yes' if room.allow_read_only else 'no' }}</td>
+      <td class="mono">{{ room.retention }}</td>
+      <td>
+        <a href="/admin/rooms/{{ room.id }}/password">passwords…</a>
+        ·
+        <a href="/admin/rooms/{{ room.id }}/retention">retention…</a>
+        ·
+        <a href="/rooms/{{ room.id }}">history</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<p class="note">
+  Creating a room needs an identity to bind it to and is done with
+  <span class="mono">sighop room create</span>; every rule it applies is the same
+  one this page's changes go through.
+</p>
+{% endblock %}

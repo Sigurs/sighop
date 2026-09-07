@@ -1,0 +1,18 @@
+{# "No rooms" and "cannot read rooms" are never the same screen (`web-server`).
+
+   One partial used by every view over durable state, so the distinction is
+   made in one place rather than remembered in each. The two wordings are
+   deliberately unlike each other: "none stored" is a fact about the mesh, and
+   "cannot be read" is a fact about this process. #}
+{% macro state(collection, noun) -%}
+  {%- if not collection.readable -%}
+  <p class="unavailable">
+    <strong>{{ noun }} cannot be read.</strong> {{ collection.unavailable }}
+  </p>
+  {%- elif collection.empty -%}
+  <p class="empty">
+    <strong>No {{ noun }} stored.</strong> This was read successfully and there
+    is nothing in it.
+  </p>
+  {%- endif -%}
+{%- endmacro %}

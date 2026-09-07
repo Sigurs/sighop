@@ -1,0 +1,32 @@
+{# The duty-cycle meter, the transmit gate and the persistence state.
+   Included by base.html, so it is on every page without navigation (design
+   D12). §8 calls the meter the single most important element on the screen;
+   the way to make that structurally true rather than aspirational is to make
+   it impossible to render a page without it. #}
+<section class="meter" aria-label="duty cycle">
+  <div class="meter-row">
+    <span class="meter-label">duty cycle</span>
+    <span class="meter-track" role="img"
+          aria-label="{{ '%.1f'|format(meter.used_pct) }} per cent of the ceiling used">
+      <span class="meter-fill meter-{{ meter.level }}"
+            style="width: {{ '%.2f'|format(meter.bar_pct) }}%"></span>
+    </span>
+    <span class="mono meter-figures">
+      {{ '%.1f'|format(meter.used_pct) }}% used
+      ({{ '%.0f'|format(meter.used_seconds) }}s of {{ '%.0f'|format(meter.ceiling_seconds) }}s)
+      · {{ '%.1f'|format(meter.remaining_pct) }}% remaining
+    </span>
+  </div>
+  <div class="meter-notes">
+    <span class="meter-state meter-{{ meter.level }}">{{ meter.state_text }}</span>
+    <span class="meter-ceiling{% if meter.above_regulatory_default %} meter-raised{% endif %}">
+      {{ meter.ceiling_text }}{% if meter.above_regulatory_default %} — {{ regulatory_note }}{% endif %}
+    </span>
+    <span class="gate gate-{{ 'open' if meter.transmit_enabled else 'closed' }}">
+      {{ meter.gate_text }}
+    </span>
+    <span class="persistence persistence-{{ durability.level }}">
+      {{ durability.text }}{% if durability.losses_text %} — {{ durability.losses_text }}{% endif %}
+    </span>
+  </div>
+</section>

@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}revoke a member · sighop{% endblock %}
+
+{% block content %}
+{% if room %}
+<h1>revoke from {{ room.name }}</h1>
+
+<p class="mono">{{ member_key }}</p>
+
+<p class="unavailable">
+  <strong>Revoking removes membership, permissions, sync cursor and replay guard
+  together.</strong> They are one row, so this is not a demotion: the member
+  becomes someone the room has never met. Logging in again starts from nothing —
+  a new first login, a cursor at zero, and history resent from wherever the new
+  login asks.
+</p>
+
+<form method="post" action="/rooms/{{ room.id }}/members/{{ member_key }}/revoke">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>
+      <input type="checkbox" name="confirm" value="yes">
+      I understand this removes all four together
+    </label>
+  </p>
+  <button type="submit">revoke</button>
+</form>
+<p><a href="/rooms/{{ room.id }}/members">cancel</a></p>
+{% else %}
+<h1>room not found</h1>
+<p class="unavailable">No room with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

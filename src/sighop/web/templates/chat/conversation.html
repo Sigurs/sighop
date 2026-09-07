@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% import "_identity.html" as identity %}
+
+{# Even the tab title carries the marking: an unverified name shown in the
+   same shape as a verified one is the thing §8 forbids, and a browser tab is
+   still somewhere it would be shown. #}
+{% block title %}{{ peer.label }} ({{ peer.verification|replace('_', ' ') }}) · chat · sighop{% endblock %}
+
+{% block content %}
+<h1>{{ entity.name }} → {{ identity.identity(peer, key=false) }}</h1>
+
+{% if not recorded %}
+<p class="unavailable">{{ not_recorded }}</p>
+{% endif %}
+
+{% if refusal %}
+<p class="unavailable"><strong>Not sent.</strong> {{ refusal }}</p>
+{% endif %}
+
+<form method="post" action="/chat/{{ entity_key }}/{{ peer_key }}" class="composer">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <textarea name="text" rows="3" cols="72"
+              placeholder="up to {{ max_text_len }} bytes">{{ draft }}</textarea>
+  </p>
+  <p class="note">
+    {% if route.known %}
+      route: <span class="mono">{{ route.label }}</span>
+    {% else %}
+      <span class="absent">no route known</span> — {{ route.reason }}
+    {% endif %}
+  </p>
+  <p>
+    <label>
+      <input type="checkbox" name="flood" value="yes">
+      flood this message (rebroadcast by every repeater in the mesh)
+    </label>
+  </p>
+  <button type="submit">send</button>
+</form>
+
+{% include "chat/_messages.html" %}
+
+<p class="note">{{ authentication_note }}</p>
+{{ identity.verification_legend() }}
+
+<h2>channels</h2>
+<p class="unavailable">{{ channels_absent }}</p>
+
+<p><a href="/chat">all conversations</a></p>
+{% endblock %}

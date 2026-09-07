@@ -169,6 +169,10 @@ class SubscriberStats:
 
 Handler = Callable[[RxRecord], Awaitable[None]]
 
+type RxObserver = Callable[[RxRecord, bool], None]
+"""`(record, was_a_duplicate)`. Never awaits, never raises — see
+`IngressPipeline.observer` for why this exists beside the bus."""
+
 
 class Subscription:
     """One subscriber's queue. Iterate `stream()`, or pass a handler."""
@@ -328,11 +332,46 @@ class IngressPipeline:
     `airtime_ms` DESIGN.md §9 asks for. Absent rather than guessed when it is
     not known — the same rule the budget follows."""
 
+    observer: RxObserver | None = None
+    """Told about **every** reception, including the duplicates the bus never
+    sees (milestone 8).
+
+    The bus is fan-out for receptions that survived deduplication, and that is
+    right: a duplicate is a copy the platform has decided not to act on twice.
+    But a display is not an actor. A feed built on the bus alone would show a
+    busy mesh as quieter than it is — 21.2% of the measured corpus is
+    duplicates — and would disagree with the deduplication counters on the same
+    screen.
+
+    So this is the second, deliberately narrow way out: one callable, told what
+    happened and whether it was a duplicate, called after the decision it
+    describes. It is on the contact and path sinks' contract — it never awaits
+    and never raises — and nothing on the reception path consults it or waits
+    for it. It is not a second bus subscription: the number of bus subscribers
+    is a property of the platform and stays one per component, whatever is
+    watching."""
+
     duplicates: int = 0
     delivered: int = 0
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="rx")
+
+    def _observe(self, record: RxRecord, *, duplicate: bool) -> None:
+        """Offer one reception to the observer. Never awaits, never raises."""
+        if self.observer is None:
+            return
+        assert self.logger is not None
+        try:
+            self.observer(record, duplicate)
+        except Exception as exc:
+            # A watcher that raises is a broken watcher, not a broken reception.
+            self.logger.error(
+                "rx_observer_error",
+                outcome="error",
+                packet_id=record.packet_id,
+                error=repr(exc),
+            )
 
     def ingest(self, record: RxRecord) -> bool:
         """Process one decoded reception. True when it reached the bus."""
@@ -349,6 +388,7 @@ class IngressPipeline:
                 logger=self.logger,
                 extra={"dup": True, **airtime, **verdict.as_json()},
             )
+            self._observe(record, duplicate=True)
             return False
 
         learned = self.paths.observe(record)
@@ -362,4 +402,5 @@ class IngressPipeline:
         emit_packet_rx(record, logger=self.logger, extra=extra)
         self.bus.publish(record)
         self.delivered += 1
+        self._observe(record, duplicate=False)
         return True

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% import "_identity.html" as identity %}
+
+{% block title %}chat · sighop{% endblock %}
+
+{% block content %}
+<h1>conversations</h1>
+
+{% if not recorded %}
+<p class="unavailable">{{ not_recorded }}</p>
+{% endif %}
+
+{% if conversations %}
+<table>
+  <thead>
+    <tr><th>identity</th><th>contact</th><th class="num">messages</th>
+        <th>last activity</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for row in conversations %}
+    <tr{% if row.new %} class="conversation-new"{% endif %}>
+      <td class="mono">{{ row.entity_name }}</td>
+      <td>{{ identity.identity(row.peer, key=false) }}</td>
+      <td class="num">{{ row.messages }}</td>
+      <td class="mono">{{ row.latest_at.isoformat() if row.latest_at else '—' }}</td>
+      <td>
+        <a href="/chat/{{ row.entity_key }}/{{ row.peer_key }}">open</a>
+        {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">
+  <strong>No conversations.</strong> Pick an identity and a contact below to
+  start one.
+</p>
+{% endif %}
+
+<h2>start a conversation</h2>
+{% if identities and contacts %}
+<table>
+  <thead><tr><th>contact</th>{% for entity in identities %}<th>as {{ entity.name }}</th>{% endfor %}</tr></thead>
+  <tbody>
+    {% for contact in contacts %}
+    <tr>
+      <td>{{ identity.identity(contact_views[contact.public_key.hex()], key=false) }}</td>
+      {% for entity in identities %}
+      <td><a href="/chat/{{ entity.identity.public_key.hex() }}/{{ contact.public_key.hex() }}">open</a></td>
+      {% endfor %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% elif not identities %}
+<p class="empty">
+  <strong>No identity to send as.</strong> A conversation is between one local
+  identity and one contact, and this run holds no identities — nothing can be
+  composed until one is chosen.
+</p>
+{% else %}
+<p class="empty">
+  <strong>No contacts heard.</strong> A contact arrives from a verified advert.
+</p>
+{% endif %}
+
+<h2>channels</h2>
+<p class="unavailable">{{ channels_absent }}</p>
+
+{{ identity.verification_legend() }}
+{% endblock %}

@@ -74,9 +74,9 @@ NOW = int(START.timestamp())
 # --- 13.1 The loopback exercise ---------------------------------------------
 
 
-def _exercise(clock: TickingClock, storage: MemoryStorage):
+def _exercise(clock: TickingClock, storage: MemoryStorage, lounge: Entity | None = None):
     """A room server and a client entity, with nothing between them but the bus."""
-    lounge, client = Entity("lounge"), Entity("client")
+    lounge, client = lounge or Entity("lounge"), Entity("client")
     submit = RecordingSubmit()
     events: list = []
     server = RoomServer(
@@ -325,6 +325,22 @@ def test_every_anon_req_frame_still_parses_as_an_anonymous_request(
     assert anon == 57, "the corpus's anonymous-request count changed"
 
 
+def _entity_avoiding(taken: set[int], name: str = "lounge") -> Entity:
+    """An identity whose node hash is none of `taken`.
+
+    A generated key lands on any given byte 1 time in 256 (§3), so a test that
+    asserts "no corpus frame is addressed to this identity" while *generating*
+    the identity is a test that fails a few times in a hundred for a reason that
+    has nothing to do with what it is checking. Milestone 7 found two of these;
+    this was a third, caught by milestone 8's repeated runs (task 16.4).
+    """
+    for _ in range(1000):
+        entity = Entity(name)
+        if entity.node_hash not in taken:
+            return entity
+    raise AssertionError("every node hash is taken, which cannot happen")
+
+
 async def test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities(
     corpus_records,
 ) -> None:
@@ -335,10 +351,18 @@ async def test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities(
     exercise's real logins, but to `[redacted]`'s key, not this one — so a
     room server wired into the replay must not so much as try to decrypt a
     request addressed to somebody else's key, and certainly must not answer.
+
+    The identity is chosen to avoid every destination hash in the corpus rather
+    than generated and hoped for: see `_entity_avoiding`.
     """
     clock = TickingClock(START)
     storage = MemoryStorage()
-    server, _lounge, _client, submit, events = _exercise(clock, storage)
+    addressed = {
+        record.dest_hash for record in corpus_records if record.dest_hash is not None
+    }
+    lounge = _entity_avoiding(addressed)
+    assert lounge.node_hash not in addressed
+    server, _lounge, _client, submit, events = _exercise(clock, storage, lounge)
 
     for record in corpus_records:
         await server.handle(record)

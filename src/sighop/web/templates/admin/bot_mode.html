@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}bot mode · sighop{% endblock %}
+
+{% block content %}
+{% if bot %}
+<h1>mode: {{ bot.entity_name }} ({{ bot.driver }})</h1>
+
+<p class="note">In force now: <span class="mono">{{ bot.mode }}</span>.</p>
+
+<p class="unavailable">
+  <strong>Switching this bot to active means it will transmit without further
+  prompting.</strong> In observe mode it does everything else — it hears
+  adverts, applies its gates, keeps its records — and stops at the point of
+  transmitting. Active removes that stop.
+</p>
+
+<form method="post" action="/admin/bots/{{ bot.id }}/mode">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input type="hidden" name="mode" value="active">
+  <p>
+    <label>
+      <input type="checkbox" name="confirm" value="yes">
+      I understand this bot will transmit unprompted
+    </label>
+  </p>
+  <button type="submit">switch to active</button>
+</form>
+
+<form method="post" action="/admin/bots/{{ bot.id }}/mode">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input type="hidden" name="mode" value="observe">
+  <button type="submit">switch to observe</button>
+</form>
+
+<p><a href="/admin/bots">back to bots</a></p>
+{% else %}
+<h1>bot not found</h1>
+<p class="unavailable">No bot with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

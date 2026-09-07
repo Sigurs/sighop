@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "_identity.html" as identity %}
+{% import "_collection.html" as collection %}
+
+{% block title %}contacts · sighop{% endblock %}
+
+{% block content %}
+<h1>contacts</h1>
+
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th>contact</th>
+      <th class="mono">public key</th>
+      <th class="mono">hash</th>
+      <th>type</th>
+      <th>first heard</th>
+      <th>last heard</th>
+      <th>route</th>
+      <th class="num">snr</th>
+      <th>confirmed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in rows %}
+    <tr>
+      <td>{{ identity.identity(row.identity, key=false) }}</td>
+      <td class="mono">{{ row.identity.key_hex }}</td>
+      <td class="mono">{{ '0x%02x'|format(row.identity.node_hash) }}</td>
+      <td class="mono">{{ row.node_type or '—' }}</td>
+      <td class="mono">{{ row.first_heard.isoformat() if row.first_heard else '—' }}</td>
+      <td class="mono">{{ row.last_heard.isoformat() if row.last_heard else '—' }}</td>
+      <td class="mono">
+        {%- if row.route -%}
+          {{ row.route.text }}
+          {%- if row.route.caveat %}<span class="route-ambiguous"> · ambiguous: {{ row.route.caveat }}</span>{% endif -%}
+        {%- else -%}
+          <span class="absent">no route known</span>
+        {%- endif -%}
+      </td>
+      <td class="num">
+        {%- if row.route and row.route.snr_db is not none -%}
+          {{ '%+.2f'|format(row.route.snr_db) }}
+        {%- else -%}
+          <span class="absent">—</span>
+        {%- endif -%}
+      </td>
+      <td class="mono">
+        {{ row.route.confirmed_at.isoformat() if row.route else '—' }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">
+  <strong>No contacts heard.</strong> Contacts are learned from verified adverts;
+  this run has heard none yet.
+</p>
+{% endif %}
+
+<p class="note">
+  A route with <strong>zero hops</strong> is a direct route to a neighbour — the
+  most useful route there is — and is not the same as <strong>no route known</strong>.
+  A route marked <strong>ambiguous</strong> was matched by node hash rather than
+  by public key, and a node hash is one byte.
+</p>
+
+{{ identity.verification_legend() }}
+{% endblock %}

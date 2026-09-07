@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% import "_identity.html" as identity %}
+{% import "_collection.html" as collection %}
+
+{% block title %}{{ room.name if room else 'room' }} · sighop{% endblock %}
+
+{% block content %}
+{% if room %}
+<h1>{{ room.name }} — history</h1>
+
+{{ collection.state(posts, "messages") }}
+{% if posts.readable and posts.items %}
+<table>
+  <thead>
+    <tr>
+      <th class="num">ordering timestamp</th>
+      <th>author</th>
+      <th>stored at</th>
+      <th>text</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for post in posts %}
+    <tr>
+      <td class="num mono">{{ post.post_timestamp }}</td>
+      <td>{{ identity.identity(post.author) }}</td>
+      <td class="mono">{{ post.posted_at.isoformat() }}</td>
+      <td>
+        {% if post.displayable %}
+          {{ post.text }}
+        {% else %}
+          <span class="undisplayable">not valid text</span>
+          <span class="mono">{{ post.bytes }} bytes: {{ post.raw }}</span>
+          <span class="mono">rendered: {{ post.text }}</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% if older is not none %}
+<p><a href="/rooms/{{ room.id }}?before={{ older }}">older messages…</a></p>
+{% endif %}
+{% endif %}
+
+<p class="note">
+  Ordered by the room's own <span class="mono">post_timestamp</span>, which is
+  the value the protocol synchronises on — unique within a room, so paging back
+  cannot show a message twice or skip one. Bytes that are not valid text are
+  shown as such with the bytes themselves, never silently replaced.
+</p>
+<p class="note">
+  Browsing transmits nothing and moves no member's sync cursor.
+</p>
+
+{{ identity.verification_legend() }}
+<p><a href="/rooms/{{ room.id }}/members">members</a> · <a href="/rooms">all rooms</a></p>
+{% else %}
+<h1>room not found</h1>
+<p class="unavailable">No room with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

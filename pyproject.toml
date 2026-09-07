@@ -7,10 +7,19 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.30",
     "cryptography>=43.0",
+    "fastapi>=0.115",
+    "jinja2>=3.1",
     "pynacl>=1.5",
     "pyserial-asyncio>=0.6",
+    "python-multipart>=0.0.9",
     "sqlalchemy[asyncio]>=2.0",
     "structlog>=24.1",
+    # Plain `uvicorn`, never `uvicorn[standard]` (design D1): the `standard`
+    # extra pulls `uvloop`, which would replace the event loop the radio's
+    # serial transport runs on with one nothing in this project has tested.
+    # `[standard]` is what everyone types; this line exists to refuse it.
+    "uvicorn>=0.30",
+    "websockets>=13.0",
 ]
 
 [project.scripts]
@@ -22,6 +31,10 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    # Starlette's `TestClient` drives the ASGI app in-process over httpx2, which
+    # is how every panel test requests a page with no socket, no server and no
+    # runtime behind it. A test dependency only: nothing in `src/` imports it.
+    "httpx2>=0.1",
     "mypy>=1.11",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",

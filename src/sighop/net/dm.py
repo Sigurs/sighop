@@ -451,6 +451,115 @@ type DirectMessageEvent = (
 )
 
 
+# --- What is offered to be made durable (milestone 8, design D7/D8) ---------
+
+
+class RecordedOutcome(StrEnum):
+    """How a recorded message stood when it was last offered.
+
+    The three send results, plus the two states a `SendOutcome` cannot express
+    because they are not endings:
+
+    * `IN_FLIGHT` — submitted, not yet resolved. What a record written at
+      submission says, and therefore what a restart mid-send leaves behind: an
+      outcome that is *unknown*, rather than a claim of delivery or a row that
+      quietly never existed.
+    * `RECEIVED` — a message that arrived and was decrypted. It has no delivery
+      outcome of its own; the acknowledgement we sent for it is a transmission
+      of ours and is recorded in the packet log like any other.
+    """
+
+    IN_FLIGHT = "in_flight"
+    ACKNOWLEDGED = "acknowledged"
+    UNACKNOWLEDGED = "unacknowledged"
+    DROPPED = "dropped"
+    RECEIVED = "received"
+
+
+OUTBOUND = "out"
+INBOUND = "in"
+"""`direct_message.direction`, as `packet_log.direction` is `tx` | `rx`."""
+
+
+@dataclass(frozen=True, slots=True)
+class DirectMessageRecord:
+    """One direct message, in the shape something durable can store it.
+
+    Keyed by `(entity_public_key, ref)`: `ref` is the send's `message_id`
+    outbound and the reception's `packet_id` inbound, so a send offered at
+    submission and again when it resolves is *one* message offered twice, not
+    two messages. Whatever holds these is expected to update in place.
+
+    `text` is the bytes that were on the wire, untranscoded — the same rule
+    `message.text` follows, for the same reason (milestone 6 design D4): text
+    off the wire is `WireText` and is not guaranteed valid UTF-8.
+
+    `wire_timestamp` is the peer's own clock as it travels; `handled_at` is
+    ours. Nothing may order a conversation by the first.
+
+    `row_id` is filled in by whatever read the record back and is `None` on one
+    the messenger just built. It exists so a reader can page a conversation
+    stably when several messages share a `handled_at`.
+    """
+
+    entity_public_key: bytes
+    peer_public_key: bytes
+    direction: str
+    text: bytes
+    wire_timestamp: int
+    handled_at: dt.datetime
+    ref: str
+    outcome: RecordedOutcome
+    packet_ids: tuple[str, ...] = ()
+    attempts: int = 0
+    route_flood: bool | None = None
+    route_path: bytes | None = None
+    ack_latency_ms: float | None = None
+    row_id: int | None = None
+
+    @property
+    def inbound(self) -> bool:
+        return self.direction == INBOUND
+
+    @property
+    def resolved(self) -> bool:
+        """Whether this message's fate is known. An in-flight one's is not."""
+        return self.outcome is not RecordedOutcome.IN_FLIGHT
+
+    def rendered(self) -> WireText:
+        """The text as something displayable, marked as a rendering."""
+        return WireText.from_bytes(self.text)
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "entity_public_key": self.entity_public_key.hex(),
+            "peer_public_key": self.peer_public_key.hex(),
+            "direction": self.direction,
+            "ref": self.ref,
+            "message_outcome": str(self.outcome),
+            "attempts": self.attempts,
+            "text_bytes": len(self.text),
+            "packet_ids": list(self.packet_ids),
+            "ack_latency_ms": (
+                None if self.ack_latency_ms is None else round(self.ack_latency_ms, 1)
+            ),
+        }
+
+
+class DirectMessageSink(Protocol):
+    """Where direct messages go to be recorded. Never awaits, never raises.
+
+    The contact and path sinks' contract exactly (`ContactSink`), and for the
+    same reason: this is offered from the message path, and a database that is
+    slow, unreachable or blackholing must not be able to delay an
+    acknowledgement the protocol computes on decrypt. `offer` returning False
+    means the buffer refused the record — the caller is not expected to do
+    anything about it beyond having been told (design D8).
+    """
+
+    def offer(self, record: DirectMessageRecord) -> bool: ...
+
+
 # --- The messenger ---------------------------------------------------------
 
 
@@ -462,6 +571,15 @@ class _Pending:
     entity: LocalEntity
     contact: Contact
     text: str
+    raw: bytes = b""
+    """The bytes composed, kept beside the rendering: what is recorded is what
+    was on the wire, and `text` above is already lossy by construction."""
+
+    timestamp: int = 0
+    """The message's own wire timestamp, fixed for the whole send."""
+
+    submitted_at: dt.datetime | None = None
+    route: Route | None = None
     expectations: list[bytes] = field(default_factory=list)
     attempts: int = 0
     sent_at: dt.datetime | None = None
@@ -493,6 +611,7 @@ class DirectMessenger:
         on_event: Callable[[DirectMessageEvent], None] | None = None,
         logger: Logger | None = None,
         acks: AckRegistry | None = None,
+        records: DirectMessageSink | None = None,
     ) -> None:
         self.contacts = contacts
         self.paths = paths
@@ -511,11 +630,27 @@ class DirectMessenger:
         # them, or "unmatched" means two different things at once.
         self.acks = acks or AckRegistry(logger=self._log)
         self._owns_acks = acks is None
+        # A list rather than one sink: a run can be both recording durably and
+        # showing a conversation in a browser, and those are two consumers of
+        # the same offer rather than one wrapping the other.
+        self._records: list[DirectMessageSink] = [] if records is None else [records]
         self._pending_by_checksum: dict[bytes, _Pending] = {}
         self._room_entity_ids: set[str] = set()
+        # One lock per (identity, peer): sends to different peers proceed
+        # together, sends within one conversation do not overlap (§
+        # `direct-messaging`). Kept rather than reaped — one `asyncio.Lock` per
+        # contact we have ever talked to is bounded by the contact table, and a
+        # lock removed while a waiter held a reference to it would be a lock
+        # that stopped ordering anything.
+        self._conversations: dict[tuple[str, bytes], asyncio.Lock] = {}
         self.received = 0
         self.undecryptable = 0
         self.sent = 0
+        self.records_offered = 0
+        self.records_refused = 0
+        """Offers the sink turned away. Counted here as well as in the sink,
+        because from this side "the record was not taken" is the whole of what
+        the messenger can know or do about it (design D8)."""
 
     @property
     def _outstanding(self) -> dict[bytes, _Pending]:
@@ -531,6 +666,84 @@ class DirectMessenger:
     def _emit(self, event: DirectMessageEvent) -> None:
         if self._on_event is not None:
             self._on_event(event)
+
+    # --- Recording (design D8) ---------------------------------------------
+
+    def add_record_sink(self, sink: DirectMessageSink) -> None:
+        """Attach another consumer of what this messenger sends and receives.
+
+        Same contract as the first, and offered the same records in the same
+        order. One sink refusing or raising changes nothing for the others: they
+        are independent consumers of one offer, not a chain.
+        """
+        self._records.append(sink)
+
+    def _record(self, record: DirectMessageRecord) -> None:
+        """Offer one message to every sink. Never awaits, never raises.
+
+        The contact and path sinks' contract, and the reason it is a method
+        rather than a call site: this is invoked from the send loop and from
+        inside message handling, and *both* have to be places where a sink that
+        raises changes nothing — not the acknowledgement, not the retry
+        schedule, not the reported outcome.
+        """
+        for sink in self._records:
+            try:
+                taken = sink.offer(record)
+            except Exception as exc:
+                # A sink that raises is a broken sink, not a broken message.
+                # Report it and carry on: there is nothing on this path that a
+                # failure to write history should be allowed to change.
+                self.records_refused += 1
+                self._log.error(
+                    "direct_message_record_raised",
+                    outcome="error",
+                    ref=record.ref,
+                    direction=record.direction,
+                    error=repr(exc),
+                )
+                continue
+            if taken:
+                self.records_offered += 1
+                continue
+            self.records_refused += 1
+            self._log.error(
+                "direct_message_record_refused",
+                outcome="error",
+                ref=record.ref,
+                direction=record.direction,
+                detail=(
+                    "a record sink refused the record; this message is not in "
+                    "that sink's history"
+                ),
+            )
+
+    def _sent_record(
+        self,
+        pending: _Pending,
+        outcome: RecordedOutcome,
+        packet_ids: Sequence[str],
+    ) -> DirectMessageRecord:
+        route = pending.route
+        return DirectMessageRecord(
+            entity_public_key=pending.entity.identity.public_key,
+            peer_public_key=pending.contact.public_key,
+            direction=OUTBOUND,
+            text=pending.raw,
+            wire_timestamp=pending.timestamp,
+            handled_at=pending.submitted_at or self.clock.now(),
+            ref=pending.message_id,
+            outcome=outcome,
+            packet_ids=tuple(packet_ids),
+            attempts=pending.attempts,
+            route_flood=None if route is None else route.flood,
+            route_path=None if route is None else route.path,
+            ack_latency_ms=(
+                None
+                if pending.matched_at is None or pending.sent_at is None
+                else (pending.matched_at - pending.sent_at).total_seconds() * 1000.0
+            ),
+        )
 
     # --- Outbound ----------------------------------------------------------
 
@@ -562,13 +775,61 @@ class DirectMessenger:
         compose_body(timestamp=0, attempt=0, text=raw, txt_type=txt_type)
         route = choose_route(self.paths, contact, allow_flood=flooding)
 
+        timestamp = int(self.clock.now().timestamp())
         pending = _Pending(
             message_id=uuid.uuid4().hex[:16],
             entity=entity,
             contact=contact,
             text=raw.decode("utf-8", errors="replace"),
+            raw=raw,
+            timestamp=timestamp,
+            submitted_at=self.clock.now(),
+            route=route,
         )
-        timestamp = int(self.clock.now().timestamp())
+        # Recorded at submission rather than at first transmission, so a message
+        # waiting behind another in its own conversation is visible as submitted
+        # instead of appearing only once it starts. The record is updated in
+        # place when the send resolves; `ref` is what joins the two.
+        self._record(self._sent_record(pending, RecordedOutcome.IN_FLIGHT, ()))
+        async with self._conversation(entity, contact):
+            return await self._send_locked(
+                pending,
+                raw=raw,
+                route=route,
+                timestamp=timestamp,
+                txt_type=txt_type,
+                ack_grace_ms=ack_grace_ms,
+            )
+
+    def _conversation(self, entity: LocalEntity, contact: Contact) -> asyncio.Lock:
+        """The lock that keeps one conversation in submission order.
+
+        Per identity *and* peer, which is the same key the history is stored
+        under: two sends to different peers are unrelated and must not wait on
+        each other's acknowledgement window, and two sends within one
+        conversation must not be able to reach the air out of the order they
+        were submitted in.
+        """
+        key = (entity.entity_id, contact.public_key)
+        lock = self._conversations.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._conversations[key] = lock
+        return lock
+
+    async def _send_locked(
+        self,
+        pending: _Pending,
+        *,
+        raw: bytes,
+        route: Route,
+        timestamp: int,
+        txt_type: TextType | int,
+        ack_grace_ms: float,
+    ) -> SendOutcome:
+        """The attempt loop, with this conversation's turn already taken."""
+        entity = pending.entity
+        contact = pending.contact
         packet_ids: list[str] = []
         secret = self.secrets.get(entity.identity, contact.public_key)
 
@@ -713,6 +974,14 @@ class DirectMessenger:
         # outcome, never a silent one.
         emit = self._log.info if outcome.acknowledged else self._log.error
         emit("direct_message_resolved", **outcome.as_json())
+        # The same message the sink was offered at submission, identified by the
+        # same `ref` and now carrying its outcome. Offered before the event is
+        # emitted, so a consumer told the send resolved can read the resolved
+        # record rather than racing it.
+        pending.route = route
+        self._record(
+            self._sent_record(pending, RecordedOutcome(str(result)), packet_ids)
+        )
         self._emit(
             SendResolved(outcome=outcome, contact=pending.contact, text=pending.text)
         )
@@ -815,6 +1084,25 @@ class DirectMessenger:
                     return
                 self.received += 1
                 acknowledged = await self._acknowledge(entity, contact, body, record)
+                # Recorded *after* the acknowledgement has been submitted, never
+                # before (design D8). The acknowledgement is the protocol's own
+                # receipt, computed on decrypt, against a sender whose retry
+                # window is 4-5 seconds; putting a durable write in front of it
+                # would trade a counted gap in our own history for a real
+                # protocol failure.
+                self._record(
+                    DirectMessageRecord(
+                        entity_public_key=entity.identity.public_key,
+                        peer_public_key=contact.public_key,
+                        direction=INBOUND,
+                        text=body.text.raw,
+                        wire_timestamp=body.timestamp,
+                        handled_at=record.received_at,
+                        ref=record.packet_id,
+                        outcome=RecordedOutcome.RECEIVED,
+                        packet_ids=(record.packet_id,),
+                    )
+                )
                 self._log.info(
                     "direct_message_received",
                     packet_id=record.packet_id,
@@ -962,4 +1250,6 @@ class DirectMessenger:
             "undecryptable": self.undecryptable,
             "outstanding_acks": len(self._pending_by_checksum),
             "secret_cache": len(self.secrets),
+            "records_offered": self.records_offered,
+            "records_refused": self.records_refused,
         }

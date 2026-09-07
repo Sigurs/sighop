@@ -21,13 +21,14 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, literal, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
 from sighop.db.models import Bot as BotRow
 from sighop.db.models import BotState as BotStateRow
 from sighop.db.models import Contact as ContactRow
+from sighop.db.models import DirectMessage as DirectMessageRow
 from sighop.db.models import Entity as EntityRow
 from sighop.db.models import Message as MessageRow
 from sighop.db.models import PacketLog as PacketLogRowModel
@@ -37,6 +38,7 @@ from sighop.db.models import RoomMember as RoomMemberRow
 from sighop.db.sealing import open_seed, seal_seed
 from sighop.db.times import ensure_utc
 from sighop.net.contacts import Contact
+from sighop.net.dm import DirectMessageRecord, RecordedOutcome
 from sighop.net.paths import LearnedPath, PathKey
 from sighop.protocol.identity import LocalIdentity
 from sighop.protocol.payloads import (
@@ -45,6 +47,15 @@ from sighop.protocol.payloads import (
     Permission,
     WireText,
 )
+
+DEFAULT_RECENT_PACKETS = 200
+"""How much history the feed paints on connection by default. Enough to see the
+shape of the last few minutes on a busy mesh — 555 receptions in 2 h 54 min was
+the busiest measured — without making the first frame of a page a scroll."""
+
+MAX_RECENT_PACKETS = 1000
+"""The hard cap on one read. The bound on a statement's cost is not something
+the caller asking for the rows gets to choose."""
 
 DEFAULT_PACKET_LOG_MAX_ROWS = 100_000
 """Design D3, open question 2. Derived from one 2 h 54 min session at ~191
@@ -623,6 +634,34 @@ class PacketLogRepository:
 
         return await self.database.run("count_packet_log", work)
 
+    async def recent(self, limit: int = DEFAULT_RECENT_PACKETS) -> Outcome[list[PacketLogRow]]:
+        """The most recently recorded packets, newest first (design D14).
+
+        The log's first read, and it stays a feed: this exists so a display can
+        paint what happened before it connected, and nothing on the reception,
+        dedup, dispatch or transmit path calls it. It goes through
+        `Database.run` like every other operation, so a degraded database
+        answers it as unavailable inside the operation bound rather than
+        queueing it for later.
+
+        The cap is a cap, not a suggestion: a caller asking for more than
+        `MAX_RECENT_PACKETS` gets `MAX_RECENT_PACKETS`, because the bound on
+        this statement's cost must not be settable by whoever is asking.
+        """
+        capped = max(1, min(int(limit), MAX_RECENT_PACKETS))
+
+        async def work(session: object) -> list[PacketLogRow]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(PacketLogRowModel)
+                    .order_by(PacketLogRowModel.at.desc(), PacketLogRowModel.id.desc())
+                    .limit(capped)
+                )
+            ).scalars()
+            return [_packet_log_row(row) for row in rows]
+
+        return await self.database.run("read_recent_packets", work)
+
     async def prune(self) -> Outcome[int]:
         """Delete everything beyond the row cap, oldest first. Reports the count.
 
@@ -648,6 +687,34 @@ class PacketLogRepository:
         if isinstance(outcome, Succeeded):
             self.pruned += outcome.value
         return outcome
+
+
+def _packet_log_row(row: PacketLogRowModel) -> PacketLogRow:
+    """A stored packet as the shape it was written in.
+
+    An undecodable frame comes back exactly as recorded — its `raw` bytes and
+    its `reason` — because §4.1's rule is that a frame we could not decode must
+    not become invisible, and a read that quietly returned it without its
+    evidence would be the same disappearance one step later.
+    """
+    return PacketLogRow(
+        packet_id=row.packet_id,
+        direction=row.direction,
+        at=row.at,
+        outcome=row.outcome,
+        route_type=row.route_type,
+        payload_type=row.payload_type,
+        path_bytes=None if row.path_bytes is None else bytes(row.path_bytes),
+        hop_count=row.hop_count,
+        size_bytes=row.size_bytes,
+        snr_db=row.snr_db,
+        rssi_dbm=row.rssi_dbm,
+        airtime_ms=row.airtime_ms,
+        entity_id=row.entity_id,
+        priority_class=row.priority_class,
+        reason=row.reason,
+        raw=None if row.raw is None else bytes(row.raw),
+    )
 
 
 # --- Rooms, members and history (milestone 6, design D2/D3/D5) --------------
@@ -1143,22 +1210,37 @@ class MessageRepository:
         return await self.database.run("count_unsynced", work)
 
     async def history(
-        self, room_id: uuid.UUID, *, limit: int = 100, newest_first: bool = False
+        self,
+        room_id: uuid.UUID,
+        *,
+        limit: int = 100,
+        newest_first: bool = False,
+        before: int | None = None,
     ) -> Outcome[list[PostRecord]]:
+        """One page of a room's history, in the protocol's own total order.
+
+        `before` is a `post_timestamp` cursor and needs no tie-break: the column
+        is unique per room (design D3), which is exactly what makes it a total
+        order and therefore a page boundary that cannot show a message twice or
+        skip one. Paging back is `newest_first` plus the oldest timestamp
+        already shown.
+        """
+
         async def work(session: object) -> list[PostRecord]:
             order = (
                 MessageRow.post_timestamp.desc()
                 if newest_first
                 else MessageRow.post_timestamp
             )
-            rows = (
-                await session.execute(  # type: ignore[attr-defined]
-                    select(MessageRow)
-                    .where(MessageRow.room_id == room_id)
-                    .order_by(order)
-                    .limit(limit)
-                )
-            ).scalars()
+            statement = (
+                select(MessageRow)
+                .where(MessageRow.room_id == room_id)
+                .order_by(order)
+                .limit(limit)
+            )
+            if before is not None:
+                statement = statement.where(MessageRow.post_timestamp < before)
+            rows = (await session.execute(statement)).scalars()  # type: ignore[attr-defined]
             return [_post(row) for row in rows]
 
         return await self.database.run("read_history", work)
@@ -1600,3 +1682,280 @@ class BotStateRepository:
             return int(result.rowcount or 0)
 
         return await self.database.run("clear_bot_state", work)
+
+
+# --- Direct messages (milestone 8, design D7/D8) ----------------------------
+
+
+DEFAULT_CONVERSATION_PAGE = 50
+"""How many messages one page of a conversation holds by default. Bounded for
+the reason every read here is bounded: an unbounded read is a statement whose
+cost is set by how long the deployment has been running."""
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationSummary:
+    """One conversation, as the list of them shows it.
+
+    A conversation is the pair of a local identity and a peer, never the peer
+    alone: two identities talking to one contact are two conversations, and
+    merging them would attribute one identity's words to the other.
+    """
+
+    entity_public_key: bytes
+    peer_public_key: bytes
+    messages: int
+    latest_at: dt.datetime
+    latest_direction: str
+    latest_outcome: RecordedOutcome
+    latest_text: bytes
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "entity_public_key": self.entity_public_key.hex(),
+            "peer_public_key": self.peer_public_key.hex(),
+            "messages": self.messages,
+            "latest_direction": self.latest_direction,
+            "latest_outcome": str(self.latest_outcome),
+        }
+
+
+@dataclass(slots=True)
+class DirectMessageRepository:
+    """The `direct_message` table: one row per message, updated in place.
+
+    Read directly rather than mirrored in memory, for `MessageRepository`'s
+    reason (design D5): a conversation is unbounded, exists to outlive the
+    process, and is read by a browser rather than by anything on the packet
+    path. Nothing in `net/` consults it.
+    """
+
+    database: Database
+
+    async def upsert_many(self, records: Sequence[DirectMessageRecord]) -> Outcome[int]:
+        """Write a batch, collapsing it to one row per `(entity, ref)`.
+
+        Milestone 5's `cannot affect row a second time` finding applies here more
+        sharply than anywhere else it has: a send offers its record at submission
+        and again when it resolves, and the two land in the *same* batch whenever
+        the send is quick or the writer is behind. Collapsing to the latest is
+        exactly right — the later offer carries the earlier one's message with
+        its outcome known.
+
+        `handled_at` is deliberately absent from the update, as
+        `contact.first_heard` is: it is when the platform first handled this
+        message, and a conversation ordered by it must not have a message move
+        because its send resolved.
+        """
+        if not records:
+            return Succeeded(value=0)
+        values = _latest_per_key(
+            ((record.entity_public_key, record.ref), _direct_message_values(record))
+            for record in records
+        )
+
+        async def work(session: object) -> int:
+            statement = insert(DirectMessageRow).values(values)
+            await session.execute(  # type: ignore[attr-defined]
+                statement.on_conflict_do_update(
+                    index_elements=[
+                        DirectMessageRow.entity_public_key,
+                        DirectMessageRow.ref,
+                    ],
+                    set_={
+                        "peer_public_key": statement.excluded.peer_public_key,
+                        "direction": statement.excluded.direction,
+                        "text": statement.excluded.text,
+                        "wire_timestamp": statement.excluded.wire_timestamp,
+                        "packet_ids": statement.excluded.packet_ids,
+                        "attempts": statement.excluded.attempts,
+                        "route_flood": statement.excluded.route_flood,
+                        "route_path": statement.excluded.route_path,
+                        "outcome": statement.excluded.outcome,
+                        "ack_latency_ms": statement.excluded.ack_latency_ms,
+                    },
+                )
+            )
+            return len(values)
+
+        return await self.database.run("upsert_direct_messages", work)
+
+    async def upsert(self, record: DirectMessageRecord) -> Outcome[int]:
+        return await self.upsert_many([record])
+
+    async def conversation(
+        self,
+        entity_public_key: bytes,
+        peer_public_key: bytes,
+        *,
+        limit: int = DEFAULT_CONVERSATION_PAGE,
+        before: tuple[dt.datetime, int] | None = None,
+    ) -> Outcome[list[DirectMessageRecord]]:
+        """One page of a conversation, newest first.
+
+        Ordered by `handled_at` and never by `wire_timestamp`: the wire value is
+        the peer's clock, and a peer with a wrong clock must not be able to
+        reorder a conversation (design D7). The row id breaks ties, which is what
+        makes the page boundary stable — two messages handled in the same
+        millisecond would otherwise be able to swap across a page and be shown
+        twice or not at all.
+
+        `before` is the `(handled_at, row_id)` of the oldest message already
+        shown; the next page is everything strictly older than it.
+        """
+
+        async def work(session: object) -> list[DirectMessageRecord]:
+            statement = (
+                select(DirectMessageRow)
+                .where(
+                    DirectMessageRow.entity_public_key == entity_public_key,
+                    DirectMessageRow.peer_public_key == peer_public_key,
+                )
+                .order_by(DirectMessageRow.handled_at.desc(), DirectMessageRow.id.desc())
+                .limit(limit)
+            )
+            if before is not None:
+                statement = statement.where(
+                    tuple_(DirectMessageRow.handled_at, DirectMessageRow.id)
+                    < tuple_(
+                        literal(ensure_utc(before[0], field="direct_message.handled_at")),
+                        literal(before[1]),
+                    )
+                )
+            rows = (await session.execute(statement)).scalars()  # type: ignore[attr-defined]
+            return [_direct_message(row) for row in rows]
+
+        return await self.database.run("read_conversation", work)
+
+    async def conversations(
+        self, entity_public_key: bytes | None = None
+    ) -> Outcome[list[ConversationSummary]]:
+        """Every conversation, most recently active first.
+
+        Two statements in one unit of work rather than one clever one: the latest
+        message per peer is a `DISTINCT ON`, the message count per peer is a
+        grouped count, and joining them in SQL would produce a query harder to
+        read than the two it replaced for no gain a browser could measure.
+        """
+
+        async def work(session: object) -> list[ConversationSummary]:
+            keys = (DirectMessageRow.entity_public_key, DirectMessageRow.peer_public_key)
+            latest = (
+                select(DirectMessageRow)
+                .distinct(*keys)
+                .order_by(
+                    *keys, DirectMessageRow.handled_at.desc(), DirectMessageRow.id.desc()
+                )
+            )
+            counts = select(*keys, func.count().label("messages")).group_by(*keys)
+            if entity_public_key is not None:
+                latest = latest.where(DirectMessageRow.entity_public_key == entity_public_key)
+                counts = counts.where(DirectMessageRow.entity_public_key == entity_public_key)
+
+            totals = {
+                (bytes(entity), bytes(peer)): int(messages)
+                for entity, peer, messages in (
+                    await session.execute(counts)  # type: ignore[attr-defined]
+                ).all()
+            }
+            summaries = [
+                ConversationSummary(
+                    entity_public_key=bytes(row.entity_public_key),
+                    peer_public_key=bytes(row.peer_public_key),
+                    messages=totals.get(
+                        (bytes(row.entity_public_key), bytes(row.peer_public_key)), 0
+                    ),
+                    latest_at=row.handled_at,
+                    latest_direction=row.direction,
+                    latest_outcome=_recorded_outcome(row.outcome),
+                    latest_text=bytes(row.text),
+                )
+                for row in (await session.execute(latest)).scalars()  # type: ignore[attr-defined]
+            ]
+            summaries.sort(key=lambda summary: summary.latest_at, reverse=True)
+            return summaries
+
+        return await self.database.run("list_conversations", work)
+
+    async def count(self) -> Outcome[int]:
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count()).select_from(DirectMessageRow)
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_direct_messages", work)
+
+    async def conversation_count(self) -> Outcome[int]:
+        """How many distinct identity-and-peer pairs the table holds."""
+
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(
+                        func.count(
+                            func.distinct(
+                                tuple_(
+                                    DirectMessageRow.entity_public_key,
+                                    DirectMessageRow.peer_public_key,
+                                )
+                            )
+                        )
+                    )
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_conversations", work)
+
+
+def _direct_message_values(record: DirectMessageRecord) -> dict[str, object]:
+    return {
+        "entity_public_key": record.entity_public_key,
+        "peer_public_key": record.peer_public_key,
+        "direction": record.direction,
+        "text": record.text,
+        "wire_timestamp": record.wire_timestamp,
+        "handled_at": ensure_utc(record.handled_at, field="direct_message.handled_at"),
+        "ref": record.ref,
+        "packet_ids": list(record.packet_ids),
+        "attempts": record.attempts,
+        "route_flood": record.route_flood,
+        "route_path": record.route_path,
+        "outcome": str(record.outcome),
+        "ack_latency_ms": record.ack_latency_ms,
+    }
+
+
+def _recorded_outcome(stored: str) -> RecordedOutcome:
+    """A stored outcome, or `IN_FLIGHT` for one this build does not know.
+
+    A row written by a later build must not make a conversation unreadable, and
+    the honest reading of an outcome we cannot interpret is that we do not know
+    how the message ended.
+    """
+    try:
+        return RecordedOutcome(stored)
+    except ValueError:
+        return RecordedOutcome.IN_FLIGHT
+
+
+def _direct_message(row: DirectMessageRow) -> DirectMessageRecord:
+    return DirectMessageRecord(
+        entity_public_key=bytes(row.entity_public_key),
+        peer_public_key=bytes(row.peer_public_key),
+        direction=row.direction,
+        text=bytes(row.text),
+        wire_timestamp=int(row.wire_timestamp),
+        handled_at=row.handled_at,
+        ref=row.ref,
+        outcome=_recorded_outcome(row.outcome),
+        packet_ids=tuple(row.packet_ids),
+        attempts=int(row.attempts),
+        route_flood=row.route_flood,
+        route_path=None if row.route_path is None else bytes(row.route_path),
+        ack_latency_ms=row.ack_latency_ms,
+        row_id=int(row.id),
+    )

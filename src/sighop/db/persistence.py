@@ -10,6 +10,10 @@ where the asymmetry between them is visible in one place:
   relearned from the next reception.
 * **packet log** — the same, batched, plus a pruner. Highest volume, lowest
   value per row, and explicitly not an audit trail.
+* **direct messages** — the contact policy again, and for a sharper reason
+  (milestone 8 design D8): a lost route is relearned from the next reception and
+  a lost conversation entry is not re-acquirable at all. It refuses rather than
+  displacing, and what it refuses is counted and reported.
 
 Nothing here is on the reception path. `ContactStore` and `PathStore` call
 `offer`, which neither awaits nor raises; everything else happens in tasks the
@@ -36,6 +40,7 @@ from sighop.db.repositories import (
     BotRepository,
     BotStateRepository,
     ContactRepository,
+    DirectMessageRepository,
     EntityRepository,
     MessageRepository,
     PacketLogRepository,
@@ -48,6 +53,7 @@ from sighop.db.writer import WriteBehind
 from sighop.logging import Logger, get_logger
 from sighop.net.bus import Submission, TxOutcome
 from sighop.net.contacts import Contact, ContactStore
+from sighop.net.dm import DirectMessageRecord
 from sighop.net.paths import LearnedPath, PathKey, PathStore
 from sighop.net.rx import RxRecord
 
@@ -59,6 +65,12 @@ marker set has to carry during an outage (design D16)."""
 PATH_QUEUE_CAPACITY = 512
 PACKET_LOG_QUEUE_CAPACITY = 2048
 
+DIRECT_MESSAGE_QUEUE_CAPACITY = 512
+"""Two offers per send and one per reception, on a link whose ceiling is a
+handful of messages a minute. Larger than the contact queue because it refuses
+in the same way and a refusal here costs a conversation entry — this is the
+size of the outage the queue can ride out without losing one."""
+
 
 @dataclass(frozen=True, slots=True)
 class RestoredCounts:
@@ -67,6 +79,13 @@ class RestoredCounts:
     entities: int = 0
     contacts: int = 0
     paths: int = 0
+    conversations: int = 0
+    """Distinct identity-and-peer pairs the database holds. Counted rather than
+    loaded: a conversation is read a page at a time when somebody opens it, not
+    mirrored in memory (design D5's asymmetry, applied to a second unbounded
+    table)."""
+
+    direct_messages: int = 0
 
 
 @dataclass(slots=True)
@@ -105,9 +124,19 @@ class Persistence:
     bots: BotRepository = field(init=False)
     bot_state: BotStateRepository = field(init=False)
 
+    # Direct messages do have a queue, and it is the contact lane rather than
+    # the room lane. A room acknowledges a post because it promises to hold it,
+    # so the promise must be true before the acknowledgement goes out; a direct
+    # message acknowledgement is the protocol's own receipt, computed on decrypt,
+    # against a sender whose retry window is 4-5 seconds. Delaying it on a
+    # database write would trade a counted gap in our own history for a real
+    # protocol failure (design D8).
+    direct_messages: DirectMessageRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
+    dm_writer: WriteBehind[DirectMessageRecord] = field(init=False)
 
     restored: RestoredCounts = field(default_factory=RestoredCounts)
     _contact_store: ContactStore | None = field(default=None, init=False)
@@ -128,6 +157,7 @@ class Persistence:
         self.messages = MessageRepository(database=self.database)
         self.bots = BotRepository(database=self.database)
         self.bot_state = BotStateRepository(database=self.database)
+        self.direct_messages = DirectMessageRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,
@@ -152,6 +182,18 @@ class Persistence:
             batch_size=128,
             logger=self.logger,
         )
+        self.dm_writer = WriteBehind(
+            "direct_messages",
+            self._flush_direct_messages,
+            capacity=DIRECT_MESSAGE_QUEUE_CAPACITY,
+            batch_size=32,
+            # Refuses rather than displacing, the contact lane's flag: a lost
+            # conversation entry is not a re-learnable route, and displacing the
+            # oldest would silently discard the beginning of a conversation to
+            # keep its end (design D8).
+            drop_oldest=False,
+            logger=self.logger,
+        )
         self.database.on_recovery(self.backfill_contacts)
 
     # --- Sinks the stores hold ---------------------------------------------
@@ -161,6 +203,15 @@ class Persistence:
 
     def path_sink(self) -> WriteBehind[tuple[PathKey, LearnedPath]] | None:
         return self.path_writer if self.writes_enabled else None
+
+    def dm_sink(self) -> WriteBehind[DirectMessageRecord] | None:
+        """Where `DirectMessenger` offers what it sent and received.
+
+        `None` on a replay run, like every other sink: a replayed reception
+        carries an earlier session's timestamps, and recording it would put a
+        conversation into the history that this run did not have (design D13).
+        """
+        return self.dm_writer if self.writes_enabled else None
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -199,8 +250,26 @@ class Persistence:
         if isinstance(routes, Succeeded):
             restored_paths = paths.restore(routes.value)
 
+        # Counted rather than loaded. There is no in-memory conversation store
+        # to restore into — a conversation is read a page at a time when
+        # somebody opens it — but a restart that says nothing about what it is
+        # holding is a restart after which "my messages are gone" and "the
+        # interface has not been opened yet" look the same.
+        conversations = 0
+        held = await self.direct_messages.conversation_count()
+        if isinstance(held, Succeeded):
+            conversations = held.value
+        messages = 0
+        stored = await self.direct_messages.count()
+        if isinstance(stored, Succeeded):
+            messages = stored.value
+
         self.restored = RestoredCounts(
-            entities=entities, contacts=restored_contacts, paths=restored_paths
+            entities=entities,
+            contacts=restored_contacts,
+            paths=restored_paths,
+            conversations=conversations,
+            direct_messages=messages,
         )
         self.logger.info(
             "persistence_restored",
@@ -208,6 +277,8 @@ class Persistence:
             entities=entities,
             contacts=restored_contacts,
             paths=restored_paths,
+            conversations=conversations,
+            direct_messages=messages,
         )
         return self.restored
 
@@ -217,6 +288,7 @@ class Persistence:
             self.contact_writer.start()
             self.path_writer.start()
             self.packet_log_writer.start()
+            self.dm_writer.start()
             self.pruner.start()
         self.database.start_probe()
 
@@ -228,7 +300,12 @@ class Persistence:
         rather than at shutdown (design D2).
         """
         await self.pruner.stop()
-        for writer in (self.contact_writer, self.path_writer, self.packet_log_writer):
+        for writer in (
+            self.contact_writer,
+            self.path_writer,
+            self.packet_log_writer,
+            self.dm_writer,
+        ):
             await writer.stop()
         await self.database.dispose()
 
@@ -263,6 +340,14 @@ class Persistence:
             self.database.stats.packet_log_written += len(batch)
             return True
         self.database.stats.packet_log_discarded += len(batch)
+        return False
+
+    async def _flush_direct_messages(self, batch: Sequence[DirectMessageRecord]) -> bool:
+        outcome = await self.direct_messages.upsert_many(list(batch))
+        if isinstance(outcome, Succeeded):
+            self.database.stats.direct_messages_written += outcome.value
+            return True
+        self.database.stats.direct_messages_discarded += len(batch)
         return False
 
     # --- The packet log's producers ----------------------------------------
@@ -342,10 +427,13 @@ class Persistence:
             "restored_entities": self.restored.entities,
             "restored_contacts": self.restored.contacts,
             "restored_paths": self.restored.paths,
+            "restored_conversations": self.restored.conversations,
+            "restored_direct_messages": self.restored.direct_messages,
             "packet_log_pruned": self.pruner.deleted,
             **self.contact_writer.as_json(),
             **self.path_writer.as_json(),
             **self.packet_log_writer.as_json(),
+            **self.dm_writer.as_json(),
         }
 
     async def wait_idle(self) -> None:
@@ -354,4 +442,5 @@ class Persistence:
             self.contact_writer.wait_idle(),
             self.path_writer.wait_idle(),
             self.packet_log_writer.wait_idle(),
+            self.dm_writer.wait_idle(),
         )

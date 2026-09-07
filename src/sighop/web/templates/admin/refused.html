@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+
+{% block title %}refused · sighop{% endblock %}
+
+{% block content %}
+<h1>{{ title }} — refused</h1>
+<p class="unavailable">
+  <strong>Nothing was changed.</strong> This action requires a confirmation
+  minted by its own confirmation page, and this request carried none — or
+  carried one that had already been used or had expired. A confirmation is good
+  exactly once.
+</p>
+<p class="note">The refusal was recorded as its own event.</p>
+<p><a href="/">back to the overview</a></p>
+{% endblock %}

@@ -1,4 +1,4 @@
-"""The nine tables (milestone 5 design D3, milestone 6 design D2, milestone 7 D3).
+"""The ten tables (milestone 5 D3, milestone 6 D2, milestone 7 D3, milestone 8 D7).
 
 DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
 and writes on every packet — `entity`, `contact`, `path`, `packet_log` —
@@ -7,6 +7,11 @@ milestone 6 added the three a room server needs — `room`, `room_member`,
 table §6 did not sketch. §6's list was called a sketch and "not final DDL"; a
 bot has a driver name, a mode and configuration to store, and those are per bot
 rather than per key, so they need a row of their own (milestone 7 design D3).
+
+Milestone 8 adds the tenth, `direct_message`. §6's `message` is room-scoped —
+it hangs off `room_id` because a room server's whole purpose is to hold what was
+posted to it — so a person's own conversation had nowhere to live and a page
+refresh lost a conversation the radio actually carried (milestone 8 design D7).
 
 Three details are deliberate rather than accidental:
 
@@ -49,7 +54,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 NAMING_CONVENTION = {
@@ -405,3 +410,80 @@ class BotState(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
 
     __table_args__ = (PrimaryKeyConstraint("bot_id", "key", name="pk_bot_state"),)
+
+
+class DirectMessage(Base):
+    """§6's tenth table: one direct message, in either direction (design D7).
+
+    Keyed by the pair that makes a conversation — the local identity's public key
+    and the peer's — by *key* rather than by `entity.id`, deliberately. A
+    conversation outlives the row that held the identity that carried it: an
+    entity deleted from `entity` takes its foreign keys with it, and the messages
+    it exchanged are the one thing that should survive being able to explain
+    themselves. The key is also what both directions actually have in hand at the
+    moment the record is made.
+
+    `ref` is what makes "written at submission, updated when it resolves" one row
+    rather than two: the send's `message_id` outbound, the reception's `packet_id`
+    inbound, unique per identity. Every write is `ON CONFLICT (entity_public_key,
+    ref) DO UPDATE`, so a message in flight is visible and a resolved one does not
+    appear twice.
+
+    Three columns are shaped by rules established earlier:
+
+    * **`wire_timestamp` is `BIGINT`**, per §6's rule for the cursor columns
+      `room_member` already carries: it is MeshCore's unsigned 32-bit epoch
+      seconds *as they appear on the wire*, the peer's own claim about its clock,
+      not an instant. `handled_at` is ours and is `TIMESTAMPTZ`. The ordering is
+      by `handled_at` and never by `wire_timestamp` — a peer with a wrong clock
+      must not be able to reorder a conversation.
+    * **`text` is `bytea`**, for `message.text`'s reason (milestone 6 design D4):
+      text off the wire is `WireText` and is not guaranteed valid UTF-8. It is
+      stored as it arrived and rendered at the edges, marked as a rendering.
+      **It is not encrypted at rest**: a database dump exposes conversation
+      content. §6 was careful that a dump must not be sufficient to *impersonate*
+      a room server, which `entity.sealed_seed` delivers; it makes no such
+      promise about content, and this table is where that becomes concrete.
+    * **`outcome` is never NULL.** A record written at submission says
+      `in_flight`, which is what a restart leaves behind — an outcome that is
+      unknown rather than a claim of delivery or a row that vanished.
+    """
+
+    __tablename__ = "direct_message"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    entity_public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    peer_public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    """`out` | `in`, as `packet_log.direction` is `tx` | `rx`."""
+
+    text: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wire_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    handled_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    ref: Mapped[str] = mapped_column(Text, nullable=False)
+    """The send's `message_id` outbound, the reception's `packet_id` inbound."""
+
+    packet_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    """Every packet this message put on the air, in attempt order — the join to
+    `packet_log` and to the feed. One entry inbound."""
+
+    attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
+    route_flood: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    route_path: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    """The route the send used. NULL inbound, and empty rather than NULL for a
+    zero-hop direct route — the distinction `path.path_bytes` already draws."""
+
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    ack_latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "entity_public_key", "ref", name="uq_direct_message_entity_public_key_ref"
+        ),
+        Index(
+            "ix_direct_message_entity_public_key_peer_public_key_handled_at",
+            "entity_public_key",
+            "peer_public_key",
+            "handled_at",
+        ),
+    )

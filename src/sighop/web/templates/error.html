@@ -1,0 +1,32 @@
+{# Deliberately standalone: it does not extend base.html and reads no live
+   state. An error page that had to render the duty-cycle meter would be an
+   error page that could fail for the same reason the request did. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>error · sighop</title>
+  <link rel="stylesheet" href="/static/panel.css">
+</head>
+<body>
+  <header class="panel-head">
+    <a class="brand" href="/">sighop</a>
+  </header>
+  <main class="panel">
+    <h1>something failed</h1>
+    <p class="note">
+      This request did not complete. What went wrong was recorded in the run's
+      own event stream — the terminal running <span class="mono">sighop run</span>,
+      or wherever <span class="mono">--log-file</span> points — and is
+      deliberately not described here: this build has no authentication, so
+      anything said on this page is said to whoever reached the port.
+    </p>
+    <p class="note">
+      The platform itself is unaffected. Receiving, decoding and transmitting do
+      not run through this interface.
+    </p>
+    <p><a href="/">back to the overview</a></p>
+  </main>
+</body>
+</html>

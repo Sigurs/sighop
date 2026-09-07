@@ -19,7 +19,11 @@ from sqlalchemy import text
 from sighop.db.engine import Database, Failed, Succeeded
 from sighop.db.packetlog import PacketLogPruner, rx_row, tx_row
 from sighop.db.persistence import Persistence
-from sighop.db.repositories import PacketLogRepository, PacketLogRow
+from sighop.db.repositories import (
+    MAX_RECENT_PACKETS,
+    PacketLogRepository,
+    PacketLogRow,
+)
 from sighop.db.writer import WriteBehind
 from sighop.net.bus import (
     IngressPipeline,
@@ -364,3 +368,137 @@ def test_duplicate_detection_never_reads_the_packet_log() -> None:
             names.add(node.module)
     assert not any(name.startswith("sighop.db") for name in names)
     assert not any(name.split(".")[0] in {"sqlalchemy", "asyncpg"} for name in names)
+
+
+# --- 5.1 / 5.2 The log becomes readable (milestone 8, design D14) -----------
+
+
+def _row(index: int, *, at: dt.datetime, **overrides: object) -> PacketLogRow:
+    fields: dict[str, object] = {
+        "packet_id": f"pkt{index:03d}",
+        "direction": "rx",
+        "at": at,
+        "outcome": "dispatched",
+    }
+    fields.update(overrides)
+    return PacketLogRow(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.database
+async def test_the_recent_read_is_newest_first_and_capped(database: Database) -> None:
+    """5.1: what the feed paints before the browser has heard anything live."""
+    repository = PacketLogRepository(database=database)
+    written = await repository.write_many(
+        [_row(index, at=NOW + dt.timedelta(seconds=index)) for index in range(10)]
+    )
+    assert isinstance(written, Succeeded)
+
+    recent = await repository.recent(limit=3)
+    assert isinstance(recent, Succeeded)
+    assert [row.packet_id for row in recent.value] == ["pkt009", "pkt008", "pkt007"]
+
+
+@pytest.mark.database
+async def test_the_cap_is_not_the_callers_to_raise(database: Database) -> None:
+    """5.1: a bound on a statement's cost that the caller could lift is not one."""
+    repository = PacketLogRepository(database=database)
+    assert isinstance(await repository.write_many([_row(0, at=NOW)]), Succeeded)
+
+    huge = await repository.recent(limit=10_000_000)
+    assert isinstance(huge, Succeeded)
+    assert len(huge.value) == 1, "the read still answered, bounded"
+
+    # The cap is applied to the statement, not to what came back by luck: a
+    # request for more than the maximum is served as the maximum.
+    assert MAX_RECENT_PACKETS < 10_000_000
+
+
+@pytest.mark.database
+async def test_an_unparsed_frame_comes_back_with_its_bytes_and_its_reason(
+    database: Database,
+) -> None:
+    """5.1, §4.1: a frame nobody could decode must not disappear on the way back.
+
+    It was written with its raw bytes and the reason precisely so it would stay
+    visible; a read that dropped either would be the same silent loss one step
+    further along.
+    """
+    repository = PacketLogRepository(database=database)
+    raw = bytes.fromhex("deadbeef00")
+    assert isinstance(
+        await repository.write_many(
+            [
+                _row(
+                    1,
+                    at=NOW,
+                    outcome="undecodable",
+                    reason="truncated: 5 bytes",
+                    raw=raw,
+                )
+            ]
+        ),
+        Succeeded,
+    )
+
+    recent = await repository.recent()
+    assert isinstance(recent, Succeeded)
+    stored = recent.value[0]
+    assert stored.raw == raw
+    assert stored.reason == "truncated: 5 bytes"
+    assert stored.outcome == "undecodable"
+
+
+async def test_a_degraded_database_answers_the_read_as_unavailable() -> None:
+    """5.2: refused within the bound, and nothing queued for later.
+
+    The read is a `Database.run` like every other operation, which is what makes
+    this true rather than a promise: the operation timeout and the degraded flag
+    are the engine's, and this inherits both.
+    """
+    from tests.test_db_engine import _database_over
+
+    async def refused() -> object:
+        raise ConnectionRefusedError(111, "refused")
+
+    handle = _database_over(refused)
+    repository = PacketLogRepository(database=handle)
+
+    outcome = await repository.recent(limit=10)
+
+    assert isinstance(outcome, Failed)
+    assert outcome.operation == "read_recent_packets"
+    assert handle.degraded is True
+    assert handle.stats.failures == 1
+
+
+def test_nothing_on_the_packet_path_reads_the_recent_packets() -> None:
+    """5.2: the log stays a feed — asserted against the source, not by habit.
+
+    A static scan over the modules that decide what happens to a packet. The
+    read exists for a display; a decision that consulted it would make the log
+    a dependency, which is the one thing design D3 said it must never become.
+    """
+    import ast
+    from pathlib import Path
+
+    import sighop.net.bus as bus_module
+    import sighop.net.dedup as dedup_module
+    import sighop.net.dm as dm_module
+    import sighop.net.rx as rx_module
+    import sighop.net.tx as tx_module
+
+    offenders: dict[str, list[str]] = {}
+    for module in (rx_module, dedup_module, bus_module, tx_module, dm_module):
+        assert module.__file__ is not None
+        source = Path(module.__file__).read_text()
+        found = [
+            node.attr
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Attribute) and node.attr == "recent"
+        ]
+        if found:
+            offenders[module.__name__] = found
+    assert not offenders, (
+        f"{offenders} read the packet log; nothing on the reception, dedup, "
+        "dispatch or transmit path may consult a feed"
+    )

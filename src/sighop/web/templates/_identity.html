@@ -1,0 +1,44 @@
+{# The only way any view draws an identity (design D13).
+
+   §8's rule — unverified content is never presented as verified — is a hard
+   rule, and a per-view `if` is how a hard rule becomes ninety per cent true.
+   Contacts, feed rows, room authors and chat senders all come through here.
+
+   The marking is a glyph *and* a word. Colour is added by the stylesheet and
+   is never the only signal, so the distinction survives a screenshot, a
+   colourblind operator and a monochrome theme. #}
+{% macro identity(view, key=true) -%}
+<span class="identity identity-{{ view.verification }}" title="{{ view.marking_text }}">
+  <span class="identity-mark" aria-hidden="true">{{ view.mark }}</span>
+  <span class="identity-name">{{ view.label }}</span>
+  <span class="identity-status">{{ view.verification|replace('_', ' ') }}</span>
+  {%- if key %}
+  <span class="mono identity-key">{{ view.short_key }}</span>
+  {%- endif %}
+</span>
+{%- endmacro %}
+
+{# The same identity with its whole key, for a page about one peer rather than
+   a table of many. A public key is not secret and is truncated only for width. #}
+{% macro identity_full(view) -%}
+<span class="identity identity-{{ view.verification }}" title="{{ view.marking_text }}">
+  <span class="identity-mark" aria-hidden="true">{{ view.mark }}</span>
+  <span class="identity-name">{{ view.label }}</span>
+  <span class="identity-status">{{ view.verification|replace('_', ' ') }}</span>
+  <span class="mono identity-key">{{ view.key_hex }}</span>
+</span>
+{%- endmacro %}
+
+{# What the marking means, stated rather than left to inference. Put once on
+   any page that draws identities. #}
+{% macro verification_legend() -%}
+<p class="note legend">
+  <span class="identity identity-verified"><span class="identity-mark">✓</span> verified</span>
+  — an advert signed by that key was checked.
+  <span class="identity identity-unverified"><span class="identity-mark">✗</span> unverified</span>
+  — a name we hold that no signature covers.
+  <span class="identity identity-key_only"><span class="identity-mark">?</span> key only</span>
+  — a key we hold no contact for. The protocol authenticates possession of a
+  key, never the identity of whoever holds it.
+</p>
+{%- endmacro %}

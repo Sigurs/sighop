@@ -400,6 +400,8 @@ def render_persistence(
     entities: int = 0,
     contacts: int = 0,
     paths: int = 0,
+    conversations: int = 0,
+    direct_messages: int = 0,
     writing: bool = True,
     not_writing_because: str = "",
 ) -> str:
@@ -424,9 +426,14 @@ def render_persistence(
             "only and do not survive the process"
         )
     state = "on" if writing else f"on, not writing ({not_writing_because})"
+    # Conversations are counted, not restored into memory: there is no in-memory
+    # store of them to fill. They are on this line anyway, because the question
+    # a restart has to answer is "is what I said still there", and a run that
+    # said nothing about it leaves "no messages" and "not looked yet" identical.
     return (
         f"persistence: {state} — {database}  schema={schema_version or 'unknown'}\n"
-        f"restored: entities={entities} contacts={contacts} paths={paths}"
+        f"restored: entities={entities} contacts={contacts} paths={paths}  "
+        f"held: conversations={conversations} messages={direct_messages}"
     )
 
 

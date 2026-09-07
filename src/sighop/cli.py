@@ -77,6 +77,19 @@ from sighop.runtime import (
     RuntimeConfig,
 )
 
+# The one module that knows both sides of milestone 8's seam (design D2).
+# `runtime.py` imports nothing from `web/` and `web/` imports nothing from
+# `runtime.py`; this is where a `Runtime` becomes the panel's `PanelState` and
+# the interface becomes one of the run's services.
+from sighop.web.app import (
+    DEFAULT_WEB_HOST,
+    DEFAULT_WEB_PORT,
+    WebBindError,
+    WebInterface,
+)
+from sighop.web.chat import ConversationLog
+from sighop.web.feed import FeedHub
+
 RADIO_PRESETS = {"eu868-narrow": EU868_NARROW}
 
 
@@ -279,6 +292,32 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="append wide-event logs here instead of standard output",
+    )
+    run.add_argument(
+        "--web",
+        action="store_true",
+        help=(
+            "serve the web panel from inside this run. WITHOUT THIS FLAG no "
+            "socket is listened on. The interface is UNAUTHENTICATED in this "
+            "build: anything that can reach the port can transmit and reveal "
+            "private key material"
+        ),
+    )
+    run.add_argument(
+        "--web-host",
+        default=DEFAULT_WEB_HOST,
+        metavar="ADDRESS",
+        help=(
+            "address the panel listens on (default: %(default)s). A "
+            "non-loopback address is permitted and is announced at startup as "
+            "unauthenticated and reachable from the network"
+        ),
+    )
+    run.add_argument(
+        "--web-port",
+        type=int,
+        default=DEFAULT_WEB_PORT,
+        help="port the panel listens on (default: %(default)s); 0 asks the OS",
     )
     _add_database_url_argument(run)
     run.add_argument(
@@ -2057,6 +2096,55 @@ def _bot_state(args: argparse.Namespace, database: DatabaseConfig, out: IO[str])
     return 0
 
 
+def _attach_web(
+    args: argparse.Namespace, runtime: Runtime, out: IO[str] | None
+) -> WebInterface | None:
+    """Bind the panel's socket and hang it off the run, or do nothing at all.
+
+    Called after the runtime is composed and **before** it runs, which is what
+    makes a port clash a startup failure: nothing has been received, nothing has
+    been transmitted, and the run does not continue with a silently absent
+    interface (`web-server`, `runtime-cli`).
+
+    A run that was not asked for the interface returns here having listened on
+    nothing and said nothing — the whole of "opt-in and off by default".
+    """
+    if not getattr(args, "web", False):
+        return None
+    # One hub for the process, fed by the pipeline's observer and the run's TX
+    # resolution callback, and fanning out to a bounded queue per browser
+    # (design D4). The runtime is handed two plain callables and never learns
+    # what is on the other end of them.
+    hub = FeedHub()
+    hub.subscribe(runtime.bus)
+    runtime.watch_traffic(
+        on_reception=hub.on_reception,
+        on_transmission=lambda submission, outcome, at: hub.on_transmission(
+            submission, outcome, at=at
+        ),
+    )
+    # The panel's own view of this run's conversations, attached as a second
+    # record sink beside the durable one. It is what makes chat work on a run
+    # with no database, and the live half of it on a run with one.
+    conversations = ConversationLog()
+    runtime.watch_messages(conversations)
+    interface = WebInterface.bind(
+        runtime,
+        host=args.web_host,
+        port=args.web_port,
+        feed=hub,
+        conversations=conversations,
+    )
+    # The event first, then the output. Both are unconditional: there is no
+    # option that serves a non-loopback bind without saying what it exposes.
+    interface.report()
+    stream = out if out is not None else sys.stdout
+    for line in interface.startup_lines():
+        print(line, file=stream)
+    runtime.services = (*runtime.services, interface.service())
+    return interface
+
+
 async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:
     """The platform against a live link. The gate is closed unless asked for."""
     transport = KissTransport(serial_connector(args.device))
@@ -2071,6 +2159,7 @@ async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int
     writer = CaptureWriter(args.capture) if args.capture is not None else None
     if writer is not None:
         writer.open()
+    interface: WebInterface | None = None
     try:
         runtime = Runtime(
             source=events,
@@ -2082,9 +2171,12 @@ async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int
             capture_probe=probe_result,
             persistence=persistence,
         )
+        interface = _attach_web(args, runtime, out)
         runtime.install_signal_handlers()
         await runtime.run()
     finally:
+        if interface is not None:
+            interface.close()
         if writer is not None:
             writer.close()
     return 0
@@ -2123,8 +2215,13 @@ async def _run_replay(args: argparse.Namespace, out: IO[str] | None = None) -> i
         out=out,
         persistence=persistence,
     )
+    interface = _attach_web(args, runtime, out)
     runtime.install_signal_handlers()
-    await runtime.run()
+    try:
+        await runtime.run()
+    finally:
+        if interface is not None:
+            interface.close()
     return 0
 
 
@@ -2238,12 +2335,16 @@ async def _run(args: argparse.Namespace) -> int:
         run = _run_live(args)
     try:
         return await run
-    except (ConfigError, DatabaseError, EntityLoadError, SealError) as exc:
+    except (ConfigError, DatabaseError, EntityLoadError, SealError, WebBindError) as exc:
         # A configured database that cannot be reached, is unauthenticated, is
         # at the wrong revision, or whose seeds will not open is a *startup*
         # failure that applies nothing and transmits nothing (`database` and
         # `entity-store` specs). It is reported here rather than as a traceback,
         # and the message names both revisions or the variable at fault.
+        #
+        # A web interface that cannot bind joins them for the same reason: the
+        # run was asked to serve a panel on a port, and continuing without one
+        # would present a node whose interface an operator had already assumed.
         print(str(exc), file=sys.stderr)
         return 2
 

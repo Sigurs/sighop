@@ -205,6 +205,13 @@ class PersistenceStats:
     routes_written: int = 0
     routes_discarded: int = 0
     contacts_written: int = 0
+    direct_messages_written: int = 0
+    direct_messages_discarded: int = 0
+    """A conversation entry that never reached the database. Counted apart from
+    the packet log's because it is not the same kind of loss: a dropped packet
+    log row is a gap in a sample, and a dropped message is a gap in what somebody
+    said (milestone 8 design D8)."""
+
     recoveries: int = 0
     probes: int = 0
 
@@ -217,6 +224,8 @@ class PersistenceStats:
             "routes_written": self.routes_written,
             "routes_discarded": self.routes_discarded,
             "contacts_written": self.contacts_written,
+            "direct_messages_written": self.direct_messages_written,
+            "direct_messages_discarded": self.direct_messages_discarded,
             "db_recoveries": self.recoveries,
             "db_probes": self.probes,
         }

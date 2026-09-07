@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}modem · sighop{% endblock %}
+
+{% block content %}
+<h1>modem health</h1>
+
+{% if readings %}
+<table class="counters">
+  <tbody>
+    {% for reading in readings %}
+    <tr>
+      <td>{{ reading.label }}</td>
+      <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="note">
+  Every value here is the board's own answer to the startup probe. A value the
+  board did not answer is shown as <strong>absent</strong> with the reason —
+  never as zero and never as a default, because "no battery sensor" and "a flat
+  battery" are different facts about the hardware.
+</p>
+{% if probe and probe.radio_matches_configured is false %}
+<p class="unavailable">
+  <strong>The board's readback does not match what was configured.</strong> The
+  duty-cycle budget is enforced against the readback, which is what the radio is
+  actually doing.
+</p>
+{% endif %}
+{% else %}
+<p class="empty">
+  <strong>No probe result.</strong> This run took no startup probe — a replay has
+  no board to ask, and the parameters it uses come from the capture's own header.
+</p>
+{% endif %}
+{% endblock %}

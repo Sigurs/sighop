@@ -144,6 +144,7 @@ def messenger(
     clock: TickingClock | None = None,
     events: list | None = None,
     allow_flood: bool = False,
+    records=None,
 ) -> DirectMessenger:
     return DirectMessenger(
         contacts=contacts or ContactStore(logger=RecordingLogger()),
@@ -155,6 +156,7 @@ def messenger(
         allow_flood=allow_flood,
         on_event=events.append if events is not None else None,
         logger=RecordingLogger(),
+        records=records,
     )
 
 

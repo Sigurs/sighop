@@ -456,7 +456,7 @@ must not render channel sender names in a way that implies verified identity.
 
 Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
-them.
+them. Milestone 8 adds a tenth.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -484,6 +484,32 @@ them.
 - **bot_state** — PK (bot id, key), value as JSONB, updated_at; the durable per-bot
   key/value store a driver persists in, and the only place a driver may write anything
 - **bot** — id, **unique** entity id, driver name, enabled, mode, config (JSONB), created_at
+
+**Built (milestone 8, migration `0004`):**
+
+- **direct_message** — id, entity public key, peer public key, direction, text as **bytes**,
+  `wire_timestamp` (`BIGINT`, the peer's clock as it travels), `handled_at` (`TIMESTAMPTZ`,
+  ours), `ref`, `packet_ids`, attempts, route flood, route path, outcome,
+  `ack_latency_ms`, unique on (entity public key, `ref`)
+
+**The tenth table exists because `message` is room-scoped.** `message` hangs off `room_id`
+because a room server's whole purpose is to hold what was posted to it; a person's own
+conversation belongs to no room and so had no store at all, which made every direct message
+a thing that existed only in the process that saw it. `ref` — the send's `message_id`
+outbound, the reception's `packet_id` inbound — is what makes "written at submission,
+updated when it resolves" *one* row: every write is `ON CONFLICT (entity_public_key, ref)
+DO UPDATE`. A message in flight is therefore visible, a resolved one does not appear twice,
+and a restart mid-send leaves an outcome that is *unknown* rather than a claim of delivery.
+Ordering is by `handled_at` and never by `wire_timestamp`: a peer with a wrong clock must not
+be able to reorder a conversation.
+
+**Stored direct message text is not encrypted at rest.** §6 is careful that a database dump
+must not be sufficient to *impersonate* a room server — `entity.sealed_seed` is ciphertext
+under a key held only in the environment — and it makes no equivalent promise about content.
+A dump of `direct_message` exposes conversation content in the clear. That is a deliberate
+trade rather than an oversight: the key that would encrypt it is one the interface reading
+those rows would have to hold anyway. It is stated in the migration's own docstring, so it
+cannot be discovered from a column type.
 
 **`bot` was not in the sketch, and the reason it exists is worth stating.** §6 imagined a
 bot's whole durable state as key/value rows. That predates a bot having a *driver name*, a
@@ -552,7 +578,12 @@ beats a walkie-talkie.
 
 `packet_log` is a bounded ring buffer, aggressively pruned. It exists to power the live
 feed, not to be a permanent record; unbounded packet logging on a busy mesh will fill a
-disk.
+disk. Milestone 8 gave it its first **read** — `recent(limit)`, newest first, capped, under
+the engine's existing statement bound — so the WebUI's feed can paint what happened before
+the browser connected. It stays a feed: nothing on the reception, dedup, dispatch or
+transmit path consults it, and a degraded database answers the read as unavailable rather
+than queueing it. `direct_message` is deliberately *not* pruned with it — a conversation is
+content and the feed is a sample.
 
 **Memory stays the authority.** Contacts and paths keep their in-memory stores and their
 interfaces, are loaded from the database once at startup, and answer every lookup from
@@ -911,10 +942,27 @@ password hash, secure `HttpOnly`/`SameSite` cookie, no external identity depende
 
 Two rules follow from what the UI can do:
 
-- **No unauthenticated mode, at any milestone.** Until auth exists (milestone 9), the
-  development server binds to localhost only.
+- **The interface binds to loopback by default, and a wider bind is a deliberate,
+  announced operator decision.** *(Corrected in milestone 8. This section previously said
+  "no unauthenticated mode, at any milestone"; milestone 8 ships the WebUI before
+  authentication exists, so that rule described something the code does not enforce. What
+  is enforced instead: `sighop run --web` defaults `--web-host` to `127.0.0.1`; any other
+  address is permitted and is reported at startup — in the run's output and as its own
+  logged event, with no option that suppresses it — as unauthenticated, reachable from the
+  network, and able to transmit and reveal private key material. Milestone 9 closes the
+  gap; until then it is stated rather than implied.)*
+- **Because there is no authentication, request provenance is enforced.** Every
+  state-changing request carries a token issued by this process and present only in pages
+  it served, and every request's `Host` header must be one the interface was configured to
+  answer to. Neither is authentication: they are the difference between "reachable by
+  anything that can route to the port" and "reachable by anything that can render a page in
+  the operator's browser", and CSRF and DNS rebinding are what make that difference matter
+  (milestone 8, design D9).
 - Actions that reveal a private key, enable transmit, or raise the duty-cycle ceiling are
-  re-authenticated and logged as their own wide events with the acting user recorded.
+  re-authenticated and logged as their own wide events with the acting user recorded. Until
+  milestone 9 the re-authentication is a per-action confirmation carrying a one-shot nonce,
+  and the actor field reads `unauthenticated` — the only part of those events that changes
+  when real users arrive.
 
 Reverse-proxy trust is deliberately *not* supported in v1. It is a reasonable deployment
 pattern, but "trust this header" is a footgun that turns one proxy misconfiguration into
@@ -1013,7 +1061,14 @@ sighop/
 │   │                   writer.py (bounded write-behind), sealing.py (seeds at
 │   │                   rest), packetlog.py (feed rows, pruner),
 │   │                   persistence.py (the wiring), migrations.py (alembic)
-│   ├── web/            FastAPI app, routes, templates
+│   ├── web/            state.py (the read seam as Protocols), app.py (the
+│   │                   application and the bound socket), guard.py (host check,
+│   │                   provenance token, one wide event per request),
+│   │                   guarded.py (confirm-then-act and its audit event),
+│   │                   feed.py (one bus subscription, per-connection queues),
+│   │                   chat.py (this run's own conversations),
+│   │                   serialize.py, render.py (view models), deps.py,
+│   │                   routes/, templates/, static/ (vendored htmx, no bundler)
 │   ├── logging.py      structlog config, wide-event helpers
 │   ├── config.py       DATABASE_URL and SIGHOP_SECRET_KEY from the environment,
 │   │                   validated and password-redacted. No dotenv dependency:
@@ -1048,11 +1103,22 @@ rule already implies.
 was to hold the room server, the companion and the bot runtime. The room server ended up in
 `net/room.py`, because it is a bus subscriber that needs the messenger's routing, the
 acknowledgement registry and the path store, and putting it a package away would have meant
-either duplicating those or importing across a boundary that describes nothing. There is no
-companion yet. Creating `entities/` for one remaining occupant would have produced a package
-that describes the layout *less* accurately than the sketch it came from — so the bot runtime
-lives in `bots/`, a peer of `net/` that imports from it exactly as `db/` does, and `entities/`
-arrives if and when the companion gives it a second tenant.
+either duplicating those or importing across a boundary that describes nothing. The bot
+runtime lives in `bots/`, a peer of `net/` that imports from it exactly as `db/` does.
+
+**Milestone 8 settled the last occupant, and it needed no module.** §7's companion — "an
+addressable identity driven by a human in the WebUI" — turned out to be a *user interface*
+over behaviour that already existed: the send path is `DirectMessenger.send` (milestone 4),
+the receive path is `MessageReceived` (milestone 4), and the identity is an `entity` row of
+chat node type. The chat surface picks one and sends as it. That is the opposite of what §7
+implied — it read as a new entity *behaviour* — and it is why `entities/` still does not
+exist and now has no expected tenant at all (milestone 8, design D6).
+
+`web/` is the second renderer and inherits `monitor/`'s rule unchanged: `net/` never imports
+it, and nothing in it is on the reception path. It imports nothing from `runtime.py` and
+`runtime.py` imports nothing from it — the state a page reads is described by `Protocol`s in
+`web/state.py` that `Runtime` satisfies structurally, and `cli.py` is the only module in the
+project that knows both sides (milestone 8, design D2).
 
 `bots/` never imports `monitor/`, for the same reason `net/` does not: it emits typed events
 and `monitor/render.py` turns one into a line. It imports no SQLAlchemy either — its storage
@@ -1560,6 +1626,86 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      predicted above actually appears. The first attempt at this stage ran for three minutes
      against two nodes, which settles nothing.
 8. **WebUI**, in the §8 priority order.
+   *Offline work done; the live exercise is pending.* `src/sighop/web/` — `state.py` (the
+   read seam), `app.py` (the application, the bound socket, the feed's WebSocket),
+   `guard.py` (host check, provenance token, one wide event per request), `guarded.py`
+   (confirm-then-act and its audit event), `feed.py` (one bus subscription, bounded
+   per-connection queues), `chat.py`, `serialize.py`, `render.py`, `deps.py`, `routes/`,
+   `templates/`, vendored `htmx.min.js` — plus migration `0004` with `direct_message` and
+   its repository and refusing writer lane, a record sink on `DirectMessenger`, a bounded
+   read on `PacketLogRepository`, a service slot and a traffic-watch hook on `Runtime`, and
+   `--web`/`--web-host`/`--web-port` on `sighop run`. The exit criterion — a direct message
+   sent, acknowledged, replied to and surviving a restart, the whole exchange driven from a
+   browser — is the live exercise, and the runbook for it is written and reviewed. Findings
+   the offline work produced:
+   - **§8's authentication rule described something the code does not do, and the fix was to
+     correct §8.** "No unauthenticated mode, at any milestone" cannot survive shipping the
+     WebUI in milestone 8 and authentication in milestone 9. Quietly contradicting it in the
+     code would have left the document as the thing an operator trusts and the binary as the
+     thing that behaves differently. §8 now says what is enforced: loopback by default, a
+     wider bind permitted and **announced** in the output and in its own event with no way to
+     silence it. **A rule a milestone cannot keep is a rule that has to be rewritten, not
+     quietly broken.**
+   - **The absence of authentication is what makes request provenance load-bearing.** Two
+     attacks work against an unauthenticated loopback service with no further effort: any
+     page in the operator's browser can POST to `127.0.0.1`, and a hostname an attacker
+     controls can be resolved to it, making their JavaScript same-origin and able to *read*
+     responses — key material included. So a token issued per process and present only in
+     served pages guards every state-changing request, and every request's `Host` must be one
+     the interface was configured for. It is not authentication and is not presented as one.
+   - **This uvicorn has no `install_signal_handlers` flag, and `serve()` takes the signals
+     anyway.** Design D1 asked for the flag; the installed version wraps `serve()` in
+     `capture_signals()`, which calls `signal.signal` for SIGINT and SIGTERM and would
+     replace the handlers `Runtime.install_signal_handlers` set — so Ctrl-C would have
+     stopped the web server and left the run going. One subclass with that context manager
+     made a no-op is the whole fix, and the process's signal handling is now byte-identical
+     to a run without the interface.
+   - **A port that cannot be bound had to be a *startup* failure, which meant binding before
+     the run.** The socket is taken in `cli.py` before `Runtime.run()` is called, so a clash
+     is reported before any traffic is processed and the run does not continue with a
+     silently absent interface — the same posture milestone 5 established for a configured
+     database that cannot be reached.
+   - **The feed could not be built on the bus alone, and the reason is a real disagreement
+     between two artifacts.** `web-dashboard` requires the feed to carry whether a record was
+     a duplicate; `IngressPipeline.ingest` drops duplicates *before* fan-out, which is right —
+     a duplicate is a copy the platform has decided not to act on twice. But **a display is
+     not an actor**: 21.2% of the corpus is duplicates, and a feed built on the bus would have
+     shown a busy mesh as quiet while the dedup counters on the same screen said otherwise.
+     The pipeline gained one narrow observer, on the contact sink's contract, told about every
+     reception including the dropped ones. D4's actual concern — that the bus's subscriber
+     list must not grow with the number of browser tabs — is untouched: still exactly one
+     subscription for the process.
+   - **A send from a browser cannot be a request that waits for it.** `DirectMessenger.send`
+     spends four attempts across several seconds; a POST that awaited it would be a browser
+     that appeared to hang. The record is written at submission, the send runs as its own
+     task, and the conversation shows `awaiting transmission` → `attempt N` → the outcome.
+     That is only possible because the record is written *before* the transmission and updated
+     in place — design D7's `UNIQUE (entity_public_key, ref)` earning its keep somewhere it
+     was not designed for.
+   - **A conversation needed a second home, not a cache.** Chat has to work with no database
+     and during an outage of one (`web-chat`), so the panel keeps a bounded in-memory log fed
+     by the same offer the durable sink gets, and says plainly when that is all there is. The
+     messenger's single record sink became a list: a run can be both recording durably and
+     showing a conversation in a browser, and those are two independent consumers of one
+     offer rather than one wrapping the other.
+   - **Milestone 6's keep-alive acknowledgement is still owed.** The 5-byte form
+     `parse_ack` refuses was recorded then as "the one thing milestone 8 must add before it
+     can keep-alive". It is not added: being a *client* of somebody else's room server is not
+     one of §8's four areas, and building the parser without the client would have been
+     untested code with no caller. Named again so the note is not lost a second time.
+   - **The corpus is unchanged and says so mechanically.** A replay with the whole interface
+     wired in — the feed hub subscribed and observing, a connection open and never drained,
+     the record sink attached — produces byte-identical delivered, duplicate, considered,
+     contact and path counts to one without. `protocol/` gained nothing.
+   - **Repeated runs found a probabilistic assertion milestone 6 left behind.** Task 16.4
+     asked for the class milestone 7 found twice;
+     `test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities` generated a
+     room-server identity at random and then asserted that none of the corpus's 57 anonymous
+     requests was addressed to it — false about 5% of the time, at 1 in 256 per frame. The
+     identity is now chosen to avoid every destination hash in the corpus, so the test asserts
+     what it means to assert. **A test that generates a key and then asserts something about
+     its node hash is asserting something §3 makes occasionally false**, and the fix is always
+     to fix the byte deliberately.
 9. **Hardening.** Container, compose, build script, auth.
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at

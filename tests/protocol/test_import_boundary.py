@@ -21,11 +21,21 @@ FORBIDDEN_ROOTS = frozenset(
         "sighop.radio",
         "sighop.db",
         "sighop.net",
+        "sighop.web",
         "asyncio",
         "serial",
         "serial_asyncio",
+        # Milestone 8's packages, named for the same reason the database drivers
+        # are: an import of `fastapi` inside `protocol/` breaks the layering just
+        # as surely without ever mentioning `sighop.web`.
+        "fastapi",
+        "starlette",
+        "uvicorn",
+        "jinja2",
     }
 )
+
+WEB_ROOTS = ("sighop.web", "fastapi", "starlette", "uvicorn", "jinja2")
 
 PROTOCOL_DIR = Path(sighop.protocol.__file__).parent
 
@@ -95,6 +105,50 @@ def test_protocol_imports_nothing_from_the_database_layer() -> None:
         f"{offenders} reach the database layer from protocol/, which DESIGN.md §11 "
         "forbids: `db/` is a peer of `net/`, not a layer beneath `protocol/`"
     )
+
+
+def test_protocol_imports_nothing_from_the_web_layer() -> None:
+    """Milestone 8's half of the same rule.
+
+    `web/` is the second renderer, on the far side of the layering from
+    `protocol/`: the codec is pure functions over bytes and gains nothing from
+    milestone 8. Naming the framework packages as well as `sighop.web` is what
+    makes that checkable — the way a web dependency actually arrives in a codec
+    module is a stray `from fastapi import ...` for a type, not an import of
+    this project's own package.
+    """
+    offenders: dict[str, list[str]] = {}
+    for path in _module_files():
+        names = _imported_names(path.read_text(), f"sighop.protocol.{path.stem}")
+        found = sorted(
+            name
+            for name in names
+            for root in WEB_ROOTS
+            if name == root or name.startswith(f"{root}.")
+        )
+        if found:
+            offenders[path.name] = found
+    assert not offenders, (
+        f"{offenders} reach the web layer from protocol/, which DESIGN.md §11 forbids: "
+        "`web/` renders what `protocol/` decodes and the dependency runs one way"
+    )
+
+
+def test_the_boundary_test_would_catch_a_deliberate_web_import() -> None:
+    """The web half of the check, only worth having if it fails when it should."""
+    source = (
+        "from fastapi import APIRouter\n"
+        "import uvicorn\n"
+        "from sighop.web.serialize import rx_record\n"
+    )
+    names = _imported_names(source, "sighop.protocol.packet")
+    assert _violations(names) == {
+        "fastapi",
+        "fastapi.APIRouter",
+        "uvicorn",
+        "sighop.web.serialize",
+        "sighop.web.serialize.rx_record",
+    }
 
 
 def test_the_boundary_test_would_catch_a_deliberate_database_import() -> None:

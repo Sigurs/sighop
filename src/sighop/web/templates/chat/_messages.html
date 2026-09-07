@@ -1,0 +1,39 @@
+{# The message list alone, refreshed in place so a received message appears
+   without a reload and a send's state moves as it progresses. A GET: opening,
+   scrolling and refreshing a conversation transmit nothing. #}
+{% import "_identity.html" as identity %}
+<div id="conversation" hx-get="/chat/{{ entity_key }}/{{ peer_key }}/messages"
+     hx-trigger="every 3s" hx-swap="outerHTML">
+{% if messages %}
+<table class="conversation">
+  <thead>
+    <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
+  </thead>
+  <tbody>
+    {% for message in messages %}
+    <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
+      <td class="mono">{{ message.handled_at.isoformat() }}</td>
+      <td>
+        {%- if message.inbound -%}
+          {{ identity.identity(peer, key=false) }}
+        {%- else -%}
+          {{ entity.name }}
+        {%- endif -%}
+      </td>
+      <td class="message-text">
+        {% if message.displayable %}
+          {{ message.text }}
+        {% else %}
+          <span class="undisplayable">not valid text</span>
+          <span class="mono">{{ message.raw }}</span>
+        {% endif %}
+      </td>
+      <td class="mono message-state">{{ message.state }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty"><strong>No messages yet.</strong> Nothing has been sent or received here.</p>
+{% endif %}
+</div>

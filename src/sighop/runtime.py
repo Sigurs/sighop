@@ -177,6 +177,20 @@ class Runtime:
     (`database` spec) — it must be reported before a pipeline exists, and before
     anything could be transmitted."""
 
+    services: tuple[Callable[[], Awaitable[None]], ...] = ()
+    """Long-running work this run should carry that is not the radio's.
+
+    Each is started alongside the runtime's own tasks and cancelled when the run
+    stops (milestone 8 design D2). The web interface is the first and, for now,
+    the only one — and it arrives as an opaque callable precisely so that
+    `runtime.py` imports nothing from `web/` and `web/` imports nothing from
+    here. `cli.py` is the single module that knows both.
+
+    A service that raises is reported and does not take the run with it: the
+    radio is the run, and an interface failing is a reason to lose the interface,
+    not the node.
+    """
+
     bus: NetworkBus = field(init=False)
     pipeline: IngressPipeline = field(init=False)
     scheduler: TxScheduler = field(init=False)
@@ -192,6 +206,9 @@ class Runtime:
     _unserved_rooms: list[str] = field(init=False, default_factory=list)
     bots: BotHost = field(init=False)
     _unrun_bots: list[str] = field(init=False, default_factory=list)
+    _tx_watcher: Callable[[Submission, TxOutcome, dt.datetime], None] | None = field(
+        init=False, default=None
+    )
     _stop: asyncio.Event = field(init=False)
     _ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
@@ -262,6 +279,10 @@ class Runtime:
             on_event=self._on_dm_event,
             logger=self.logger,
             acks=self.acks,
+            # Where sent and received messages go to be made durable. None with
+            # no database and on a replay, which is the whole of "this run is
+            # not recording conversations" (design D8, D13).
+            records=None if self.persistence is None else self.persistence.dm_sink(),
         )
         self.path_bodies = PathBodyReader(
             paths=self.pipeline.paths,
@@ -313,6 +334,37 @@ class Runtime:
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, self.stop)
 
+    def watch_traffic(
+        self,
+        *,
+        on_reception: Callable[[RxRecord, bool], None] | None = None,
+        on_transmission: Callable[[Submission, TxOutcome, dt.datetime], None] | None = None,
+    ) -> None:
+        """Let something watch the traffic this run handles (milestone 8).
+
+        Two plain callables, both on the contact sink's contract — neither may
+        await and neither may raise. `on_reception` is told about duplicates as
+        well, because a display that showed only what survived deduplication
+        would disagree with the deduplication counters beside it.
+
+        Callables rather than an object, for design D2's reason: the only thing
+        that watches traffic today is the web panel, and `runtime.py` must not
+        learn that `web/` exists.
+        """
+        if on_reception is not None:
+            self.pipeline.observer = on_reception
+        if on_transmission is not None:
+            self._tx_watcher = on_transmission
+
+    def watch_messages(self, sink: object) -> None:
+        """Attach another consumer of what the messenger sends and receives.
+
+        The durable one is wired at construction; this is for a *display*, which
+        wants the same records and must not displace the recording of them. Same
+        contract: never awaits, never raises.
+        """
+        self.messenger.add_record_sink(sink)  # type: ignore[arg-type]
+
     def set_radio(self, radio: RadioParams | None) -> None:
         """Adopt a readback — at startup, and again after every reconnect."""
         self.radio = radio
@@ -345,6 +397,10 @@ class Runtime:
             asyncio.create_task(self._status_loop(), name="status-loop"),
             send,
         ]
+        tasks.extend(
+            asyncio.create_task(self._run_service(index, service), name=f"service-{index}")
+            for index, service in enumerate(self.services)
+        )
         consume = asyncio.create_task(self._consume(), name="rx-consume")
         stopping = asyncio.create_task(self._stop.wait(), name="stop")
         try:
@@ -383,6 +439,30 @@ class Runtime:
             self._started = True
             self._release()
             self._write(self._status_line())
+
+    async def _run_service(
+        self, index: int, service: Callable[[], Awaitable[None]]
+    ) -> None:
+        """Run one attached service, containing its failure (design D2).
+
+        Cancellation is re-raised — that is the run shutting the service down,
+        and swallowing it would leave the task looking like it had finished on
+        its own. Anything else is reported and ends here: the run continues
+        without the service rather than the service ending the run.
+        """
+        assert self.logger is not None
+        try:
+            await service()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.logger.error(
+                "service_failed",
+                outcome="error",
+                service=index,
+                error=repr(exc),
+                detail="the run continues without it; the radio is unaffected",
+            )
 
     async def _restore(self) -> None:
         """Load contacts, paths and rooms, then start the writers and probe."""
@@ -747,9 +827,23 @@ class Runtime:
         A gated run resolves everything as `suppressed`, and a feed that showed
         only what reached the air would render that as silence.
         """
+        at = self.clock.now()
+        if self._tx_watcher is not None:
+            # Before the durable write and outside it: a watcher is a display,
+            # and a run with no database still has transmissions to show.
+            try:
+                self._tx_watcher(submission, outcome, at)
+            except Exception as exc:  # pragma: no cover - a broken watcher
+                assert self.logger is not None
+                self.logger.error(
+                    "tx_watcher_error",
+                    outcome="error",
+                    packet_id=outcome.packet_id,
+                    error=repr(exc),
+                )
         if self.persistence is None:
             return
-        self.persistence.record_tx(submission, outcome, at=self.clock.now())
+        self.persistence.record_tx(submission, outcome, at=at)
 
     def _on_dm_event(self, event: DirectMessageEvent) -> None:
         self._print(render_dm_event(event))
@@ -931,6 +1025,8 @@ class Runtime:
             entities=self.persistence.restored.entities,
             contacts=self.persistence.restored.contacts,
             paths=self.persistence.restored.paths,
+            conversations=self.persistence.restored.conversations,
+            direct_messages=self.persistence.restored.direct_messages,
             writing=self.persistence.writes_enabled,
             not_writing_because=(
                 "a replay carries an earlier session's timestamps; "

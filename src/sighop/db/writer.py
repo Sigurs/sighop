@@ -69,6 +69,17 @@ class WriteBehind[T]:
         self.failed = 0
         """Rows whose write did not land. A gap in a feed, counted as one."""
 
+        self.refused = 0
+        """Offers a refusing buffer turned away. Zero for a `drop_oldest` one.
+
+        Counted separately from `discarded` rather than added to it, because
+        what a refusal costs depends on who was refused. A refused *contact* is
+        not lost — the caller keeps its unpersisted marker set and the recovery
+        flush writes it (design D16) — so counting it as "will never reach the
+        database" would be a lie the status line tells. A refused direct message
+        has no such second chance, which is exactly why the count is here to be
+        read rather than folded into another number (milestone 8 design D8)."""
+
     # --- Offering ----------------------------------------------------------
 
     def offer(self, item: T) -> bool:
@@ -80,6 +91,7 @@ class WriteBehind[T]:
         """
         if len(self._items) >= self.capacity:
             if not self.drop_oldest:
+                self.refused += 1
                 self._wake.set()
                 return False
             self._items.popleft()
@@ -159,5 +171,6 @@ class WriteBehind[T]:
         return {
             f"{self.name}_written": self.written,
             f"{self.name}_discarded": self.discarded,
+            f"{self.name}_refused": self.refused,
             f"{self.name}_pending": self.pending,
         }
