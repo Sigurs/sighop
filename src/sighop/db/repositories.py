@@ -96,6 +96,15 @@ class EntityExistsError(RuntimeError):
     """An identity with this public key is already stored. Names the existing one."""
 
 
+class EntityRoleError(RuntimeError):
+    """The role asked for disagrees with what this identity adverts as.
+
+    One rule, here rather than in a command handler, because the browser stores
+    a bot's identity through the same call: a refusal an operator meets in one
+    surface has to be the same refusal in the other.
+    """
+
+
 # --- Entities ---------------------------------------------------------------
 
 
@@ -178,6 +187,14 @@ def advert_config_for(
     }
 
 
+def _node_type_name(node_type: NodeType | int) -> str:
+    """What a node type is called, without assuming it is one we know."""
+    try:
+        return NodeType(int(node_type)).name
+    except ValueError:
+        return f"type_{int(node_type)}"
+
+
 def entity_type_for(node_type: NodeType | int) -> str:
     try:
         return ENTITY_TYPES.get(NodeType(int(node_type)), DEFAULT_ENTITY_TYPE)
@@ -203,7 +220,28 @@ class EntityRepository:
         enabled: bool = True,
         created_at: dt.datetime | None = None,
     ) -> Outcome[EntityRecord]:
-        """Seal the seed, then write the row. The sealing is not a database step."""
+        """Seal the seed, then write the row. The sealing is not a database step.
+
+        A public key that is already stored is refused *here*, naming the row
+        that holds it, for the reason `RoomRepository.create` and
+        `BotRepository.create` refuse here: the rule belongs to the table rather
+        than to whichever surface reached it, and a second surface reimplementing
+        it is how two surfaces end up disagreeing. The unique constraint stays
+        the backstop — this check loses a race and the constraint does not.
+        """
+        if entity_type == BOT_ENTITY_TYPE and int(node_type) != int(NodeType.CHAT):
+            raise EntityRoleError(
+                f"this identity adverts as {_node_type_name(node_type)}; a bot "
+                "presents itself to the mesh as a chat node, indistinguishable "
+                "from a companion. Store it with node type CHAT"
+            )
+        existing = await self.get(identity.public_key)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise EntityExistsError(
+                f"public key {identity.public_key.hex()} is already stored as "
+                f"entity {existing.value.name!r} ({existing.value.id}); the "
+                "stored row is unchanged"
+            )
         sealed = seal_seed(identity.seed, secret)
         record = EntityRecord(
             id=uuid.uuid4(),
@@ -257,6 +295,24 @@ class EntityRepository:
             return None if row is None else _record(row)
 
         return await self.database.run("get_entity", work)
+
+    async def get_by_id(self, entity_id: uuid.UUID) -> Outcome[EntityRecord | None]:
+        """One stored identity by its row id, with no key material.
+
+        The public key is what makes an identity an identity; the row id is what
+        a room or a bot is bound *by*, so the rules those tables enforce look up
+        this way round.
+        """
+
+        async def work(session: object) -> EntityRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(EntityRow).where(EntityRow.id == entity_id)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _record(row)
+
+        return await self.database.run("get_entity_by_id", work)
 
     async def load_all(
         self, secret: bytes, *, enabled_only: bool = False
@@ -864,6 +920,21 @@ class RoomRepository:
             created_at=ensure_utc(created_at or dt.datetime.now(dt.UTC), field="room.created_at"),
         )
 
+        # Being a room server is an explicit choice and never a side effect of
+        # having a room bound to you. The rule lives here rather than in a
+        # command handler because the browser creates rooms through this same
+        # call and has to meet the same refusal.
+        entity = await EntityRepository(database=self.database).get_by_id(entity_id)
+        if isinstance(entity, Succeeded) and entity.value is not None:
+            if entity.value.node_type is not NodeType.ROOM_SERVER:
+                raise EntityRoleError(
+                    f"{entity.value.name!r} adverts as "
+                    f"{_node_type_name(entity.value.node_type)}, not a room "
+                    "server; store the identity with node type ROOM_SERVER, "
+                    "because being a room server is an explicit choice and "
+                    "never a side effect of having a room bound to it"
+                )
+
         # Checked before the insert so the refusal can *name* the existing room,
         # which is what `sighop room create` prints. The unique constraint stays
         # the backstop: this check loses a race and the constraint does not.
@@ -921,10 +992,16 @@ class RoomRepository:
         guest_password_hash: str | None = None,
         guest_open: bool | None = None,
         clear_guest_password: bool = False,
+        allow_read_only: bool | None = None,
     ) -> Outcome[bool]:
         """Rotate a password. **Evicts nobody**, because membership is keyed on
         the public key recorded at first login (§7) — this changes only what a
-        *new* login is gated by."""
+        *new* login is gated by.
+
+        `guest_open` and `allow_read_only` are here for that reason rather than
+        by convenience: `PasswordPolicy` is the two hashes and those two flags,
+        and all four decide the same question — what a login that arrives now is
+        answered with. `None` for any of them leaves it as it was."""
 
         async def work(session: object) -> bool:
             row = (
@@ -942,6 +1019,8 @@ class RoomRepository:
                 row.guest_password_hash = guest_password_hash
             if guest_open is not None:
                 row.guest_open = guest_open
+            if allow_read_only is not None:
+                row.allow_read_only = allow_read_only
             return True
 
         return await self.database.run("set_room_passwords", work)

@@ -40,6 +40,7 @@ from sighop.db.repositories import (
     EntityLoadError,
     EntityRecord,
     EntityRepository,
+    EntityRoleError,
     LoadedEntity,
     RoomExistsError,
     RoomRecord,
@@ -905,28 +906,11 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    if args.bot and keyfile.node_type != NodeType.CHAT:
-        # A bot is a companion to every other node and adverts as one, so the
-        # keyfile has to say so too. Forcing the node type silently would make
-        # the stored identity disagree with the file it came from.
-        print(
-            f"{keyfile.path} adverts as {NodeType(keyfile.node_type).name}; a bot "
-            "presents itself to the mesh as a chat node, indistinguishable from a "
-            "companion. Create the identity with --node-type CHAT",
-            file=sys.stderr,
-        )
-        return 2
-
     async def store_it(store: EntityRepository) -> Outcome[EntityRecord]:
-        existing = await store.get(keyfile.public_key)
-        if isinstance(existing, Failed):
-            return existing
-        if existing.value is not None:
-            raise EntityExistsError(
-                f"{keyfile.path}: public key {keyfile.public_key.hex()} is already "
-                f"stored as entity {existing.value.name!r} "
-                f"({existing.value.id}); the stored row is unchanged"
-            )
+        # Neither the "already stored" refusal nor the "a bot adverts as CHAT"
+        # one is this command's: the browser imports through the same call and
+        # has to be refused in the same words. What stays here is the *file*
+        # this one was asked about, which the browser has no equivalent of.
         return await store.store(
             name=keyfile.name,
             identity=keyfile.identity,
@@ -938,8 +922,8 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
 
     try:
         outcome = asyncio.run(_with_store(database, store_it))
-    except EntityExistsError as exc:
-        print(str(exc), file=sys.stderr)
+    except (EntityExistsError, EntityRoleError) as exc:
+        print(f"{keyfile.path}: {exc}", file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
         print(str(outcome.error), file=sys.stderr)
@@ -1244,13 +1228,8 @@ def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
                 "name one exactly, or give a longer public key prefix"
             )
         entity = matches[0]
-        if entity.node_type is not NodeType.ROOM_SERVER:
-            raise EntityLoadError(
-                f"{entity.name!r} adverts as {entity.node_type!r}, not a room server; "
-                "create the identity with --node-type ROOM_SERVER, because being a "
-                "room server is an explicit choice and never a side effect of "
-                "having a room bound to it"
-            )
+        # "This identity is not a room server" is the repository's refusal, not
+        # this command's: the browser creates rooms through the same call.
         return await persistence.rooms.create(
             entity_id=entity.id,
             name=args.name,
@@ -1262,7 +1241,7 @@ def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
 
     try:
         outcome = asyncio.run(_with_rooms(database, work))
-    except (RoomExistsError, EntityLoadError) as exc:
+    except (RoomExistsError, EntityLoadError, EntityRoleError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
@@ -1596,20 +1575,17 @@ async def _seed_greeted(persistence: Persistence, record: BotRecord) -> Outcome[
     this runs from the command line with no runtime: the durable table *is* the
     platform's memory of the mesh, which is exactly what is being seeded from.
     """
-    from sighop.bots.greeter import SEEDED, greeted_key
+    from sighop.bots.greeter import seeded_entries
 
     contacts = await persistence.contacts.load_all()
     if isinstance(contacts, Failed):
         return contacts
-    entries: dict[str, object] = {
-        greeted_key(contact.public_key): {
-            "outcome": SEEDED,
-            "at": _now_iso(),
-            "name": contact.display_name,
-        }
-        for contact in contacts.value
-    }
-    return await persistence.bot_state.set_many(record.id, entries)
+    # Which contacts, which key and which record are the greeter's decision and
+    # live beside its key convention: the browser creates greeters too, and the
+    # debt a new one starts with must be the same either way.
+    return await persistence.bot_state.set_many(
+        record.id, seeded_entries(contacts.value, at=_now_iso())
+    )
 
 
 def _now_iso() -> str:
@@ -1927,7 +1903,7 @@ def _bot_greeted(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
     command and one contact, which is the granularity a decision to message a
     stranger deserves.
     """
-    from sighop.bots.greeter import OPERATOR, greeted_key, greeted_public_key
+    from sighop.bots.greeter import greeted_key, greeted_public_key, operator_entry
     from sighop.net.contacts import ContactError
 
     if args.clear and args.set_greeted:
@@ -1963,9 +1939,7 @@ def _bot_greeted(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
             return ("clear", record, (contact, cleared.value))
         if args.set_greeted:
             written = await persistence.bot_state.set(
-                record.id,
-                key,
-                {"outcome": OPERATOR, "at": _now_iso(), "name": contact.display_name},
+                record.id, key, operator_entry(contact, at=_now_iso())
             )
             if isinstance(written, Failed):
                 return written
@@ -2134,6 +2108,7 @@ def _attach_web(
         port=args.web_port,
         feed=hub,
         conversations=conversations,
+        sealing_secret=_web_sealing_secret(args, runtime),
     )
     # The event first, then the output. Both are unconditional: there is no
     # option that serves a non-loopback bind without saying what it exposes.
@@ -2143,6 +2118,32 @@ def _attach_web(
         print(line, file=stream)
     runtime.services = (*runtime.services, interface.service())
     return interface
+
+
+def _web_sealing_secret(
+    args: argparse.Namespace, runtime: Runtime
+) -> bytes | None:
+    """`SIGHOP_SECRET_KEY` for the panel, or `None` when nothing is sealed.
+
+    Design D1: the panel exports a *stored* identity, which means opening a
+    sealed seed, which needs the key this module already reads. It is passed
+    here rather than reached for inside `web/` because `cli.py` is the one
+    module that composes both sides.
+
+    Only when a database is configured: a run with no database has no sealed
+    seed to open, and demanding the variable would make the panel refuse to
+    start for a capability that run does not have. The run itself has already
+    failed by now if the variable was needed and missing, so this cannot be the
+    place a bad value is first discovered.
+    """
+    if runtime.persistence is None:
+        return None
+    try:
+        return Config.from_environment(
+            database_url=getattr(args, "database_url", None)
+        ).secret_key_bytes()
+    except ConfigError:  # pragma: no cover - the run would already have failed
+        return None
 
 
 async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int:

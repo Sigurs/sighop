@@ -81,10 +81,28 @@
 ## 12. Admin and configuration (`web-admin`)
 
 - [x] 12.1 Build the identities view — list, create, enable, disable, import, export — through the repository calls `sighop keys` uses, stating that an exported keyfile is an unencrypted seed protected only by its permissions; verify a test asserts a UI-created identity is indistinguishable from a CLI-created one, and that the export warning is present
+
+  > **Corrected 2026-09-12 by `webui-write-parity`.** This was checked while its
+  > **create**, **import** and **export** clauses had not been built: the page
+  > listed, enabled and disabled, and stated what an export *is* without offering
+  > one. `webui-write-parity` delivers all three, so the checkbox above is true
+  > only when read together with that change.
 - [x] 12.2 Warn before disabling an identity a room or bot is bound to, naming what it serves; verify a test asserts the warning names the room or bot
 - [x] 12.3 Build the rooms view — create, list with member and message counts, set and rotate passwords, set guest access and read-only fallback, set and clear the two retention bounds — through the room repositories, never accepting a password in a query string and never reflecting one in a page or a request event; verify a test asserts a submitted password appears in no response body and in no emitted event
+
+  > **Corrected 2026-09-12 by `webui-write-parity`.** This was checked while its
+  > **create** clause and its **read-only fallback** control had not been built:
+  > `allow_read_only` was displayed on the page and could not be set from it.
+  > `webui-write-parity` delivers both, so the checkbox above is true only when
+  > read together with that change.
 - [x] 12.4 State the consequence before applying: a rotation requires members to log in again; a retention bound removes N stored messages; verify tests asserting both are stated with the count before the action is applied
 - [x] 12.5 Build the bots view — list, create, enable, disable, switch mode, edit driver configuration, read durable state including the greeting records — through the bot repositories, refusing an invalid configuration with the driver's own reason; verify tests for a refused configuration leaving the stored one unchanged and for the greeting records being readable
+
+  > **Corrected 2026-09-12 by `webui-write-parity`.** This was checked while its
+  > **create** clause had not been built, and while the driver configuration was
+  > edited as one JSON object rather than one validated key at a time as
+  > `sighop bot set` does. `webui-write-parity` delivers both, so the checkbox
+  > above is true only when read together with that change.
 - [x] 12.6 Confirm a switch to active mode explicitly, stating that the bot will transmit unprompted; verify a test asserts the mode is unchanged until the confirmation is submitted
 - [x] 12.7 Build the radio view from the board's readback, stating that the board does not persist a change and that a reset reverts to its build defaults; verify a test asserts the statement is present and that an unanswered parameter shows as absent
 

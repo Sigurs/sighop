@@ -968,6 +968,40 @@ Reverse-proxy trust is deliberately *not* supported in v1. It is a reasonable de
 pattern, but "trust this header" is a footgun that turns one proxy misconfiguration into
 unauthenticated key access, and it can be added later without disturbing anything.
 
+### What the interface deliberately does not expose
+
+The browser reaches every `sighop` capability an operator administers a node with, with two
+exceptions. Both are deliberate, both are stated *in the interface* at the point an
+operator would look for them rather than only here, and neither is a gap waiting to be
+closed by whoever notices it first.
+
+- **Applying a migration.** `sighop db upgrade` has no browser equivalent. §6 makes
+  applying a migration an act an operator takes on purpose and never a side effect of
+  starting something, and this build's port has no authentication — so offering it here
+  would make schema migration reachable by anything that can route to that port. The schema
+  page shows the applied and expected revisions, says the two disagree when they do, gives
+  the command that reconciles them, and says why the button is not there.
+- **Generating the sealing secret.** `sighop keys secret` has no browser equivalent for a
+  smaller reason: it prints a value once that must be kept and must never be regenerated —
+  losing it makes every stored identity unrecoverable — and a browser is a poor place to
+  hand somebody something they must not lose. The identities page says so.
+
+`capture`, `monitor` and `run` are not candidates at all and the reasoning is worth
+recording: `run` *is* the process serving the panel, and `capture` and `monitor` are
+offline tools against a serial device a running platform already holds open.
+
+**A room post is a stored row, not a transmission.** `sighop room post` is
+`MessageRepository.store` plus one length check: it does not go through `RoomServer`, and
+whichever run is serving that room picks the row up through its own push loop. The browser
+posts through the same one call, which means three things an operator can be surprised by,
+and the confirmation says all three: delivery happens after the reference implementation's
+hold rather than immediately; a closed transmit gate does not refuse the post, it delays
+what goes on the air; and a post to a room *this* run does not serve is stored and
+delivered by nobody until a run that loads that room's identity is started. None of that is
+new behaviour — it is how the command has worked since milestone 6. The panel is simply the
+first surface where somebody might expect otherwise, because it is showing them a running
+platform at the time.
+
 ---
 
 ## 9. Logging
@@ -1764,6 +1798,64 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      `test_corpus_pipeline.py` pass unchanged. **Where the operator's hand was is not a
      property of the bytes**, and the corpus is a sample of the mesh rather than of the
      project's own milestones.
+
+   *What closing the write gap turned up (`webui-write-parity`).* The panel milestone 8
+   shipped could watch everything and change almost nothing: eleven pages read, five wrote,
+   and the five were chosen by what was easy to reach. Closing that produced five findings,
+   the first of which is about this document's own record-keeping.
+   - **Three of milestone 8's checkboxes claimed work that was never done, and the shape of
+     the mistake is repeatable.** Tasks 12.1, 12.3 and 12.5 each bundled a list of verbs —
+     "list, create, enable, disable, import, export" — and each named *one* test as its
+     verification. The test passed, the box was checked, and create, import, export and the
+     read-only-fallback control had never been built. The identities page went as far as
+     stating what an exported keyfile *is* without offering one. **A task that lists six
+     verbs and verifies one is a task that will be marked complete when it is one-sixth
+     done**; the three are now annotated in place rather than quietly re-checked.
+   - **Four rules were living in `cli.py` rather than in the code that owns them.** "This
+     public key is already stored", "a bot adverts as a chat node", "a room runs on a
+     room-server identity" and "a new greeter is seeded from the contacts already known"
+     were all implemented in command handlers. A second surface reaching the same
+     repositories is what exposed them: writing them again in a route would have been two
+     implementations of one rule, so each moved to the repository or the driver that owns
+     it. **The browser did not need them re-written; it needed them put where they
+     belonged**, and the command line now gets its refusals from the same place.
+   - **An export is dated from the row, not from the moment it is asked for.** A keyfile the
+     panel serves carries the stored identity's `created_at`, so two exports of one identity
+     are byte-identical. Dating it "now" would have put a field that is *about the identity*
+     under the control of when somebody clicked.
+   - **A replay run still cannot be administered, at any file size.** Milestone 8 found this
+     with a 34-frame capture; it was retried here with a 132 MB one (1200× the corpus's
+     longest session) and the run still outlived the first request and not the second. The
+     exercise was done against the same database with the same `create_app`, served
+     standalone — which is the honest way to walk the admin surface without a radio, and
+     worth writing down before somebody inflates a capture file a third time.
+   - **The two surfaces agree on the development database.** An identity created in the
+     browser, exported, and read back by `sighop keys show` round-trips; a re-import is
+     refused by both surfaces in the same words, naming the same row. A room and a bot
+     created in the browser appear in `sighop room list` and `sighop bot list` with the
+     read-only fallback the browser set; a greeting record cleared in the browser makes
+     `sighop bot greeted` report that contact as one the bot will greet again. The
+     browser-created greeter seeded the same six contacts `sighop bot create` would have.
+   - **The exit criterion is met, and the read-only fallback is what made it possible.**
+     Live against the Heltec V4 on 869.618 MHz: one zero-hop advert for the
+     browser-created room server (116 B, 1164 ms), after which a stock MeshCore client
+     added it and logged in. **The login was admitted as `guest` by the read-only
+     fallback** — the flag set by a checkbox on the browser's create form, and the clause
+     milestone 8 marked done without building. Without it that login would have been
+     answered with silence, which is what the firmware does, and there would have been no
+     member to deliver to. A post then composed and confirmed in Chromium was stored,
+     pushed `DIRECT h0` in 377.856 ms and acknowledged by the client, checksum `b3d7923e`
+     matching the push's own `expected_ack` — composed, confirmed, stored and delivered
+     with no command line anywhere in the chain. Session cost: five transmissions, 0.8% of
+     the hour.
+   - **A store of six identities started cleanly, which is the panel's collision rule
+     passing its real test.** Three of the six were created through the browser, and
+     `generate_identity(avoid_node_hashes=…)` is fed the loaded *and* the stored hashes;
+     they came up as `ac 05 7a 58 f4 4e`. The failure this prevents is not a bad row — it
+     is a run that will not start, and it is only ever observed at startup.
+   - **The exercise's capture was not appended to the corpus**, by milestone 8's own rule:
+     ten frames of `ADVERT`, `TXT_MSG` and `ACK`, all shapes the corpus already holds.
+     Where the operator's hand was is not a property of the bytes.
 9. **Hardening.** Container, compose, build script, auth.
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at

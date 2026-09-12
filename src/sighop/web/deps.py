@@ -40,6 +40,15 @@ class Panel:
     token: str
     logger: Logger
     feed: FeedHub | None = None
+    sealing_secret: bytes | None = None
+    """`SIGHOP_SECRET_KEY`, handed in by `cli.py` (design D1).
+
+    The panel needs it to *open* a stored seed, which is what an export is. It
+    is not panel state and is never rendered, logged or carried into an event;
+    `None` is an ordinary answer — a run with no database has nothing sealed —
+    and the pages that need it say so rather than failing.
+    """
+
     nonces: NonceStore = field(default_factory=NonceStore)
     chat: ConversationLog = field(default_factory=ConversationLog)
     """This run's own view of its conversations, which is the whole of chat on

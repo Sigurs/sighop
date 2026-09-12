@@ -60,7 +60,7 @@ from sighop.web.render import (
     persistence_view,
     queue_rows,
 )
-from sighop.web.routes import admin, chat, rooms
+from sighop.web.routes import admin, chat, keys, rooms
 from sighop.web.serialize import logged_packet
 from sighop.web.state import PanelState
 
@@ -119,12 +119,18 @@ def create_app(
     token: str | None = None,
     hosts: frozenset[str] | None = None,
     conversations: ConversationLog | None = None,
+    sealing_secret: bytes | None = None,
 ) -> FastAPI:
     """Build the panel over one read seam.
 
     Takes the state and the feed hub; the repositories arrive with the state,
     because `PanelState.persistence` is where they live and a second way to
     reach them would be a second answer to "is there a database".
+
+    `sealing_secret` is `SIGHOP_SECRET_KEY`, which `cli.py` already reads and is
+    the one module that composes both sides (design D1). It is needed only to
+    open a stored seed for an export; `None` is the default and every page that
+    would need it says so instead of failing.
 
     `hosts` is the set of `Host` header values this application will answer to.
     `None` turns that check off and is for an application that is not being
@@ -154,6 +160,7 @@ def create_app(
         token=issued,
         logger=log,
         feed=feed,
+        sealing_secret=sealing_secret,
         chat=conversations or ConversationLog(),
     )
     app.state.feed = feed
@@ -165,6 +172,7 @@ def create_app(
     app.add_middleware(RequestGuard, token=issued, hosts=hosts, logger=log)
     app.add_exception_handler(Exception, _error_page)
     app.include_router(admin.router)
+    app.include_router(keys.router)
     app.include_router(rooms.router)
     app.include_router(chat.router)
 
@@ -417,6 +425,10 @@ class WebInterface:
     feed: FeedHub | None = None
     conversations: ConversationLog | None = None
     logger: Logger | None = None
+    sealing_secret: bytes | None = None
+    """Handed in by `cli.py`, which reads it anyway (design D1). Never logged,
+    never rendered, and not part of `PanelState`: a secret is not panel state."""
+
     shutdown_grace: float = SHUTDOWN_GRACE_SECONDS
     _server: uvicorn.Server | None = field(default=None, init=False, repr=False)
 
@@ -430,6 +442,7 @@ class WebInterface:
         feed: FeedHub | None = None,
         conversations: ConversationLog | None = None,
         logger: Logger | None = None,
+        sealing_secret: bytes | None = None,
     ) -> WebInterface:
         """Take the listening socket now, or fail startup saying why.
 
@@ -456,6 +469,7 @@ class WebInterface:
             feed=feed,
             conversations=conversations,
             logger=logger or get_logger(component="web"),
+            sealing_secret=sealing_secret,
         )
 
     @property
@@ -520,6 +534,7 @@ class WebInterface:
             logger=self.logger,
             hosts=allowed_hosts(self.host, self.port),
             conversations=self.conversations,
+            sealing_secret=self.sealing_secret,
         )
 
     def service(self) -> Callable[[], Awaitable[None]]:

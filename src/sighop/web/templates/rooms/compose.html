@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+
+{% block title %}post · sighop{% endblock %}
+
+{% block content %}
+{% if room is none %}
+<h1>post to a room</h1>
+<p class="unavailable">
+  <strong>No such room.</strong> Nothing stored here carries that identifier.
+</p>
+{% else %}
+<h1>post to {{ room.name }}</h1>
+
+{% if refusal %}
+<p class="unavailable">
+  <strong>Refused, and nothing was stored.</strong> {{ refusal.reason }}
+</p>
+{% endif %}
+
+<p class="note">
+  The post is made as the room's <strong>own identity</strong> — the same author
+  every one of its own messages carries — and it reaches every member of the
+  room. Nothing is stored until the confirmation on the next page.
+</p>
+
+<form method="post" action="/rooms/{{ room.id }}/post">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>message
+      <textarea name="text" rows="4" cols="72"
+                maxlength="{{ limit }}">{{ refusal.value('text') if refusal else '' }}</textarea>
+    </label>
+  </p>
+  <p class="note">
+    A room keeps {{ limit }} bytes of text, which is all a stock client can
+    show. A longer post is refused here rather than truncated: you are present
+    and can be asked to shorten it, which is not true of a post arriving over
+    the air.
+  </p>
+  <button type="submit">compose…</button>
+</form>
+<p><a href="/rooms/{{ room.id }}">cancel, and change nothing</a></p>
+{% endif %}
+{% endblock %}

@@ -380,9 +380,10 @@ async def test_an_invalid_driver_configuration_leaves_the_stored_one_unchanged(
             client,
             app,
             f"/admin/bots/{bot.id}/config",
-            configuration='{"burst": "not a number"}',
+            key="burst",
+            value="not a number",
         )
-    assert response.status_code == 303
+    assert response.status_code == 400
 
     listed = await persistence.bots.list_all()
     assert isinstance(listed, Succeeded)
@@ -403,10 +404,7 @@ async def test_a_valid_driver_configuration_is_stored(database: Database) -> Non
 
     async with _live(app) as client:
         response = await _apost(
-            client,
-            app,
-            f"/admin/bots/{bot.id}/config",
-            configuration='{"burst": 3, "rate_per_hour": 2}',
+            client, app, f"/admin/bots/{bot.id}/config", key="burst", value="3"
         )
     assert response.status_code == 303
 

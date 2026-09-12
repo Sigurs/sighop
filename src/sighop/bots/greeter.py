@@ -53,6 +53,7 @@ and says so.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from sighop.bots.base import (
@@ -150,6 +151,32 @@ def greeted_public_key(key: str) -> bytes | None:
         return bytes.fromhex(key.removeprefix(GREETED_PREFIX))
     except ValueError:  # pragma: no cover - only a hand-written row reaches this
         return None
+
+
+def seeded_entries(contacts: Iterable[Contact], *, at: str) -> dict[str, object]:
+    """Every contact already known, as a record saying nothing is owed to it.
+
+    The debt a new greeter would otherwise start with (design D7): without this,
+    creating a greeter on a node that already knows fifty peers is a decision to
+    message fifty strangers. Which contacts, which key and which record are all
+    one decision and it lives here, beside the key convention, because the
+    command line and the browser both create greeters and must incur the same
+    debt — `sighop bot create` and the panel's create form call this with the
+    same durable contact table.
+    """
+    return {
+        greeted_key(contact.public_key): {
+            "outcome": SEEDED,
+            "at": at,
+            "name": contact.display_name,
+        }
+        for contact in contacts
+    }
+
+
+def operator_entry(contact: Contact, *, at: str) -> dict[str, object]:
+    """A record an operator set by hand, to excuse a contact from being greeted."""
+    return {"outcome": OPERATOR, "at": at, "name": contact.display_name}
 
 
 @dataclass(slots=True)

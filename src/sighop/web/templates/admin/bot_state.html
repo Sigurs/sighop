@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+
+{% block title %}clear bot state · sighop{% endblock %}
+
+{% block content %}
+{% if bot is none %}
+<h1>clear durable state</h1>
+<p class="unavailable"><strong>No such bot.</strong></p>
+{% else %}
+<h1>clear durable state: {{ bot.entity_name }}</h1>
+
+{% if cleared is not none %}
+<p class="note">
+  <strong>Cleared {{ cleared }} key(s)</strong> from
+  <span class="mono">{{ bot.entity_name }}</span>.
+</p>
+<p class="unavailable">{{ state_note }}</p>
+<p><a href="/admin/bots">back to bots</a></p>
+{% else %}
+<div class="guarded">
+  <p class="unavailable"><strong>{{ state_note }}</strong></p>
+  <p class="note">
+    This bot has stored <strong>{{ keys }}</strong> key(s). All of them go,
+    greeting records included, and there is no way to put them back.
+  </p>
+  <form method="post" action="/admin/bots/{{ bot.id }}/state/clear">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit">confirm: forget everything this bot recorded</button>
+  </form>
+  <p><a href="/admin/bots">cancel, and change nothing</a></p>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}

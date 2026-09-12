@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block title %}{{ record.name if record else 'identity' }} · sighop{% endblock %}
+
+{% block content %}
+{% if record is none %}
+<h1>identity</h1>
+<p class="unavailable">
+  <strong>No such identity.</strong> Nothing stored here carries that id.
+</p>
+{% else %}
+<h1>{{ record.name }}</h1>
+
+<table class="counters">
+  <tbody>
+    <tr><td>name</td><td class="mono">{{ record.name }}</td></tr>
+    <tr><td>role</td><td class="mono">{{ record.type }}</td></tr>
+    <tr><td>adverts as</td>
+        <td class="mono">{{ record.node_type.name if record.node_type.name is defined
+                            else record.node_type }}</td></tr>
+    <tr><td>public key</td><td class="mono">{{ record.public_key.hex() }}</td></tr>
+    <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td></tr>
+    <tr><td>enabled</td><td class="mono">{{ 'yes' if record.enabled else 'no' }}</td></tr>
+    <tr><td>created</td><td class="mono">{{ record.created_at.isoformat() }}</td></tr>
+    <tr><td>loaded by this run</td>
+        <td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
+    <tr><td>serving</td>
+        <td class="mono">{{ serving|join(', ') if serving else '—' }}</td></tr>
+  </tbody>
+</table>
+
+<h2>advert configuration</h2>
+<table>
+  <thead><tr><th class="mono">key</th><th class="mono">value</th></tr></thead>
+  <tbody>
+    {% for key, value in record.advert_config.items()|sort %}
+    <tr><td class="mono">{{ key }}</td>
+        <td class="mono">{{ 'none' if value is none else value }}</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<p class="note">
+  No seed and no ciphertext appears on this page, and there is no option that
+  puts one here: the stored row this is drawn from holds neither. The seed is
+  sealed under <span class="mono">SIGHOP_SECRET_KEY</span>.
+</p>
+
+<h2>export</h2>
+{% if can_seal %}
+<p><a href="/admin/identities/{{ record.id }}/export">export this identity…</a></p>
+<p class="note">{{ download_note }}</p>
+{% else %}
+<p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
+{% endif %}
+
+<p><a href="/admin/identities">back to identities</a></p>
+{% endif %}
+{% endblock %}

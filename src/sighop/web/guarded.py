@@ -1,11 +1,15 @@
 """Guarded actions: confirm, then act, and record it (design D10).
 
-Three of the panel's actions are not ordinary configuration changes:
+Five of the panel's actions are not ordinary configuration changes:
 
 * **revealing a private key** — the material that *is* an identity;
+* **exporting a private key** — the same material, written out as a file that
+  leaves the platform;
 * **enabling transmission** — turning a receive-only node into one that emits;
 * **raising the airtime ceiling** — above a limit that on EU 868 is legal
-  rather than merely configured.
+  rather than merely configured;
+* **posting to a room** — which reaches every member of it and cannot be
+  unsent.
 
 §8 requires each to be re-confirmed and logged as its own wide event with the
 acting user recorded. There is no acting user until milestone 9, and that is the
@@ -25,7 +29,9 @@ The pattern is deliberately not "a link that does it":
    interesting one.
 
 A nonce is spent when it is used, so a confirmation page cannot be replayed by
-reloading, and expires so an abandoned one does not stay live all session.
+reloading, and expires so an abandoned one does not stay live all session. It
+names its **target** as well as its action, so a confirmation minted for one
+identity or one room cannot be spent on another.
 """
 
 from __future__ import annotations
@@ -46,6 +52,8 @@ MAX_OUTSTANDING = 64
 REVEAL_KEY = "reveal_private_key"
 ENABLE_TRANSMIT = "enable_transmit"
 RAISE_CEILING = "raise_airtime_ceiling"
+EXPORT_KEY = "export_private_key"
+POST_TO_ROOM = "post_to_room"
 
 ACTION_DESCRIPTIONS = {
     REVEAL_KEY: (
@@ -62,6 +70,16 @@ ACTION_DESCRIPTIONS = {
         "raises the airtime ceiling above the regulatory default. On EU 868 the "
         "10% default is a legal limit, not a tuning knob: raising it is a "
         "decision about what this station is permitted to do, not a preference."
+    ),
+    EXPORT_KEY: (
+        "writes this identity's private seed out of the platform as a keyfile. "
+        "The file is the identity: anyone holding it can transmit as this node "
+        "and read every direct message sent to it."
+    ),
+    POST_TO_ROOM: (
+        "posts to this room as the room's own identity. A post reaches every "
+        "member of the room and cannot be unsent — it is not a configuration "
+        "change, and there is no version of it that only some members see."
     ),
 }
 

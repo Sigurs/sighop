@@ -20,7 +20,7 @@ from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.net.contacts import Contact
 from sighop.protocol.identity import generate_identity
-from sighop.protocol.payloads import Permission, WireText
+from sighop.protocol.payloads import NodeType, Permission, WireText
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.guard import TOKEN_FIELD
 from sighop.web.routes.rooms import PAGE_SIZE
@@ -43,7 +43,13 @@ def _live(app: FastAPI) -> httpx2.AsyncClient:
 async def _room(database: Database, *, name: str = "[redacted]"):
     persistence = Persistence(database=database)
     entity = await persistence.entities.store(
-        name=f"{name}-host", identity=generate_identity(), secret=SECRET
+        name=f"{name}-host",
+        identity=generate_identity(),
+        secret=SECRET,
+        # A room is bound to an identity that adverts as a room server, which
+        # `RoomRepository.create` now enforces for every caller rather than only
+        # for the command line.
+        node_type=NodeType.ROOM_SERVER,
     )
     assert isinstance(entity, Succeeded)
     room = await persistence.rooms.create(

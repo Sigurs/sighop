@@ -10,6 +10,9 @@
   {% if subject %}
   <p class="note">Target: <span class="mono">{{ subject }}</span></p>
   {% endif %}
+  {% if extra_note %}
+  <p class="note">{{ extra_note }}</p>
+  {% endif %}
   <p class="note">
     It is confirmed here rather than performed by a link, and it is recorded as
     its own event whether it succeeds or is refused. This build has no

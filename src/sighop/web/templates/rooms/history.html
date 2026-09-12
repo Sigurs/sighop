@@ -6,6 +6,9 @@
 
 {% block content %}
 {% if room %}
+<p><a href="/rooms/{{ room.id }}/post">post to this room…</a></p>
+{% endif %}
+{% if room %}
 <h1>{{ room.name }} — history</h1>
 
 {{ collection.state(posts, "messages") }}

@@ -6,6 +6,13 @@
 {% block content %}
 <h1>identities</h1>
 
+{% if refusal %}
+<p class="unavailable">
+  <strong>Refused.</strong> {{ refusal.reason }}
+  Nothing was stored.
+</p>
+{% endif %}
+
 <h2>loaded by this run</h2>
 {% if loaded %}
 <table>
@@ -46,7 +53,7 @@
     {% for record in stored %}
     {% set serving = bindings.get(record.id|string, []) %}
     <tr>
-      <td>{{ record.name }}</td>
+      <td><a href="/admin/identities/{{ record.id }}">{{ record.name }}</a></td>
       <td class="mono">{{ record.type }}</td>
       <td class="mono">{{ record.public_key.hex() }}</td>
       <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
@@ -65,6 +72,7 @@
           {% endif %}
           <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>
         </form>
+        <a href="/admin/identities/{{ record.id }}/export">export…</a>
       </td>
     </tr>
     {% endfor %}
@@ -72,12 +80,89 @@
 </table>
 {% endif %}
 
+<h2>create an identity</h2>
+{% if not can_seal %}
+<p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
+{% else %}
+<p class="note">
+  The key is generated in this process and sealed straight into the store — the
+  two steps <span class="mono">sighop keys new</span> and
+  <span class="mono">sighop keys import</span> take, with no keyfile in between.
+  The generated node hash avoids every one this run knows about, because two
+  local identities sharing a hash make an inbound packet ambiguous between our
+  own identities. Export below if you want the file.
+</p>
+<form method="post" action="/admin/identities/create">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>name
+      <input type="text" name="name" required
+             value="{{ refusal.value('name') if refusal else '' }}">
+    </label>
+  </p>
+  <p>
+    <label>adverts as
+      <select name="node_type">
+        {% set chosen = refusal.value('node_type', 'CHAT') if refusal else 'CHAT' %}
+        {% for option in node_types %}
+        <option value="{{ option }}" {{ 'selected' if option == chosen }}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>
+    <label>
+      <input type="checkbox" name="role" value="bot"
+             {{ 'checked' if refusal and refusal.value('role') == 'bot' }}>
+      this identity is for a bot
+    </label>
+    <span class="note">
+      A bot adverts as a chat node, indistinguishable from a companion; only the
+      stored role tells them apart, and it is set here rather than inferred.
+    </span>
+  </p>
+  <button type="submit">create identity</button>
+</form>
+{% endif %}
+
+<h2>import a keyfile</h2>
+{% if not can_seal %}
+<p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
+{% else %}
+<p class="note">
+  Paste the contents of a keyfile. It is checked by the same parser
+  <span class="mono">sighop keys import</span> uses — version, seed length, and
+  whether the stored public key is the one the seed derives — and a document
+  that fails any of those stores nothing.
+</p>
+<form method="post" action="/admin/identities/import">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>keyfile document (JSON)
+      <textarea class="mono" name="document" rows="10" cols="72"
+                required>{{ refusal.value('document') if refusal else '' }}</textarea>
+    </label>
+  </p>
+  <p>
+    <label>
+      <input type="checkbox" name="role" value="bot"
+             {{ 'checked' if refusal and refusal.value('role') == 'bot' }}>
+      this identity is for a bot
+    </label>
+  </p>
+  <button type="submit">import identity</button>
+</form>
+{% endif %}
+
 <h2>exporting an identity</h2>
 <p class="note">
   An exported keyfile is an <strong>unencrypted seed</strong> protected only by
   its file permissions. That is different protection from the entity store's,
   where the seed is sealed under <span class="mono">SIGHOP_SECRET_KEY</span> and
-  a database dump alone does not yield it. Export with
-  <span class="mono">sighop keys export</span>.
+  a database dump alone does not yield it.
 </p>
+<p class="note">{{ download_note }}</p>
+
+<h2>the sealing secret</h2>
+<p class="note">{{ secret_note }}</p>
 {% endblock %}

@@ -209,14 +209,32 @@ async def test_a_bot_whose_identity_serves_a_room_is_refused_with_that_reason(
         ),
         Succeeded,
     )
-    # A room arrives on the same identity afterwards, which `bot create` would
-    # have refused and a restored dump would not.
-    assert isinstance(
-        await persistence.rooms.create(
-            entity_id=stored.value.id, name="lounge", admin_password_hash=hash_password("pw")
-        ),
-        Succeeded,
-    )
+    # A room arrives on the same identity afterwards. Written as a row rather
+    # than through `RoomRepository.create`, because that call refuses it twice
+    # over — the identity adverts as a chat node and already carries a bot — and
+    # what this test is about is precisely the row no repository call would make:
+    # a restored dump, or a hand-edited database.
+    import datetime as dt
+    import uuid as _uuid
+
+    from sighop.db.models import Room as RoomRow
+    from sighop.db.times import ensure_utc
+
+    async def _insert(session: object) -> None:
+        session.add(  # type: ignore[attr-defined]
+            RoomRow(
+                id=_uuid.uuid4(),
+                entity_id=stored.value.id,
+                name="lounge",
+                admin_password_hash=hash_password("pw"),
+                guest_password_hash=None,
+                guest_open=False,
+                allow_read_only=False,
+                created_at=ensure_utc(dt.datetime.now(dt.UTC), field="room.created_at"),
+            )
+        )
+
+    assert isinstance(await database.run("insert_room_row", _insert), Succeeded)
     loaded = await entities.load_all(SECRET, enabled_only=True)
     assert isinstance(loaded, Succeeded)
 

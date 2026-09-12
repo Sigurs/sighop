@@ -20,7 +20,9 @@ Two of those decisions are load-bearing:
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.paths import PathStore
@@ -261,8 +263,62 @@ def unreadable[T](reason: str) -> Collection[T]:
     return Collection(unavailable=reason)
 
 
+def collection_for[T](outcome: object | None, *, degraded: str) -> Collection[T]:
+    """A repository read as something a template can tell apart from empty.
+
+    `None` is "there is no database to read", a `Failed` is "there is one and it
+    would not answer", and either is a different screen from a successful read
+    that found nothing. One function so every durable view draws the same three
+    states (`web-server`).
+    """
+    from sighop.db.engine import Failed
+
+    if outcome is None:
+        return unreadable(NO_DATABASE)
+    if isinstance(outcome, Failed):
+        return unreadable(f"{degraded}: {outcome.error}")
+    return read(outcome.value)  # type: ignore[attr-defined]
+
+
 NO_DATABASE = "no database is configured, so nothing durable is stored or read"
 DEGRADED = "the database is unreachable; this cannot be read until it returns"
+
+
+# --- A refused form still holds what was typed ------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Refusal:
+    """Why a submitted form was refused, and what the author had typed.
+
+    The author of a refused form is *present*, which is the whole reason a
+    refusal here is worth more than a truncation: they can be shown the reason,
+    told which field it is about, and handed back what they wrote rather than an
+    empty form to retype. A refusal that clears the form is a refusal that costs
+    the operator their post.
+
+    `reason` is the owning code's own message — a repository's, a driver's, a
+    keystore's — never one this surface invented, so a refusal reads the same in
+    the browser as on the command line.
+    """
+
+    reason: str
+    field: str = ""
+    """The field the reason is about, or empty when it is about the whole form."""
+
+    submitted: Mapping[str, str] = dataclass_field(default_factory=dict)
+
+    def value(self, name: str, default: str = "") -> str:
+        """What was typed into one field, for re-rendering it."""
+        return self.submitted.get(name, default)
+
+    def concerns(self, name: str) -> bool:
+        return bool(self.field) and self.field == name
+
+
+def refused(reason: str, *, field: str = "", **submitted: str) -> Refusal:
+    """One refusal, with the author's own values carried back to the form."""
+    return Refusal(reason=reason, field=field, submitted=dict(submitted))
 
 
 # --- Durability, on every page too ------------------------------------------

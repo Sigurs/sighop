@@ -4,11 +4,21 @@ The one view that answers "why has this person not seen that message" without a
 database client: a member's sync cursor beside the room's own history, in the
 order the protocol orders it.
 
-Everything here is **read-only with respect to the mesh**. Opening a room,
-paging back through it and refreshing it transmit nothing, push nothing, and
-move no member's cursor — which is not obvious from the outside, because a room
-server's normal job is precisely to push history at members whose cursor is
-behind. The push loop is the room server's; this module only reads rows.
+Everything here is **read-only with respect to the mesh** except one thing.
+Opening a room, paging back through it and refreshing it transmit nothing, push
+nothing, and move no member's cursor — which is not obvious from the outside,
+because a room server's normal job is precisely to push history at members whose
+cursor is behind. The push loop is the room server's; this module only reads
+rows.
+
+The exception is **posting**, and it is a guarded action (design D4). What
+`sighop room post` does is `MessageRepository.store` plus one length check: it
+does not go through `RoomServer` at all, and whichever run is serving that room
+picks the row up through its own push loop. So the panel's post is the same one
+call — and the fact that a post is a stored row rather than a transmission is
+stated at the point of posting, because the panel is the first surface where
+somebody might expect otherwise: it is showing them a running platform at the
+time.
 """
 
 from __future__ import annotations
@@ -21,8 +31,17 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.db.engine import Failed, Succeeded
 from sighop.db.repositories import MemberRecord, PostRecord, RoomRecord
+from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
 from sighop.web.deps import Panel, panel
-from sighop.web.render import DEGRADED, NO_DATABASE, identity_for_key, read, unreadable
+from sighop.web.guarded import POST_TO_ROOM, audit
+from sighop.web.render import (
+    DEGRADED,
+    NO_DATABASE,
+    identity_for_key,
+    read,
+    refused,
+    unreadable,
+)
 
 PanelDep = Annotated[Panel, Depends(panel)]
 
@@ -215,6 +234,170 @@ async def revoke(
         return RedirectResponse(f"/rooms/{room_id}/members", status_code=SEE_OTHER)
     await page.persistence.members.delete(room.id, bytes.fromhex(public_key))
     return RedirectResponse(f"/rooms/{room_id}/members", status_code=SEE_OTHER)
+
+
+# --- 5. Posting to a room, which is a guarded action -------------------------
+
+
+@router.get("/{room_id}/post", response_class=HTMLResponse)
+async def compose(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """The composer. Stores nothing, transmits nothing, mints no confirmation."""
+    room = await _room(page, room_id)
+    return page.page(
+        request,
+        "rooms/compose.html",
+        room=room,
+        limit=STORED_POST_TEXT_LEN,
+        refusal=None,
+        status_code=200 if room is not None else 404,
+    )
+
+
+@router.post("/{room_id}/post", response_model=None)
+async def review(
+    room_id: str,
+    request: Request,
+    page: PanelDep,
+    text: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """The confirmation: what this post does, before it is a row.
+
+    The length check is `sighop room post`'s, applied for the same reason
+    milestone 6 gave: a post arriving over the air is truncated because its
+    author cannot be told, and an author who is *present* can be asked to
+    shorten it instead. So it is refused with the limit, the overage and what
+    they typed — which is the whole argument for refusing here rather than
+    truncating.
+    """
+    room = await _room(page, room_id)
+    if room is None:
+        return page.page(
+            request,
+            "rooms/compose.html",
+            room=None,
+            limit=STORED_POST_TEXT_LEN,
+            refusal=None,
+            status_code=404,
+        )
+    encoded = text.encode("utf-8")
+    if len(encoded) > STORED_POST_TEXT_LEN:
+        return page.page(
+            request,
+            "rooms/compose.html",
+            room=room,
+            limit=STORED_POST_TEXT_LEN,
+            refusal=refused(
+                f"the post is {len(encoded)} bytes and a room keeps "
+                f"{STORED_POST_TEXT_LEN}, which is all a stock client can show — "
+                f"{len(encoded) - STORED_POST_TEXT_LEN} over. Shorten it and post "
+                "again. A post arriving over the air is truncated instead, "
+                "because its author cannot be told; you can be",
+                field="text",
+                text=text,
+            ),
+            status_code=400,
+        )
+    return page.page(
+        request,
+        "rooms/confirm_post.html",
+        room=room,
+        text=text,
+        bytes_used=len(encoded),
+        limit=STORED_POST_TEXT_LEN,
+        served=any(str(server.room.id) == room_id for server in page.state.rooms),
+        transmit_enabled=page.state.scheduler.status().transmit_enabled,
+        hold_seconds=POST_SYNC_DELAY_SECS,
+        action=POST_TO_ROOM,
+        nonce=page.nonces.mint(POST_TO_ROOM, room_id),
+    )
+
+
+@router.post("/{room_id}/post/confirm", response_model=None)
+async def post(
+    room_id: str,
+    request: Request,
+    page: PanelDep,
+    text: Annotated[str, Form()] = "",
+    nonce: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """Store the post as the room's own identity — `sighop room post`'s call.
+
+    Not through `RoomServer`: a post is a row, and delivery belongs to the push
+    loop of whichever run is serving the room. A closed transmit gate does not
+    refuse it, because refusing would be this surface inventing a rule the
+    command line does not have; what the panel does instead is *say* that
+    nothing goes on the air until the gate opens (design D4).
+    """
+    room = await _room(page, room_id)
+    encoded = text.encode("utf-8")
+    if (
+        room is None
+        or len(encoded) > STORED_POST_TEXT_LEN
+        or not page.nonces.spend(nonce, POST_TO_ROOM, room_id)
+    ):
+        audit(
+            page.logger,
+            action=POST_TO_ROOM,
+            target=room_id,
+            outcome="refused",
+            reason="no confirmation was minted for this action",
+            room_name="" if room is None else room.name,
+        )
+        return page.page(
+            request, "admin/refused.html", title="post to a room", status_code=403
+        )
+
+    assert page.persistence is not None
+    author = await _room_author(page, room)
+    if author is None:  # pragma: no cover - the foreign key makes this unreachable
+        audit(
+            page.logger,
+            action=POST_TO_ROOM,
+            target=room_id,
+            outcome="refused",
+            reason="the identity this room is bound to is not stored",
+            room_name=room.name,
+        )
+        return page.page(
+            request, "admin/refused.html", title="post to a room", status_code=409
+        )
+
+    stored = await page.persistence.messages.store(
+        room_id=room.id, author_public_key=author, text=encoded
+    )
+    if isinstance(stored, Failed):
+        audit(
+            page.logger,
+            action=POST_TO_ROOM,
+            target=room_id,
+            outcome="refused",
+            reason=str(stored.error),
+            room_name=room.name,
+        )
+        return page.page(
+            request, "admin/refused.html", title="post to a room", status_code=409
+        )
+    audit(
+        page.logger,
+        action=POST_TO_ROOM,
+        target=room_id,
+        outcome="success",
+        room_name=room.name,
+        post_timestamp=stored.value.post_timestamp,
+        bytes=len(encoded),
+        served=any(str(server.room.id) == room_id for server in page.state.rooms),
+        transmit_enabled=page.state.scheduler.status().transmit_enabled,
+    )
+    return RedirectResponse(f"/rooms/{room_id}", status_code=SEE_OTHER)
+
+
+async def _room_author(page: Panel, room: RoomRecord) -> bytes | None:
+    """The room's own identity, which is what it posts as."""
+    assert page.persistence is not None
+    entity = await page.persistence.entities.get_by_id(room.entity_id)
+    if isinstance(entity, Failed) or entity.value is None:
+        return None
+    return entity.value.public_key
 
 
 async def _room(page: Panel, room_id: str) -> RoomRecord | None:

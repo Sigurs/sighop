@@ -33,6 +33,7 @@ somewhere else.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -151,6 +152,16 @@ def keyfile_document(
     return document
 
 
+def keyfile_bytes(document: dict[str, object]) -> bytes:
+    """A keyfile document as the bytes a keyfile holds.
+
+    One serialiser, because milestone 8's panel hands the same document to a
+    browser as a download: a file written here and a file saved from there are
+    interchangeable only if nothing decides separately how to spell them.
+    """
+    return (json.dumps(document, indent=2) + "\n").encode("utf-8")
+
+
 def identity_from_document(document: dict, path: Path | str = "<memory>") -> LocalIdentity:
     """The seed → identity step, with the stored public key checked against it.
 
@@ -222,9 +233,8 @@ def create_keyfile(
         ) from exc
     except OSError as exc:
         raise KeyfileError(f"{path}: could not create the keyfile: {exc}") from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        json.dump(document, handle, indent=2)
-        handle.write("\n")
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(keyfile_bytes(document))
 
     keyfile = Keyfile(
         path=Path(path),
@@ -254,6 +264,70 @@ def _permission_warning(path: Path) -> str | None:
     return None
 
 
+def keyfile_from_text(
+    raw: str, source: Path | str = "<submitted>", *, logger: Logger | None = None
+) -> Keyfile:
+    """A keyfile from the text of one, without a filesystem.
+
+    Milestone 8's panel imports a keyfile the operator pasted, and it has to be
+    the *same* import: every check `load_keyfile` makes about what a document
+    claims is made here, so a document the command line refuses is refused in
+    the browser for the same reason in the same words. The one thing not checked
+    here is the file's permissions, which a submitted document does not have.
+    """
+    try:
+        document = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise KeyfileError(f"{source}: keyfile is not valid JSON: {exc}") from exc
+    return keyfile_from_document(document, source, logger=logger)
+
+
+def keyfile_from_document(
+    document: object, source: Path | str = "<submitted>", *, logger: Logger | None = None
+) -> Keyfile:
+    """The checks a keyfile document must pass, wherever it came from."""
+    log = logger or get_logger(component="keystore")
+    if not isinstance(document, dict):
+        raise KeyfileError(f"{source}: keyfile is not a JSON object")
+
+    try:
+        version = int(document.get("version", 0))
+    except (TypeError, ValueError) as exc:
+        raise KeyfileError(f"{source}: keyfile version is not a number") from exc
+    if version != KEYFILE_VERSION:
+        raise KeyfileError(
+            f"{source}: keyfile version {version} is not the supported version "
+            f"{KEYFILE_VERSION}"
+        )
+
+    identity = identity_from_document(document, source)
+    try:
+        node_type_value = int(document.get("node_type", int(NodeType.CHAT)))
+    except (TypeError, ValueError) as exc:
+        raise KeyfileError(f"{source}: keyfile node_type is not a number") from exc
+    try:
+        node_type: NodeType | int = NodeType(node_type_value)
+    except ValueError:
+        node_type = node_type_value
+
+    warnings: list[str] = []
+    burned = bool(document.get("burned", False))
+    if burned:
+        warnings.append(BURNED_WARNING)
+        log.error("keyfile_burned", keyfile=str(source), detail=BURNED_WARNING)
+
+    return Keyfile(
+        path=Path(source),
+        version=version,
+        name=str(document.get("name", "")),
+        node_type=node_type,
+        identity=identity,
+        created_at=str(document.get("created_at", "")),
+        burned=burned,
+        warnings=tuple(warnings),
+    )
+
+
 def load_keyfile(
     path: Path, *, logger: Logger | None = None
 ) -> Keyfile:
@@ -263,46 +337,17 @@ def load_keyfile(
         raw = Path(path).read_text(encoding="utf-8")
     except OSError as exc:
         raise KeyfileError(f"{path}: could not read the keyfile: {exc}") from exc
-    try:
-        document = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise KeyfileError(f"{path}: keyfile is not valid JSON: {exc}") from exc
-    if not isinstance(document, dict):
-        raise KeyfileError(f"{path}: keyfile is not a JSON object")
 
-    version = int(document.get("version", 0))
-    if version != KEYFILE_VERSION:
-        raise KeyfileError(
-            f"{path}: keyfile version {version} is not the supported version "
-            f"{KEYFILE_VERSION}"
-        )
+    parsed = keyfile_from_text(raw, path, logger=log)
 
-    identity = identity_from_document(document, path)
-    node_type_value = int(document.get("node_type", int(NodeType.CHAT)))
-    try:
-        node_type: NodeType | int = NodeType(node_type_value)
-    except ValueError:
-        node_type = node_type_value
-
-    warnings: list[str] = []
+    warnings = list(parsed.warnings)
     if (warning := _permission_warning(Path(path))) is not None:
-        warnings.append(warning)
+        # The one check a submitted document cannot have: it is a fact about a
+        # file rather than about the identity in it.
+        warnings.insert(0, warning)
         log.error("keyfile_permissions_broad", keyfile=str(path), detail=warning)
-    burned = bool(document.get("burned", False))
-    if burned:
-        warnings.append(BURNED_WARNING)
-        log.error("keyfile_burned", keyfile=str(path), detail=BURNED_WARNING)
 
-    keyfile = Keyfile(
-        path=Path(path),
-        version=version,
-        name=str(document.get("name", "")),
-        node_type=node_type,
-        identity=identity,
-        created_at=str(document.get("created_at", "")),
-        burned=burned,
-        warnings=tuple(warnings),
-    )
+    keyfile = dataclasses.replace(parsed, warnings=tuple(warnings))
     log.info("keyfile_loaded", **keyfile.as_json())
     return keyfile
 

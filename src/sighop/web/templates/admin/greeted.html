@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block title %}greeting records · sighop{% endblock %}
+
+{% block content %}
+{% if bot is none %}
+<h1>greeting records</h1>
+<p class="unavailable"><strong>No such bot.</strong></p>
+{% else %}
+<h1>greeting records: {{ bot.entity_name }}</h1>
+
+<p class="note">
+  These records are the whole gate. A contact with one is a contact this bot
+  owes nothing to; a contact without one will be acted on the next time it
+  adverts, if the hop, node-type and rate gates pass.
+</p>
+
+<p class="unavailable">{{ clearing_note }}</p>
+
+{% if records %}
+<table>
+  <thead>
+    <tr><th class="mono">contact</th><th>name</th><th>state</th>
+        <th class="mono">recorded</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for record in records %}
+    <tr>
+      <td class="mono">{{ record.short_key }}</td>
+      <td>{{ record.name or '—' }}</td>
+      <td class="mono">
+        {{ record.outcome }}{% if not record.settled %}
+        after {{ record.attempts }} attempt(s){% endif %}
+      </td>
+      <td class="mono">{{ record.at or '—' }}</td>
+      <td>
+        <form method="post" action="/admin/bots/{{ bot.id }}/greeted/clear">
+          <input type="hidden" name="_token" value="{{ token }}">
+          <input type="hidden" name="public_key" value="{{ record.public_key }}">
+          <button type="submit">clear this record</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">
+  <strong>No greeting records.</strong> This bot has acted on nobody and owes a
+  greeting to every contact it hears from.
+</p>
+{% endif %}
+
+{% if other_keys %}
+<p class="note">
+  This bot has stored {{ other_keys }} other key(s) that are not greeting
+  records. They are shown in full on the <a href="/admin/bots">bots</a> page.
+</p>
+{% endif %}
+
+<h2>record a contact as already acted on</h2>
+<p class="note">
+  Recorded as set by an operator, which stays distinguishable from a greeting
+  that was sent and from one that was seeded. The bot will not act on that
+  contact.
+</p>
+<form method="post" action="/admin/bots/{{ bot.id }}/greeted/set">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>contact public key (hex)
+      <input class="mono" type="text" name="public_key" size="64" required>
+    </label>
+  </p>
+  <button type="submit">record as already greeted</button>
+</form>
+
+<h2>seed every known contact</h2>
+<p class="unavailable">{{ seeding_note }}</p>
+<form method="post" action="/admin/bots/{{ bot.id }}/greeted/seed">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <button type="submit">seed from the stored contacts</button>
+</form>
+
+<p>
+  <a href="/admin/bots">back to bots</a>
+  ·
+  <a href="/admin/bots/{{ bot.id }}/state/clear">clear durable state…</a>
+</p>
+{% endif %}
+{% endblock %}

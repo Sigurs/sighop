@@ -6,6 +6,12 @@
 {% block content %}
 <h1>bots</h1>
 
+{% if refusal %}
+<p class="unavailable">
+  <strong>Refused.</strong> {{ refusal.reason }}
+</p>
+{% endif %}
+
 {{ collection.state(bots, "bots") }}
 {% if bots.readable and bots.items %}
 {% for bot in bots %}
@@ -28,22 +34,39 @@
 
 <p><a href="/admin/bots/{{ bot.id }}/mode">change mode…</a></p>
 
-<form method="post" action="/admin/bots/{{ bot.id }}/config">
-  <input type="hidden" name="_token" value="{{ token }}">
-  <p>
-    <label>driver configuration (JSON)
-      <textarea class="mono" name="configuration" rows="6" cols="72">{{ bot.config|tojson(indent=2) }}</textarea>
-    </label>
-  </p>
-  <button type="submit">save configuration</button>
-</form>
+<h3>configuration</h3>
+{# One key at a time, as `sighop bot set` takes it: a refusal names the key it
+   is about, and a valid change is not lost because another key was wrong. #}
+<table>
+  <thead><tr><th class="mono">key</th><th>value</th><th></th></tr></thead>
+  <tbody>
+    {% for key, value in bot.config.items()|sort %}
+    <tr>
+      <td class="mono">{{ key }}</td>
+      <td>
+        <form method="post" action="/admin/bots/{{ bot.id }}/config">
+          <input type="hidden" name="_token" value="{{ token }}">
+          <input type="hidden" name="key" value="{{ key }}">
+          <input class="mono" type="text" name="value"
+                 value="{{ refusal.value(key) if refusal and refusal.concerns(key)
+                           else ('' if value is none else value) }}">
+          <button type="submit">set</button>
+        </form>
+      </td>
+      <td class="note">
+        {% if refusal and refusal.concerns(key) %}{{ refusal.reason }}{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 <p class="note">
-  A configuration the driver rejects is refused with the driver's own reason and
-  the stored one is left exactly as it was — the same validator
-  <span class="mono">sighop bot config</span> uses.
+  A value the driver rejects is refused with the driver's own reason, naming
+  that key, and every other key is left exactly as it was — the same validator
+  <span class="mono">sighop bot set</span> uses.
 </p>
 
-<h2>durable state</h2>
+<h3>durable state</h3>
 {% set stored = bot_state.get(bot.id|string, {}) %}
 {% if stored %}
 <table>
@@ -62,6 +85,54 @@
 {% else %}
 <p class="empty"><strong>Nothing stored.</strong> This bot has persisted no state.</p>
 {% endif %}
+<p>
+  <a href="/admin/bots/{{ bot.id }}/greeted">greeting records…</a>
+  ·
+  <a href="/admin/bots/{{ bot.id }}/state/clear">clear durable state…</a>
+</p>
 {% endfor %}
+{% endif %}
+
+<h2>create a bot</h2>
+{% if not identities %}
+<p class="empty">
+  <strong>No identity is available to run a bot on.</strong> A bot runs on an
+  identity stored as a bot that does not already carry one — being a bot is an
+  explicit choice at creation and never a side effect of having a bot bound to
+  it. Create one on the <a href="/admin/identities">identities</a> page.
+</p>
+{% else %}
+<form method="post" action="/admin/bots/create">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>runs on
+      <select name="entity_id" required>
+        {% set chosen = refusal.value('entity_id') if refusal else '' %}
+        {% for identity in identities %}
+        <option value="{{ identity.id }}" {{ 'selected' if identity.id|string == chosen }}>
+          {{ identity.name }} ({{ identity.public_key.hex()[:16] }})
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>
+    <label>driver
+      <select name="driver" required>
+        {% set wanted = refusal.value('driver') if refusal else '' %}
+        {% for name in drivers %}
+        <option value="{{ name }}" {{ 'selected' if name == wanted }}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <button type="submit">create bot</button>
+</form>
+<p class="note">
+  A new bot starts <strong>enabled and in observe mode</strong>: it runs its
+  whole decision path and transmits nothing until its mode says otherwise. It is
+  also seeded — every contact this node already knows is recorded as already
+  greeted, so it does not start out owing a message to every peer on the mesh.
+</p>
 {% endif %}
 {% endblock %}

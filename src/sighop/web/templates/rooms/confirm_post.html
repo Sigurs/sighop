@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}confirm post · sighop{% endblock %}
+
+{% block content %}
+<h1>post to {{ room.name }}</h1>
+
+<div class="guarded">
+  <p><strong>This post reaches every member of {{ room.name }} and cannot be
+    unsent.</strong> It is made as the room's own identity, and it is not a
+    configuration change: there is no version of it that only some members see.</p>
+
+  <blockquote class="mono">{{ text }}</blockquote>
+  <p class="note">{{ bytes_used }} of {{ limit }} bytes.</p>
+
+  <p class="note">
+    It is <strong>stored now</strong>, and becomes deliverable to members after
+    the reference implementation's {{ hold_seconds }}s hold. Delivery is the
+    room server's own push loop; posting does not transmit anything by itself.
+  </p>
+
+  {% if not served %}
+  <p class="unavailable">
+    <strong>This run is not serving {{ room.name }}.</strong> The post will be
+    stored like any other, and nothing will be delivered to any member until a
+    run that loads this room's identity is started.
+  </p>
+  {% endif %}
+
+  {% if not transmit_enabled %}
+  <p class="unavailable">
+    <strong>The transmit gate is closed.</strong> The post will be stored now
+    and put on the air only when the gate is opened — it is not refused, because
+    <span class="mono">sighop room post</span> stores regardless and this surface
+    does not invent a rule the command line does not have.
+  </p>
+  {% endif %}
+
+  <p class="note">
+    It is confirmed here rather than performed by a link, and it is recorded as
+    its own event whether it succeeds or is refused. This build has no
+    authentication, so the event names no acting user.
+  </p>
+
+  <form method="post" action="/rooms/{{ room.id }}/post/confirm">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <input type="hidden" name="text" value="{{ text }}">
+    <button type="submit">confirm: post to {{ room.name }}</button>
+  </form>
+  <p><a href="/rooms/{{ room.id }}/post">go back and edit</a> ·
+     <a href="/rooms/{{ room.id }}">cancel, and post nothing</a></p>
+</div>
+{% endblock %}
