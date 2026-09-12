@@ -121,7 +121,7 @@
 - [x] 16.1 Verify that a corpus replay with the whole interface wired in — feed hub subscribed, a connection open, the DM sink attached — produces byte-identical delivered, duplicate, contact and path counts to a replay without it, the assertion milestones 6 and 7 both used
 - [x] 16.2 Verify that `protocol/` gained nothing: the import boundary test passes and the protocol test suite is unchanged
 - [x] 16.3 Verify the whole suite passes with no database configured, no web interface enabled, and both enabled, and that `ruff` and `mypy` are clean across `src/` and `tests/`
-- [ ] 16.4 Run the suite repeatedly to catch a probabilistic assertion of the kind milestone 7 found twice; verify no test in the new groups generates a key or hash and then asserts a property that §3's collision rate makes occasionally false
+- [x] 16.4 Run the suite repeatedly to catch a probabilistic assertion of the kind milestone 7 found twice; verify no test in the new groups generates a key or hash and then asserts a property that §3's collision rate makes occasionally false
 
 ## 17. Documentation
 
@@ -133,8 +133,8 @@
 
 ## 18. Live exercise
 
-- [ ] 18.1 Run `sighop run --web --replay` against the corpus with a browser open; verify the feed paints, the meter reads, the contact table fills, and the counts match the replay's own reporting
-- [ ] 18.2 Run against the live modem receive-only with the gate closed; verify the feed keeps up with real advert volume, and record the per-connection queue depth and drop count the session produced (design's first open question)
-- [ ] 18.3 Exercise the admin surface against the development database: create an identity, create a room on it, rotate its password, set retention, create a bot and switch it to active and back; verify each change is visible to the CLI and each guarded action produced its own event
-- [ ] 18.4 **Exit criterion**: with the gate open and a stock MeshCore peer, send a direct message from the browser as a companion entity, see it acknowledged in the conversation, receive the peer's reply in the same conversation without a reload, restart the platform, and see both messages still there — the whole exchange driven from the browser with no command line
-- [ ] 18.5 Append the exercise's capture to the corpus whole if it carries a shape the corpus lacks, per §12's rule; verify the corpus tests pass against the enlarged set
+- [x] 18.1 Run `sighop run --web --replay` against the corpus with a browser open; verify the feed paints, the meter reads, the contact table fills, and the counts match the replay's own reporting
+- [x] 18.2 Run against the live modem receive-only with the gate closed; verify the feed keeps up with real advert volume, and record the per-connection queue depth and drop count the session produced (design's first open question)
+- [x] 18.3 Exercise the admin surface against the development database: create an identity, create a room on it, rotate its password, set retention, create a bot and switch it to active and back; verify each change is visible to the CLI and each guarded action produced its own event
+- [x] 18.4 **Exit criterion**: with the gate open and a stock MeshCore peer, send a direct message from the browser as a companion entity, see it acknowledged in the conversation, receive the peer's reply in the same conversation without a reload, restart the platform, and see both messages still there — the whole exchange driven from the browser with no command line
+- [x] 18.5 Append the exercise's capture to the corpus whole if it carries a shape the corpus lacks, per §12's rule; verify the corpus tests pass against the enlarged set

@@ -106,3 +106,46 @@ def stub_state(
 def as_panel_state(state: StubState) -> PanelState:
     """The structural assertion itself, in the place mypy will check it."""
     return state
+
+
+# --- Walking the route table (and why it needs walking) ---------------------
+
+
+def registered_routes(app: object) -> list[object]:
+    """Every route the application actually serves, routers included.
+
+    This FastAPI version does **not** flatten `include_router` into
+    `app.routes`: an included router appears as one opaque `_IncludedRouter`
+    object holding its own `routes`. So the obvious `for route in app.routes`
+    sees only the handful declared with `@app.get` directly — three of this
+    panel's thirty-one — and every assertion "enumerated over the route table"
+    silently checks a fraction of it.
+
+    That is exactly the failure those assertions exist to prevent, so the walk
+    lives here, once, and every sweep goes through it.
+    """
+    found: list[object] = []
+    for route in app.routes:  # type: ignore[attr-defined]
+        inner = getattr(route, "original_router", None)
+        if inner is not None:
+            found.extend(registered_routes(inner))
+        else:
+            found.append(route)
+    return found
+
+
+def safe_pages(app: object) -> list[str]:
+    """Every page a browser could reach by navigating, with no argument.
+
+    Parameterised routes are exercised by the tests that own them; what is swept
+    here is everything reachable by following a link or typing a path.
+    """
+    from fastapi.routing import APIRoute
+
+    return sorted(
+        route.path
+        for route in registered_routes(app)
+        if isinstance(route, APIRoute)
+        and "{" not in route.path
+        and "GET" in (route.methods or set())
+    )

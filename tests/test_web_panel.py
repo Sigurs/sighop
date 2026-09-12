@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from starlette.routing import Route
 
 import sighop.web
 from sighop.net.contacts import Contact
@@ -41,7 +40,7 @@ from sighop.web.render import (
     unreadable,
 )
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import StubState, safe_pages, stub_state
 
 TEMPLATE_DIR = Path(sighop.web.__file__).parent / "templates"
 HOSTS = allowed_hosts("127.0.0.1", 8080)
@@ -57,13 +56,8 @@ def _client(app: FastAPI) -> TestClient:
 
 
 def _pages(app: FastAPI) -> list[str]:
-    return [
-        route.path
-        for route in app.routes
-        if isinstance(route, Route)
-        and "{" not in route.path
-        and "GET" in (route.methods or set())
-    ]
+    """Every page, routers included — see `webfixtures.registered_routes`."""
+    return safe_pages(app)
 
 
 # --- 9.1 The meter is on every page -----------------------------------------

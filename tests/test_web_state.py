@@ -227,20 +227,14 @@ def test_a_stub_drives_every_page_with_no_runtime_present() -> None:
     has, and that page would be the one nobody thought to add a test for.
     """
     from fastapi.testclient import TestClient
-    from starlette.routing import Route
 
     from sighop.web.app import allowed_hosts, create_app
+    from tests.webfixtures import safe_pages
 
     state = stub_state(stub_names=("panel-identity",))
     app = create_app(state, hosts=allowed_hosts("127.0.0.1", 8080), logger=RecordingLogger())
-    pages = [
-        route.path
-        for route in app.routes
-        if isinstance(route, Route)
-        and "{" not in route.path
-        and "GET" in (route.methods or set())
-    ]
-    assert pages, "no pages to drive; the assertion would be vacuous"
+    pages = safe_pages(app)
+    assert len(pages) > 5, f"only {pages} were enumerated; the router walk is broken"
 
     with TestClient(app, base_url="http://127.0.0.1:8080") as client:
         for path in pages:

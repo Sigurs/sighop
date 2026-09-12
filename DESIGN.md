@@ -1626,7 +1626,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      predicted above actually appears. The first attempt at this stage ran for three minutes
      against two nodes, which settles nothing.
 8. **WebUI**, in the §8 priority order.
-   *Offline work done; the live exercise is pending.* `src/sighop/web/` — `state.py` (the
+   *Done.* `src/sighop/web/` — `state.py` (the
    read seam), `app.py` (the application, the bound socket, the feed's WebSocket),
    `guard.py` (host check, provenance token, one wide event per request), `guarded.py`
    (confirm-then-act and its audit event), `feed.py` (one bus subscription, bounded
@@ -1636,7 +1636,9 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    read on `PacketLogRepository`, a service slot and a traffic-watch hook on `Runtime`, and
    `--web`/`--web-host`/`--web-port` on `sighop run`. The exit criterion — a direct message
    sent, acknowledged, replied to and surviving a restart, the whole exchange driven from a
-   browser — is the live exercise, and the runbook for it is written and reviewed. Findings
+   browser — was met on 2026-09-12: a direct message composed in Chromium as `[redacted]`,
+   acknowledged after 1 attempt in 2324 ms, the stock peer's reply appearing in the same
+   conversation without a reload, and both messages still there after a restart. Findings
    the offline work produced:
    - **§8's authentication rule described something the code does not do, and the fix was to
      correct §8.** "No unauthenticated mode, at any milestone" cannot survive shipping the
@@ -1706,6 +1708,62 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      what it means to assert. **A test that generates a key and then asserts something about
      its node hash is asserting something §3 makes occasionally false**, and the fix is always
      to fix the byte deliberately.
+
+   What the live exercise overturned:
+
+   - **The feed's status line is frozen the moment it connects.** `_stream` sends
+     `connection.status()` once, before the first batch, and then only again when the *drop*
+     count changes; live records go out as `kind: "records"` with no status beside them, and
+     `feed.js` only rewrites the line on a `status` message. On a healthy connection — one
+     that never drops anything — the line therefore reads `live — 0 record(s) shown` for the
+     life of the page. A 58-minute browser session watched it sit at 0 while the table grew
+     to fourteen rows, and the connection's own closing event recorded `delivered=11
+     dropped=0`. Worse, `delivered` counts only what was streamed live, never the history the
+     same page painted, so the number can never agree with the boundary row directly above it
+     ("— live from here (N recorded record(s) below) —"). The runbook tells an operator to
+     read this line as the health check; the healthy reading is indistinguishable from a dead
+     feed. **The count a page shows must be a count of what that page is showing.**
+   - **A replay run cannot be watched, and cannot be administered at all.** `--replay` ends
+     when the capture is exhausted and the panel ends with it: the corpus's 555-frame session
+     is consumed in about four seconds, and `run --replay … --web` against the 34-frame file
+     the runbook names for the admin walk lives for *one second*. A browser opened on it does
+     load — it painted the meter, the counters and the contact table, and its numbers matched
+     the run's own status line exactly (50980 of 138750 considered, against `dup=36.7%`,
+     `cache=20/4096`, `paths=12`, `contacts=5`) — but the feed's WebSocket never completes its
+     handshake before the run exits, so the feed paints nothing. The reader is synchronous and
+     shares the runtime's event loop, so while frames remain the panel is starved as well as
+     short-lived. **The admin surface and the feed are only exercisable against a live link**,
+     which is where both were exercised instead; the runbook's 18.1 and 18.3 commands are
+     wrong as written.
+   - **Reloading a confirmation page does not invalidate the one before it.** The runbook
+     says a refusal can be produced by reloading a guarded page and submitting the stale form.
+     It cannot: `NonceStore` holds up to `MAX_OUTSTANDING` nonces at once and `spend` only
+     pops the one presented, so a reload mints a second valid nonce beside the first. Submitting
+     the stale form *succeeded* and raised the airtime ceiling to 20%, above the regulatory
+     default, with the gate still shut so nothing went out. The one-shot property itself is
+     sound — presenting the same nonce twice is refused, 403, with its own `refused`
+     `web_guarded_action` event — so this is a defect in the runbook, not in the guard. **A
+     nonce that is spent once is not the same thing as a nonce that a reload retires**, and
+     only the first is implemented.
+   - **The mesh was far quieter than the corpus's busiest session, so "keeps up" is still
+     untested at volume.** Fourteen receptions in fifty-nine minutes, against the 555 in 2 h
+     54 min that §3's dedup tail was measured over. Every connection of the session — five of
+     them, the longest 58.5 minutes — closed with `dropped=0` and `incomplete=false`, and the
+     browser's JS heap stayed between 1.2 and 3.7 MB with no console error but a missing
+     favicon. **The design's first open question is answered only for a quiet band:** the
+     256-record per-connection queue was never stressed, its deepest observed use being the
+     eleven records one hour-long connection received, and the 500-row cap in `feed.js` was
+     never approached. A busy-band session is still owed.
+   - **The exercise's capture carries no shape the corpus lacks, so it was not appended.**
+     The runbook expected "a first browser-driven direct message" to qualify, but this
+     section's rule is about frame shapes — a `TRANSPORT_FLOOD`, a located CHAT advert, a
+     10-byte TRACE — and a DM composed in a browser is byte-identical to one composed at the
+     command line. The session produced `ADVERT`, `TXT_MSG` and `ACK` frames and one unparsed
+     startup frame, all of which the corpus already holds, milestone 4's first-transmit
+     session included. It stays at 1093 frames across eight files; `tests/protocol` and
+     `test_corpus_pipeline.py` pass unchanged. **Where the operator's hand was is not a
+     property of the bytes**, and the corpus is a sample of the mesh rather than of the
+     project's own milestones.
 9. **Hardening.** Container, compose, build script, auth.
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at

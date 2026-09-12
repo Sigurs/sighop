@@ -608,20 +608,18 @@ def test_the_reveal_is_one_response_body_and_its_own_event() -> None:
 
 def test_no_other_route_reveals_key_material() -> None:
     """13.2: swept over every page reachable by navigation."""
-    from starlette.routing import Route
+    from tests.webfixtures import safe_pages
 
     app, state, _log = _built()
     seeds = [stub.identity.seed for stub in state.adverts.stubs]
+    pages = safe_pages(app)
+    assert len(pages) > 5, f"only {pages} were swept; the router walk is broken"
 
     with _client(app) as client:
-        for route in app.routes:
-            if not isinstance(route, Route) or "{" in route.path:
-                continue
-            if "GET" not in (route.methods or set()):
-                continue
-            body = client.get(route.path).text
+        for path in pages:
+            body = client.get(path).text
             for seed in seeds:
-                assert seed.hex() not in body, f"{route.path} leaked a seed"
+                assert seed.hex() not in body, f"{path} leaked a seed"
 
 
 # --- 13.3 Enabling transmission ---------------------------------------------

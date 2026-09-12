@@ -23,7 +23,7 @@ from starlette.routing import Route
 from sighop.web.app import allowed_hosts, create_app, new_token
 from sighop.web.guard import REBINDING_STATUS, TOKEN_FIELD, TOKEN_HEADER
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import StubState, registered_routes, stub_state
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 
@@ -230,14 +230,16 @@ HEX = re.compile(r"[0-9a-f]{16,}")
 
 
 def _safe_routes(app: FastAPI) -> list[tuple[str, str]]:
-    """Every (method, path) a browser could issue by navigating or prefetching."""
+    """Every (method, path) a browser could issue by navigating or prefetching.
+
+    Through `registered_routes`, which walks into included routers: this
+    FastAPI version does not flatten them into `app.routes`, so the obvious
+    loop would sweep three pages out of thirty-one and this whole assertion
+    would be a fraction of what it claims.
+    """
     found: list[tuple[str, str]] = []
-    for route in app.routes:
-        if not isinstance(route, Route):
-            continue
-        if "{" in route.path:
-            # Parameterised routes are exercised by the tests that own them;
-            # what is enumerated here is everything reachable with no argument.
+    for route in registered_routes(app):
+        if not isinstance(route, Route) or "{" in route.path:
             continue
         for method in sorted((route.methods or set()) & {"GET", "HEAD"}):
             found.append((method, route.path))
