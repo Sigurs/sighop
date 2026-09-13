@@ -2044,6 +2044,96 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      ten frames of `ADVERT`, `TXT_MSG` and `ACK`, all shapes the corpus already holds.
      Where the operator's hand was is not a property of the bytes.
 9. **Hardening.** Container, compose, build script, auth.
+   *Done.* `web/auth.py` (accounts protocol, in-memory sessions, login throttle),
+   `routes/session.py` and `login.html`, migration `0005` with `web_user` and its repository,
+   the `sighop web user` noun, `--web-allowed-host` and `run --migrate`, a required `actor`
+   on every request and guarded-action event, password re-entry on the four guarded actions —
+   plus `Dockerfile`, `.dockerignore`, `compose.yaml`, `build.sh`, `.trivyignore` and the CI
+   workflow. The exit criterion was met on 2026-09-13: `./build.sh` passed every gate on a
+   clean tree (`sighop:0.1.0-6617f90cf8a2`, all 13 captures rendering identically on the
+   host and in the image); `docker compose up` ran it as UID 1000 with the V4 mapped by
+   `/dev/serial/by-id`, migrated an empty database to `0005` on start and refused to serve
+   until `web user add` had run; `dev-operator` signed in from Chromium on the host, opened
+   the gate with a password (a wrong one first, refused as its own event, still signed in),
+   and a direct message composed as `[redacted]` was acknowledged by the stock peer after 1
+   attempt in 3281 ms; `docker compose restart sighop` exited 0, the next navigation landed on
+   `/login?next=%2Fchat` with the gate shut again, and after signing back in the message was
+   still there, still delivered. Every `web_guarded_action` and every signed-in `web_request`
+   named `dev-operator`; `unauthenticated` appeared only on what a signed-out browser asks for.
+   Findings the offline work produced:
+   - **A scan that fails the build on the base image's findings builds nothing.** The newest
+     `python:3.13-slim-trixie` digest carried 12 fixable HIGH/CRITICAL Debian findings on the
+     day the gate was written, none in sighop's dependencies, and no digest cleared them. The
+     scan became a report (operator decision) and the base moved to Alpine: 7 HIGH, all
+     `libuuid`, against 56 on slim, with every native dependency shipping a `musllinux` wheel.
+     The glibc/musl split is what the `replay` gate exists for.
+   - **Deleting from a base image in a later layer hides files from the scanner and ships them
+     anyway.** Removing `pip`, `apk` and `/lib/apk/db` in the final stage saved no bytes and
+     made the scan report *zero* OS findings — a blind scan reading as a clean one. The final
+     stage now runs no command, and `tests/test_deployment_files.py` refuses one that does.
+     **A scanner can only report what the image admits to containing.** The Python findings it
+     still prints (`msgpack`, `setuptools`) belong to the base's own `pip`, not to `uv.lock`.
+   - **`set -e` does nothing inside a function called as an `if` condition.** The first
+     `smoke` gate passed an image that wrote to its root filesystem, because the failing
+     `docker run` inside `gate`'s condition did not stop the function. Every step now carries
+     `|| return 1`, and the gate was re-verified against a deliberately root-writing image.
+   - **The serial group is a number, not a name.** This host's serial group is `uucp` (984),
+     not `dialout`, and a name in `group_add` resolves against the *image's* `/etc/group`;
+     by-id paths contain colons, which compose's short `devices` syntax splits on. Both are
+     why the compose file takes `DIALOUT_GID` and uses the long syntax.
+   - **A test fixture had carried the real development database password since milestone
+     5.** `tests/test_config.py` now uses a fake value; the real one remains in git history,
+     and rotating it is the operator's call.
+   - **The deployment grew simpler under use, twice.** A one-shot `migrate` service and
+     compose `secrets:` files (with `_FILE` companions in `config.py`) were built and then
+     removed by operator decision: `run --migrate` moves only a database that is *behind*, and
+     the two secrets come from the gitignored `.env`. The `_FILE` code was deleted rather than
+     kept as a configuration shape nothing exercised.
+
+   What the live exercise overturned:
+
+   - **A board that drops off USB and comes back does not strand the container.** Replugging
+     the V4 under the running container re-enumerated it as `ttyACM0` with the same `166:0`;
+     `/dev/modem` inside still pointed at that number, the reconnect loop reopened it after 3
+     attempts in 3.5 s, the probe re-confirmed 869.618 MHz SF8, and the next zero-hop advert
+     from the stock peer was received (SNR +11.25). No device-cgroup rule was applied. What
+     was **not** exercised is the stranding case itself — the board returning under a
+     different minor because another ACM device took minor 0 in between — and a process that
+     cannot open `/dev/modem` at start still exits rather than retrying. An RTS pulse over the
+     USB-JTAG serial link, tried first, produced no disconnect at all and nothing in sighop's
+     output, so it is not a substitute for the unplug milestone 2 describes.
+   - **An HTMX poll that loses its session paints the sign-in page into the fragment.** The
+     chat pane polls `…/messages` every 3 s; once the session is gone the guard answers `303`,
+     htmx follows it, and a complete page — header, form and footer — lands inside the
+     message list, under an outer header still reading "signed in as dev-operator". Observed
+     by clearing the cookie on an open conversation, and what every open chat tab shows after
+     `docker compose restart`. The guard's redirect is right for a navigation and wrong for a
+     fragment request; an `HX-Request` should be told to navigate (`HX-Redirect`) instead.
+   - **An open feed WebSocket holds shutdown to uvicorn's grace limit.** The restart exited 0
+     inside `stop_grace_period`, but only after "timeout graceful shutdown exceeded" cancelled
+     the two open feed connections, each printing a `CancelledError` traceback and closing
+     with `web_feed_closed` at `level=error`. A stop the operator asked for is not an error, and
+     the feed should close its connections when shutdown begins rather than when it is
+     cancelled.
+   - **Inside compose every client is the bridge gateway.** Every `web_login` and
+     `web_request` recorded `client: 172.23.0.1`, so the per-address throttle keys every
+     browser on the host to one address and acts as a global one — the degradation D8
+     accepted for a proxy, arriving without one. The per-username throttle is unaffected.
+   - **A signed-out browser's ordinary requests log as errors.** The `303` to the sign-in
+     form is `level=error`, and its `route` is the raw path because routing has not run —
+     full conversation keys included. Neither is secret, but the first makes a restart look
+     like an incident in the log and the second makes `route` unsafe to aggregate on.
+   - **The runbook's `stat -c %g` on the by-id path returns `0`.** It stats the symlink, owned
+     by root, not the device; it needs `-L`. Compose would have accepted `DIALOUT_GID=0` and
+     the container would have been refused the modem. Corrected in the runbook.
+   - **Milestone 8's frozen feed status line is still frozen**, as that milestone left it:
+     the overview read `live — 0 record(s) shown` while the closing events of the same
+     connections recorded `delivered=4`.
+   - **The containerised run takes no capture, so the corpus is unchanged.** The compose
+     command passes no `--capture`, and a read-only root offers only `/tmp` to write one to; the frames
+     seen (`ADVERT`, `TXT_MSG`, `ACK`) are shapes the corpus already holds. A deployment that
+     should contribute captures needs a mounted, writable directory, which is a decision
+     rather than an oversight to fix quietly.
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at
 all. Get real adverts decoded off real air before building anything else.

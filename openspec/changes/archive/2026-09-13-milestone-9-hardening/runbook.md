@@ -89,7 +89,7 @@ umask 077
 cat > .env <<EOF
 UID=$(id -u)
 GID=$(id -g)
-DIALOUT_GID=$(stat -c %g "$modem")
+DIALOUT_GID=$(stat -L -c %g "$modem")
 SIGHOP_MODEM=$modem
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 $(uv run sighop keys secret | grep '^SIGHOP_SECRET_KEY=')
@@ -98,7 +98,9 @@ git check-ignore .env               # must print .env
 docker compose config -q && echo "compose resolves"
 ```
 
-On this host the serial group is `uucp` (984), not `dialout`; `stat` finds whichever it is.
+On this host the serial group is `uucp` (984), not `dialout`; `stat -L` finds whichever it is.
+*(Corrected in the exercise: without `-L`, `stat` reads the by-id symlink, owned by root, and
+returns `0`.)*
 **Check first** that nothing else holds the V4 open: `fuser -v "$modem"` prints nothing.
 
 ### 3. Up: migrate on start, and the no-account refusal

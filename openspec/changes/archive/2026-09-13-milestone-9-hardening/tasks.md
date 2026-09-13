@@ -99,7 +99,7 @@ survived: `keys import`/`export` read the secret through `Config`, with a static
 - [x] 13.3 Implement `smoke` as two constrained `docker run`s (`--help`, `run --help`) as UID 52037 on a read-only root with capabilities dropped; verify the gate fails against a test image that writes to its root at start-up
 - [x] 13.4 Implement `scan` by `docker save` tarball into a pinned `aquasec/trivy` container (no Docker socket mounted): one reporting pass with `--severity HIGH,CRITICAL --exit-code 0 --show-suppressed` that prints fixed and unfixed findings and fails only when the scan cannot run (operator decision, replacing the failing pass); verify the scan runs on a host with no trivy installed
 - [x] 13.5 Refuse a `.trivyignore` entry not immediately preceded by a `#` reason comment, and commit an empty `.trivyignore` explaining the rule; verify the script fails on an uncommented entry and passes with a commented one
-- [ ] 13.6 Run `./build.sh` end to end on a clean tree and verify it exits 0, reporting the image reference
+- [x] 13.6 Run `./build.sh` end to end on a clean tree and verify it exits 0, reporting the image reference
 - [x] 13.8 Switch the base to digest-pinned `python:3.13-alpine`, delete nothing the base ships (deleting in a later layer saves no bytes and hides files from the scan), and add a `replay` gate after `smoke` comparing every committed capture's output on the host and in the image byte for byte (operator decision, design D13); verify a full `./build.sh` exits 0 with the gate reporting all captures identical, the scan reporting Alpine packages, and compose's `db upgrade` resolving `postgres` by name
 - [x] 13.7 Add `.github/workflows/build.yml`: `./build.sh` on pull requests and pushes; on a push to the main branch or a manual run, push to GHCR as `<commit12>-<YYYYMMDD>-<HHMMSS>`, notify through `Sigurs/container-rebuilds`' `notify-discord` action, and keep only the newest three package versions; build with `--provenance=false --sbom=false` so a push is one version; pin every action to a commit; verify by `tests/test_deployment_files.py` and a single-manifest local build
 
@@ -113,6 +113,6 @@ survived: `keys import`/`export` read the secret through `Config`, with a static
 ## 15. Live exercise
 
 - [x] 15.1 Write `runbook.md` in this change for the exit criterion in design.md's Migration Plan, using existing `dev-` identities and the stock peer; verify by review before any transmission
-- [ ] 15.2 Run the exercise: `./build.sh`, compose up as a non-root UID with the V4 by `/dev/serial/by-id`, sign in from a host browser, enable transmit with password re-entry, send an acknowledged DM, `docker compose restart sighop`, sign back in and find the conversation; verify the container log shows `actor` on every `web_request` and `web_guarded_action`
-- [ ] 15.3 Reset the board once while containerised and record whether `/dev/modem` recovers; if it strands, apply the design's device-rule mitigation and re-verify
-- [ ] 15.4 Record milestone 9's findings in DESIGN.md §12 and resolve or restate design.md's open questions; verify by review
+- [x] 15.2 Run the exercise: `./build.sh`, compose up as a non-root UID with the V4 by `/dev/serial/by-id`, sign in from a host browser, enable transmit with password re-entry, send an acknowledged DM, `docker compose restart sighop`, sign back in and find the conversation; verify the container log shows `actor` on every `web_request` and `web_guarded_action`
+- [x] 15.3 Reset the board once while containerised and record whether `/dev/modem` recovers; if it strands, apply the design's device-rule mitigation and re-verify
+- [x] 15.4 Record milestone 9's findings in DESIGN.md §12 and resolve or restate design.md's open questions; verify by review

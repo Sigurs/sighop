@@ -473,10 +473,19 @@ The board is reset once while containerised and the outcome recorded, whichever 
 
 ## Open Questions
 
-- **Does a V4 reset strand `/dev/modem` inside the container?** Answered by the live exercise;
-  changes only compose device lines, not specs or tasks.
-- **Is an `arm64` image wanted** (a Raspberry Pi beside the aerial is the obvious deployment)? All
-  native dependencies publish aarch64 wheels; adding `--platform` to `build.sh` later changes no
-  spec.
-- **Are 12 h idle / 24 h absolute right for how the panel is actually left open?** Constants in one
-  module; revisit after the exercise.
+- ~~**Does a V4 reset strand `/dev/modem` inside the container?**~~ *Answered for the common case
+  (2026-09-13):* a USB unplug and replug under the running container re-enumerated the V4 as the
+  same `ttyACM0` (`166:0`), the reconnect loop reopened `/dev/modem` in 3.5 s, and reception
+  resumed; no compose change was made. *Restated:* a board returning under a **different** minor
+  was not exercised and would still strand the node, and a process that cannot open the device
+  at start exits rather than retrying. The device-rule mitigation stays the answer if that is
+  ever observed. (An RTS pulse over the USB-JTAG link caused no disconnect and is not a test.)
+- **Is an `arm64` image wanted** (a Raspberry Pi beside the aerial is the obvious deployment)?
+  *Restated, unchanged:* the exercise ran on `amd64` only and told us nothing new. All native
+  dependencies publish aarch64 and musllinux wheels; adding `--platform` to `build.sh` changes
+  no spec.
+- **Are 12 h idle / 24 h absolute right for how the panel is actually left open?** *Restated:*
+  the exercise was about twenty minutes and every session it made ended by a restart or a
+  cleared cookie, so neither limit was reached. It did show what an expiry *looks* like in an
+  open chat tab — the sign-in page painted into the message pane (DESIGN.md §12, milestone 9) —
+  which is worth fixing before the limits are tuned.
