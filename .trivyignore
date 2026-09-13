@@ -1,0 +1,12 @@
+# Vulnerability findings deliberately suppressed from build.sh's scan report.
+#
+# The scan reports and does not fail the build, so a suppression only removes a
+# finding from the report — which is exactly why it has to say why. The rule,
+# enforced by build.sh before it scans (an entry breaking it fails the build): every entry is a finding ID on
+# its own line, immediately preceded by a comment saying why it is safe to
+# suppress — for example that the vulnerable code path is not reachable from
+# sighop, or that no fixed version has shipped for the base image yet — and,
+# ideally, when it should be looked at again. An entry without a reason fails
+# the build. Suppressed findings are still printed (--show-suppressed).
+#
+# There are no entries.

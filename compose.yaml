@@ -1,0 +1,99 @@
+# sighop with its database (DESIGN.md §10).
+#
+#   1. ./build.sh                      — builds the image, also tagged sighop:local
+#   2. ./.env (gitignored), see .env.example:
+#        UID=$(id -u)
+#        GID=$(id -g)
+#        DIALOUT_GID=$(stat -c %g /dev/serial/by-id/usb-...)
+#        SIGHOP_MODEM=/dev/serial/by-id/usb-...
+#        POSTGRES_PASSWORD=$(openssl rand -hex 24)
+#        SIGHOP_SECRET_KEY=...         — `uv run sighop keys secret` prints the line
+#   3. docker compose up -d            — sighop migrates the database on start
+#   4. docker compose run --rm -it sighop web user add <name>
+#
+# Until an account exists, sighop refuses to serve the panel and restarts.
+
+services:
+  sighop:
+    image: ${SIGHOP_IMAGE:-sighop:local}
+    user: "${UID:?set UID, e.g. UID=$(id -u)}:${GID:?set GID, e.g. GID=$(id -g)}"
+    # Numeric: a group name would resolve against the image's /etc/group.
+    group_add:
+      - "${DIALOUT_GID:?set DIALOUT_GID to the serial device's numeric group}"
+    # Long syntax: by-id names contain colons.
+    devices:
+      - source: "${SIGHOP_MODEM:?set SIGHOP_MODEM to a /dev/serial/by-id/... path}"
+        target: /dev/modem
+        permissions: rwm
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 20s
+    restart: unless-stopped
+    command:
+      - run
+      - --migrate
+      - --device
+      - /dev/modem
+      - --web
+      - --web-host
+      - 0.0.0.0
+      - --web-port
+      - "8080"
+      - --web-allowed-host
+      - localhost:8080
+      - --web-allowed-host
+      - 127.0.0.1:8080
+    ports:
+      - "127.0.0.1:${SIGHOP_WEB_PORT:-8080}:8080"
+    environment:
+      # POSTGRES_PASSWORD must be URL-safe (hex is).
+      DATABASE_URL: "postgresql+asyncpg://sighop:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sighop"
+      SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?set SIGHOP_SECRET_KEY, e.g. from sighop keys secret}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - db
+      - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  postgres:
+    image: postgres:17-trixie@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
+    environment:
+      POSTGRES_USER: sighop
+      POSTGRES_DB: sighop
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "sighop", "-d", "sighop"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 30s
+    restart: unless-stopped
+    networks:
+      - db
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  db:
+    internal: true   # no route out, no published port
+  web: {}            # route for the published panel port
+
+volumes:
+  pgdata: {}

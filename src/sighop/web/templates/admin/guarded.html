@@ -14,10 +14,10 @@
   <p class="note">{{ extra_note }}</p>
   {% endif %}
   <p class="note">
-    It is confirmed here rather than performed by a link, and it is recorded as
-    its own event whether it succeeds or is refused. This build has no
-    authentication, so the event names no acting user — milestone 9 fills that
-    field in and nothing else about it changes.
+    It is confirmed here rather than performed by a link, with your password,
+    and it is recorded as its own event naming your account whether it succeeds
+    or is refused. A wrong password refuses it and counts toward the sign-in
+    throttle for your account; it does not sign you out.
   </p>
 
   <form method="post" action="{{ post_to }}">
@@ -34,6 +34,10 @@
       <input class="mono" type="text" name="fraction" value="{{ current_fraction }}">
     </label>
     {% endif %}
+    <label>
+      your password, to confirm
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
     <button type="submit">confirm: {{ title }}</button>
   </form>
   <p><a href="/">cancel, and change nothing</a></p>

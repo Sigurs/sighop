@@ -49,7 +49,16 @@ from sighop.web.guarded import (
 )
 from sighop.web.render import Refusal, refused
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import (
+    OPERATOR,
+    OPERATOR_PASSWORD,
+    StubState,
+    authenticator,
+    csrf,
+    signed_async_client,
+    signed_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
@@ -65,18 +74,18 @@ def _built(
     panel_state = state or stub_state(stub_names=("panel-identity",))
     log = logger or RecordingLogger()
     app = create_app(
-        panel_state, hosts=HOSTS, logger=log, sealing_secret=sealing_secret
+        panel_state, auth=authenticator(), hosts=HOSTS, logger=log, sealing_secret=sealing_secret
     )
     return app, panel_state, log
 
 
 def _client(app: FastAPI) -> TestClient:
-    return TestClient(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
+    return signed_client(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
 
 
 def _live(app: FastAPI) -> httpx2.AsyncClient:
     """A client driving the app in *this* event loop — see `test_web_admin`."""
-    return httpx2.AsyncClient(
+    return signed_async_client(
         transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8080",
         follow_redirects=False,
@@ -84,7 +93,7 @@ def _live(app: FastAPI) -> httpx2.AsyncClient:
 
 
 async def _apost(client: httpx2.AsyncClient, app: FastAPI, path: str, **fields: str):
-    return await client.post(path, data={TOKEN_FIELD: app.state.token, **fields})
+    return await client.post(path, data={TOKEN_FIELD: csrf(client), **fields})
 
 
 def _nonce(body: str) -> str:
@@ -463,7 +472,7 @@ def test_creating_without_a_database_says_so_rather_than_failing() -> None:
     with _client(app) as client:
         response = client.post(
             "/admin/identities/create",
-            data={TOKEN_FIELD: app.state.token, "name": "nowhere"},
+            data={TOKEN_FIELD: csrf(client), "name": "nowhere"},
         )
 
     assert response.status_code == 400
@@ -504,7 +513,7 @@ async def test_the_exported_document_is_the_command_lines_file(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         response = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page)
+            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
         )
 
     assert response.status_code == 200
@@ -545,7 +554,7 @@ async def test_an_exported_keyfile_re_imports_as_the_identity_it_came_from(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         downloaded = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page)
+            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
         )
 
     parsed = keyfile_from_text(downloaded.text, "downloaded")
@@ -588,11 +597,11 @@ async def test_an_export_without_a_confirmation_produces_nothing(
         nonce = _nonce(page)
         assert (
             await _apost(
-                client, app, f"/admin/identities/{record.id}/export", nonce=nonce
+                client, app, f"/admin/identities/{record.id}/export", nonce=nonce, password=OPERATOR_PASSWORD
             )
         ).status_code == 200
         spent = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=nonce
+            client, app, f"/admin/identities/{record.id}/export", nonce=nonce, password=OPERATOR_PASSWORD
         )
 
     assert absent.status_code == 403
@@ -625,7 +634,7 @@ async def test_a_disabled_stored_identity_can_still_be_exported(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         response = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page)
+            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
         )
 
     assert response.status_code == 200
@@ -1071,6 +1080,10 @@ async def test_a_confirmed_post_is_its_own_event_naming_the_room(
     audited = log.named("web_guarded_action")
     assert len(audited) == 1
     assert audited[0]["outcome"] == "success"
+    # Milestone 9, 8.5: confirm-and-nonce with no password field, and the post
+    # names the account that made it.
+    assert audited[0]["actor"] == OPERATOR
+    assert 'name="password"' not in page
     assert audited[0]["room_name"] == "post-lounge"
     assert audited[0]["served"] is False
     assert audited[0]["transmit_enabled"] is False
@@ -1619,7 +1632,8 @@ async def test_the_schema_page_says_migrations_are_not_applied_here(
 
     collapsed = " ".join(body.split())
     assert "not applied from here, and that is deliberate" in collapsed
-    assert "port with no authentication" in collapsed
+    assert "stolen session" in collapsed, "the reason is roles, not a missing login"
+    assert "port with no authentication" not in collapsed, "milestone 8's reason is gone"
     assert "act an operator takes on purpose" in collapsed
 
 
@@ -1754,7 +1768,9 @@ def _every_page(app: FastAPI, ids: dict[str, str]) -> list[tuple[str, str]]:
 
     found: list[tuple[str, str]] = []
     for route in registered_routes(app):
-        if not isinstance(route, APIRoute):
+        if not isinstance(route, APIRoute) or route.path == "/login":
+            # The sign-in form is the one public page and renders no platform
+            # state at all (milestone 9 design D5).
             continue
         path = route.path
         for name, value in ids.items():
@@ -1899,7 +1915,7 @@ async def test_every_new_guarded_action_emits_one_further_event(
             client,
             app,
             f"/admin/identities/{ids['entity_id']}/export",
-            nonce=_nonce(export_page),
+            nonce=_nonce(export_page), password=OPERATOR_PASSWORD,
         )
         assert len(log.named("web_request")) == requests_before + 1
         assert len(log.named("web_guarded_action")) == 1

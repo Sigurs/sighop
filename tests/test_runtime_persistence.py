@@ -407,6 +407,47 @@ async def test_a_run_against_an_unmigrated_database_fails_naming_both_revisions(
         await _drop_schema(database_url, schema)
 
 
+@pytest.mark.database
+async def test_run_migrate_brings_an_empty_database_to_head_and_starts(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The compose deployment's start is its deploy: `run --migrate` applies the
+    chain, then opens as usual — and a second start applies nothing."""
+    from sighop.cli import build_parser, open_persistence
+
+    schema = "sighop_test_run_migrate"
+    await _drop_schema(database_url, schema)
+    await _create_schema(database_url, schema)
+    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, schema)
+    args = build_parser().parse_args(
+        ["run", "--replay", str(CAPTURE), "--migrate", "--database-url", database_url]
+    )
+    handle = Database(config=DatabaseConfig(url=database_url, schema=schema))
+    try:
+        for _ in range(2):
+            persistence, stored = await open_persistence(args, replay=True)
+            assert persistence is not None
+            assert stored == ()
+            await persistence.stop()
+            assert await handle.read_applied_revision() == migrations.expected_revision()
+    finally:
+        await handle.dispose()
+        await _drop_schema(database_url, schema)
+
+
+async def test_run_migrate_with_no_database_is_a_startup_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sighop.cli import build_parser, open_persistence
+    from sighop.config import ConfigError
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    args = build_parser().parse_args(["run", "--replay", str(CAPTURE), "--migrate"])
+    with pytest.raises(ConfigError, match="--migrate") as excinfo:
+        await open_persistence(args, replay=True)
+    assert "DATABASE_URL" in str(excinfo.value)
+
+
 # --- 8.7 The db command surface ---------------------------------------------
 
 

@@ -48,6 +48,7 @@ from sighop.db.repositories import (
     PathRepository,
     RoomMemberRepository,
     RoomRepository,
+    WebUserRepository,
 )
 from sighop.db.writer import WriteBehind
 from sighop.logging import Logger, get_logger
@@ -133,6 +134,12 @@ class Persistence:
     # protocol failure (design D8).
     direct_messages: DirectMessageRepository = field(init=False)
 
+    # Web accounts have no queue and no in-memory mirror (milestone 9 D3, D4):
+    # they are read at sign-in and at each session's revalidation, and a read
+    # that fails is an answer — "this account cannot currently be verified" —
+    # rather than something to retry behind the caller's back.
+    web_users: WebUserRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -158,6 +165,7 @@ class Persistence:
         self.bots = BotRepository(database=self.database)
         self.bot_state = BotStateRepository(database=self.database)
         self.direct_messages = DirectMessageRepository(database=self.database)
+        self.web_users = WebUserRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,

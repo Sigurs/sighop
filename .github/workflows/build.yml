@@ -1,0 +1,89 @@
+name: Build image
+
+# Every gate `build.sh` runs — lock, lint, types, test, image, smoke, scan — on
+# pull requests. On a push to the main branch (or by hand) the image that
+# passed is also pushed to GHCR as `<commit>-<YYYYMMDD>-<HHMMSS>`, announced on
+# Discord, and only the newest three versions are kept.
+#
+# The scan reports vulnerabilities in the log and does not fail the build
+# (operator decision, milestone 9). Database tests skip: CI configures no
+# Postgres, as `build.sh` never requires one.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+
+      - name: Name the image
+        id: name
+        run: |
+          # GHCR wants a lower-case repository path.
+          image="${REGISTRY}/${GITHUB_REPOSITORY@L}"
+          tag="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d-%H%M%S)"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Image: ${image}:${tag}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and verify (build.sh)
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+        run: ./build.sh
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push
+        id: push
+        if: github.event_name != 'pull_request'
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+        run: |
+          docker push "$IMAGE"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE" | cut -d@ -f2)"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Digest: ${digest}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Discord
+        if: github.event_name != 'pull_request'
+        uses: Sigurs/container-rebuilds/.github/actions/notify-discord@6933342322538cfa6b46f87613e233dada6fcb83
+        with:
+          webhook-url: ${{ secrets.DISCORD_WEBHOOK }}
+          image: ${{ steps.name.outputs.image }}
+          tag: ${{ steps.name.outputs.tag }}
+          digest: ${{ steps.push.outputs.digest }}
+
+      # One push is one package version: build.sh builds a single-platform
+      # image with no provenance or SBOM attestations, so "three versions" is
+      # three tags.
+      - name: Keep only the newest three versions
+        if: github.event_name != 'pull_request'
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5
+        with:
+          package-name: ${{ github.event.repository.name }}
+          package-type: container
+          min-versions-to-keep: 3
+          delete-only-untagged-versions: false

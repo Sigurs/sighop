@@ -1,6 +1,6 @@
 """§6's tenth table: a person's own conversations (design D7).
 
-`0001`–`0003` built the eight tables §6 sketched plus the `bot` table it did not.
+`0001`-`0003` built the eight tables §6 sketched plus the `bot` table it did not.
 This adds the tenth:
 
 * ``direct_message`` — one direct message, in either direction, keyed by the
@@ -48,7 +48,7 @@ greeting records, which cost a stranger a second unsolicited message; this one
 loses the conversations themselves.
 
 There is no data migration. The table exists nowhere yet and the nine built by
-`0001`–`0003` are untouched.
+`0001`-`0003` are untouched.
 
 Revision ID: 0004
 Revises: 0003

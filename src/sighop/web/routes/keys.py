@@ -401,6 +401,7 @@ async def export_identity(
     request: Request,
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
+    password: Annotated[str | None, Form()] = None,
 ) -> Response | HTMLResponse:
     """The keyfile itself, in one response, for any **stored** identity.
 
@@ -410,6 +411,7 @@ async def export_identity(
     That is why design D1 passes the sealing secret rather than reusing what the
     run already holds.
     """
+    actor = page.actor(request)
     record = await _entity(page, entity_id)
     if record is None or not page.nonces.spend(nonce, EXPORT_KEY, entity_id):
         audit(
@@ -417,17 +419,29 @@ async def export_identity(
             action=EXPORT_KEY,
             target=entity_id,
             outcome="refused",
+            actor=actor,
             reason="no confirmation was minted for this action",
         )
         return page.page(
             request, "admin/refused.html", title="export a private key", status_code=403
         )
+    refusal = await page.reauthenticate(
+        request,
+        action=EXPORT_KEY,
+        target=entity_id,
+        password=password,
+        title="export a private key",
+        entity_name=record.name,
+    )
+    if refusal is not None:
+        return refusal
     if page.sealing_secret is None or page.persistence is None:
         audit(
             page.logger,
             action=EXPORT_KEY,
             target=entity_id,
             outcome="refused",
+            actor=actor,
             reason=NO_SEALING_SECRET,
             entity_name=record.name,
         )
@@ -442,6 +456,7 @@ async def export_identity(
             action=EXPORT_KEY,
             target=entity_id,
             outcome="refused",
+            actor=actor,
             reason="the stored seed could not be opened",
             entity_name=record.name,
         )
@@ -463,6 +478,7 @@ async def export_identity(
         action=EXPORT_KEY,
         target=entity_id,
         outcome="success",
+        actor=actor,
         entity_name=record.name,
         public_key=record.public_key.hex(),
         enabled=record.enabled,

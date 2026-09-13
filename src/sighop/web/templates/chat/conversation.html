@@ -9,10 +9,6 @@
 {% block content %}
 <h1>{{ entity.name }} → {{ identity.identity(peer, key=false) }}</h1>
 
-{% if not recorded %}
-<p class="unavailable">{{ not_recorded }}</p>
-{% endif %}
-
 {% if refusal %}
 <p class="unavailable"><strong>Not sent.</strong> {{ refusal }}</p>
 {% endif %}

@@ -10,6 +10,10 @@ restarted after a failed deploy meets a schema it does not know, and a new binar
 racing another instance applies DDL twice. Refusing is one line of operational
 friction and removes the whole class.
 
+The exception is opt-in and single-instance: `sighop run --migrate`, which the
+compose deployment passes (milestone 9, operator decision). It only moves a
+database that is *behind* forward; one ahead of the code still refuses.
+
 **Why the bridge.** asyncpg has no synchronous mode and Alembic's migration
 runner is synchronous by construction, so `alembic/env.py` drives the migration
 through `connection.run_sync` (design D1). Alembic's own commands manage an event

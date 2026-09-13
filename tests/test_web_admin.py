@@ -37,7 +37,16 @@ from sighop.web.guarded import (
     NonceStore,
 )
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import (
+    OPERATOR,
+    OPERATOR_PASSWORD,
+    StubState,
+    authenticator,
+    csrf,
+    signed_async_client,
+    signed_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
@@ -49,11 +58,11 @@ def _built(
 ) -> tuple[FastAPI, StubState, RecordingLogger]:
     panel_state = state or stub_state(stub_names=("panel-identity",))
     log = logger or RecordingLogger()
-    return create_app(panel_state, hosts=HOSTS, logger=log), panel_state, log
+    return create_app(panel_state, auth=authenticator(), hosts=HOSTS, logger=log), panel_state, log
 
 
 def _client(app: FastAPI) -> TestClient:
-    return TestClient(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
+    return signed_client(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
 
 
 def _live(app: FastAPI) -> httpx2.AsyncClient:
@@ -64,7 +73,7 @@ def _live(app: FastAPI) -> httpx2.AsyncClient:
     is bound to the test's loop, and a request served on another one meets a
     closed loop. Every database-backed page here uses this instead.
     """
-    return httpx2.AsyncClient(
+    return signed_async_client(
         transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8080",
         follow_redirects=False,
@@ -72,11 +81,11 @@ def _live(app: FastAPI) -> httpx2.AsyncClient:
 
 
 def _post(client: TestClient, app: FastAPI, path: str, **fields: str):
-    return client.post(path, data={TOKEN_FIELD: app.state.token, **fields})
+    return client.post(path, data={TOKEN_FIELD: csrf(client), **fields})
 
 
 async def _apost(client: httpx2.AsyncClient, app: FastAPI, path: str, **fields: str):
-    return await client.post(path, data={TOKEN_FIELD: app.state.token, **fields})
+    return await client.post(path, data={TOKEN_FIELD: csrf(client), **fields})
 
 
 def _nonce(body: str) -> str:
@@ -543,7 +552,7 @@ def test_a_post_without_the_nonce_is_refused_and_audited() -> None:
     assert audited[0]["action"] == REVEAL_KEY
     assert audited[0]["outcome"] == "refused"
     assert audited[0]["target"] == stub.entity_id
-    assert audited[0]["actor"] == "unauthenticated"
+    assert audited[0]["actor"] == OPERATOR
 
 
 def test_the_guarded_event_is_separate_from_the_requests_event() -> None:
@@ -553,7 +562,7 @@ def test_the_guarded_event_is_separate_from_the_requests_event() -> None:
 
     with _client(app) as client:
         page = client.get(f"/admin/reveal/{stub.entity_id}").text
-        _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page))
+        _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
 
     assert len(log.named("web_guarded_action")) == 1
     assert len(log.named("web_request")) == 2, "requests and actions are the same event"
@@ -585,9 +594,9 @@ def test_the_reveal_is_one_response_body_and_its_own_event() -> None:
 
     with _client(app) as client:
         page = client.get(f"/admin/reveal/{stub.entity_id}").text
-        revealed = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page))
+        revealed = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
         # The nonce is spent, so the same request again reveals nothing.
-        again = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page))
+        again = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
 
     assert revealed.status_code == 200
     assert stub.identity.seed.hex() in revealed.text
@@ -631,7 +640,7 @@ def test_enabling_transmission_changes_the_gate_and_the_indication_together() ->
     with _client(app) as client:
         page = client.get("/admin/transmit").text
         assert "opens the transmit gate" in page
-        response = _post(client, app, "/admin/transmit", nonce=_nonce(page), enabled="true")
+        response = _post(client, app, "/admin/transmit", nonce=_nonce(page), enabled="true", password=OPERATOR_PASSWORD)
         assert response.status_code == 303
         overview = client.get("/").text
 
@@ -679,7 +688,7 @@ def test_raising_the_ceiling_carries_the_old_and_the_new_value() -> None:
 
     with _client(app) as client:
         page = client.get("/admin/ceiling").text
-        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="0.5")
+        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="0.5", password=OPERATOR_PASSWORD)
         assert response.status_code == 303
         overview = client.get("/").text
 
@@ -699,7 +708,7 @@ def test_a_ceiling_outside_the_allowed_range_is_refused() -> None:
 
     with _client(app) as client:
         page = client.get("/admin/ceiling").text
-        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="2.0")
+        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="2.0", password=OPERATOR_PASSWORD)
 
     assert response.status_code == 400
     assert state.scheduler.budget.ceiling_fraction == DEFAULT_CEILING_FRACTION

@@ -40,7 +40,14 @@ from sighop.web.app import allowed_hosts, create_app
 from sighop.web.chat import ConversationLog
 from sighop.web.guard import TOKEN_FIELD
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import (
+    StubState,
+    authenticator,
+    csrf,
+    signed_async_client,
+    signed_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
@@ -85,13 +92,13 @@ def _built(
             )
     conversations = log or ConversationLog()
     app = create_app(
-        state, hosts=HOSTS, logger=RecordingLogger(), conversations=conversations
+        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), conversations=conversations
     )
     return app, state, conversations
 
 
 def _client(app: FastAPI) -> TestClient:
-    return TestClient(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
+    return signed_client(app, base_url="http://127.0.0.1:8080", follow_redirects=False)
 
 
 def _record(
@@ -254,14 +261,14 @@ async def test_a_send_goes_through_the_messengers_own_path() -> None:
 
     state.messenger.submit = record  # type: ignore[assignment]
 
-    async with httpx2.AsyncClient(
+    async with signed_async_client(
         transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8080",
         follow_redirects=False,
     ) as client:
         response = await client.post(
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
-            data={TOKEN_FIELD: app.state.token, "text": "hej"},
+            data={TOKEN_FIELD: csrf(client), "text": "hej"},
         )
         assert response.status_code == 303
         # The send runs as its own task; give it a turn to reach the scheduler.
@@ -288,7 +295,7 @@ def test_text_over_the_limit_is_refused_with_the_overage_and_kept() -> None:
     with _client(app) as client:
         response = client.post(
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
-            data={TOKEN_FIELD: app.state.token, "text": long},
+            data={TOKEN_FIELD: csrf(client), "text": long},
         )
 
     assert response.status_code == 400
@@ -310,7 +317,7 @@ def test_a_routeless_contact_is_refused_and_flooding_is_offered() -> None:
     with _client(app) as client:
         response = client.post(
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
-            data={TOKEN_FIELD: app.state.token, "text": "hej"},
+            data={TOKEN_FIELD: csrf(client), "text": "hej"},
         )
 
     assert response.status_code == 400
@@ -337,14 +344,14 @@ async def test_a_routeless_send_floods_only_when_the_choice_was_made() -> None:
 
     state.messenger.submit = record  # type: ignore[assignment]
 
-    async with httpx2.AsyncClient(
+    async with signed_async_client(
         transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8080",
         follow_redirects=False,
     ) as client:
         response = await client.post(
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
-            data={TOKEN_FIELD: app.state.token, "text": "hej", "flood": "yes"},
+            data={TOKEN_FIELD: csrf(client), "text": "hej", "flood": "yes"},
         )
         assert response.status_code == 303
         for _ in range(20):
@@ -365,7 +372,7 @@ def test_a_closed_gate_refuses_and_queues_nothing() -> None:
     with _client(app) as client:
         response = client.post(
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
-            data={TOKEN_FIELD: app.state.token, "text": "hej"},
+            data={TOKEN_FIELD: csrf(client), "text": "hej"},
         )
 
     assert response.status_code == 400
@@ -540,23 +547,115 @@ def test_a_group_text_reception_produces_no_chat_message() -> None:
     assert "No messages yet" in body
 
 
-# --- 15.8 With no database, and with a degraded one -------------------------
+# --- 15.8 / milestone 9 10.2 With a degraded database -----------------------
 
 
-def test_chat_works_with_no_database_and_says_it_is_not_recorded() -> None:
-    """15.8: sending and receiving continue; the interface states the cost."""
+class _Direct:
+    """A `DirectMessageRepository` whose reads succeed until told otherwise."""
+
+    def __init__(self, stored: list[DirectMessageRecord]) -> None:
+        self.stored = stored
+        self.failing = False
+
+    def _failed(self, operation: str):
+        from sighop.db.engine import DatabaseError, Failed
+
+        return Failed(operation=operation, error=DatabaseError("the database is unreachable"))
+
+    async def conversations(self, entity_public_key: bytes | None = None):
+        from sighop.db.engine import Succeeded
+
+        return self._failed("list_conversations") if self.failing else Succeeded(value=[])
+
+    async def conversation(self, entity_public_key: bytes, peer_public_key: bytes, **_: object):
+        from sighop.db.engine import Succeeded
+
+        return self._failed("read_conversation") if self.failing else Succeeded(value=self.stored)
+
+
+class _Persistence:
+    state = "ok"
+    degraded = False
+
+    def __init__(self, direct: _Direct) -> None:
+        self.direct_messages = direct
+
+    def as_json(self) -> dict[str, object]:
+        return {}
+
+
+def _degradable(contact: Contact, stored_text: bytes = b"from before"):
+    state = stub_state(stub_names=("companion",), transmit_enabled=True)
+    state.contacts.restore([contact])
+    stub = state.adverts.stubs[0]
+    stored = [
+        _record(
+            stub.identity.public_key,
+            contact.public_key,
+            ref="pkt-stored",
+            direction=INBOUND,
+            outcome=RecordedOutcome.RECEIVED,
+            text=stored_text,
+        )
+    ]
+    direct = _Direct(stored)
+    persistence = _Persistence(direct)
+    state.persistence = persistence  # type: ignore[assignment]
+    log = ConversationLog()
+    app = create_app(
+        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), conversations=log
+    )
+    return app, state, log, direct, persistence
+
+
+def test_the_database_degrading_mid_conversation_is_said_on_the_next_refresh() -> None:
+    """`web-chat`: sending and receiving continue, and the refreshed partial says
+    messages from this point are not being recorded — no reload needed."""
     contact = _contact()
-    app, state, log = _built(contacts=[contact])
-    assert state.persistence is None
+    app, state, log, _direct, persistence = _degradable(contact)
+    stub = state.adverts.stubs[0]
+    path = f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
+
+    with _client(app) as client:
+        healthy = client.get(path).text
+        assert "not being recorded" not in healthy
+        assert "cannot be read" not in healthy
+
+        persistence.degraded = True
+        persistence.state = "degraded"
+        log.offer(
+            _record(
+                stub.identity.public_key,
+                contact.public_key,
+                ref="pkt-during",
+                direction=INBOUND,
+                outcome=RecordedOutcome.RECEIVED,
+                text=b"still arriving",
+            )
+        )
+        partial = client.get(f"{path}/messages").text
+
+    assert "messages from this point are not being recorded" in partial
+    assert "still arriving" in partial, "receiving continued"
+    assert "from before" in partial
+
+
+def test_a_conversation_opened_while_degraded_says_stored_history_cannot_be_read() -> None:
+    """`web-chat`: the messages this run has seen, sending available, and both
+    facts said — history cannot be read, and new messages are not recorded."""
+    contact = _contact()
+    app, state, log, direct, persistence = _degradable(contact)
+    direct.failing = True
+    persistence.degraded = True
     stub = state.adverts.stubs[0]
     log.offer(
         _record(
             stub.identity.public_key,
             contact.public_key,
-            ref="pkt-1",
+            ref="pkt-seen",
             direction=INBOUND,
             outcome=RecordedOutcome.RECEIVED,
-            text=b"arrived anyway",
+            text=b"seen this run",
         )
     )
 
@@ -565,36 +664,18 @@ def test_chat_works_with_no_database_and_says_it_is_not_recorded() -> None:
             f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
         ).text
 
-    assert "arrived anyway" in body
-    assert "not being recorded" in body
-    assert "will not survive the run" in body
+    assert "Stored history cannot be read" in body
+    assert "new messages are not being recorded" in body
+    assert "seen this run" in body
+    assert "from before" not in body
+    assert 'class="composer"' in body, "sending is available"
 
 
-def test_a_degraded_database_says_the_conversation_is_not_being_recorded() -> None:
-    """15.8: the same statement, for the outage rather than the absence."""
-
-    class _Conversations:
-        async def conversations(self, entity_public_key: bytes | None = None):
-            from sighop.db.engine import DatabaseError, Failed
-
-            return Failed(
-                operation="list_conversations",
-                error=DatabaseError("the database is unreachable"),
-            )
-
-    class _Degraded:
-        state = "degraded"
-        degraded = True
-        direct_messages = _Conversations()
-
-        def as_json(self) -> dict[str, object]:
-            return {}
-
+def test_a_degraded_database_says_so_on_the_conversation_list() -> None:
     contact = _contact()
-    state = stub_state(stub_names=("companion",), transmit_enabled=True)
-    state.contacts.restore([contact])
-    state.persistence = _Degraded()  # type: ignore[assignment]
-    app = create_app(state, hosts=HOSTS, logger=RecordingLogger())
+    app, _state, _log, direct, persistence = _degradable(contact)
+    direct.failing = True
+    persistence.degraded = True
 
     with _client(app) as client:
         body = client.get("/chat").text
@@ -695,9 +776,9 @@ async def test_a_conversation_survives_a_restart(database: Database) -> None:
 
     # A fresh panel: no in-memory log at all, as after a restart.
     app = create_app(
-        state, hosts=HOSTS, logger=RecordingLogger(), conversations=ConversationLog()
+        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), conversations=ConversationLog()
     )
-    async with httpx2.AsyncClient(
+    async with signed_async_client(
         transport=httpx2.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
     ) as client:
         body = (

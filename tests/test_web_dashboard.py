@@ -33,18 +33,23 @@ from sighop.web.feed import EntityTraffic, FeedHub
 from sighop.web.render import contact_rows, modem_readings, queue_rows
 from tests.test_web_feed import _outcome, _reception, _submission
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import (
+    StubState,
+    authenticator,
+    signed_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
 
 def _client(app: FastAPI) -> TestClient:
-    return TestClient(app, base_url="http://127.0.0.1:8080")
+    return signed_client(app, base_url="http://127.0.0.1:8080")
 
 
 def _app(state: StubState, feed: FeedHub | None = None) -> FastAPI:
-    return create_app(state, feed=feed, hosts=HOSTS, logger=RecordingLogger())
+    return create_app(state, auth=authenticator(), feed=feed, hosts=HOSTS, logger=RecordingLogger())
 
 
 def _contact(name: str, *, verified: bool = True, key: bytes | None = None) -> Contact:

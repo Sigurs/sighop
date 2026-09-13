@@ -589,3 +589,27 @@ def queue_rows(status: SchedulerStatus) -> list[QueueView]:
         )
         for priority in sorted(PRIORITY_NAMES)
     ]
+
+
+# --- Guarded actions, as the run's output says them (milestone 9, 8.6) -------
+
+
+def render_transmit_change(enabled: bool, *, actor: str) -> str:
+    """One line for the terminal: what the gate now is, and who changed it."""
+    state = "ENABLED — this node now transmits" if enabled else "disabled — receive only"
+    return f"web: transmission {state} (by account {actor!r} from the web interface)"
+
+
+def render_ceiling_change(previous: float, ceiling: float, *, actor: str) -> str:
+    """One line for the terminal: the old and new ceiling, and who changed it."""
+    from sighop.net.tx import DEFAULT_CEILING_FRACTION
+
+    note = (
+        " — ABOVE the 10% regulatory default"
+        if ceiling > DEFAULT_CEILING_FRACTION
+        else ""
+    )
+    return (
+        f"web: airtime ceiling {previous * 100:g}% -> {ceiling * 100:g}%{note} "
+        f"(by account {actor!r} from the web interface)"
+    )

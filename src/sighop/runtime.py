@@ -1034,6 +1034,16 @@ class Runtime:
             ),
         )
 
+    def say(self, text: str) -> None:
+        """Write one line to the run's output, held until startup like every other.
+
+        For a surface that changes what the run is doing — the web panel opening
+        the transmit gate — so an operator watching the terminal sees it. Plain
+        text in, nothing about who is asking: `runtime.py` does not learn that
+        `web/` exists.
+        """
+        self._print(text)
+
     def _print(self, text: str) -> None:
         if not self._started:
             self._held.append(text)

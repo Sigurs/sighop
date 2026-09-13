@@ -1,0 +1,14 @@
+# An allowlist, not a denylist (milestone 9 design D13): everything is excluded,
+# and only what the image is built from is let back in. captures/, keys/,
+# .env.dev, related-repos/, tests/ and .git cannot reach the build context by
+# someone forgetting to list them here.
+*
+!src
+!alembic
+!alembic.ini
+!pyproject.toml
+!uv.lock
+
+# Nothing a developer's checkout grows inside the allowed directories either.
+**/__pycache__
+**/*.py[cod]

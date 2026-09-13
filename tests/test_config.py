@@ -28,7 +28,7 @@ from sighop.config import (
     parse_secret_key,
 )
 
-PASSWORD = "2B9dQCPEzz5"
+PASSWORD = "not-a-real-password-9f3c"
 URL = f"postgresql+asyncpg://apps_sighop-dev:{PASSWORD}@172.20.4.20:30432/apps_sighop-dev"
 
 
@@ -190,3 +190,5 @@ def test_a_secret_of_the_wrong_length_says_so_and_is_not_reshaped() -> None:
         parse_secret_key(short)
     assert "16 bytes" in str(excinfo.value)
     assert "32" in str(excinfo.value)
+
+

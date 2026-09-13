@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}sighop{% endblock %}</title>
-  {# The provenance token (design D9). Present only in pages this process
-     served, which is the whole of what it proves: a state-changing request
-     carrying it came from here, and one that does not did not. #}
+  {# The provenance token (design D9), which is this session's own since
+     milestone 9 (design D6). Present only in pages this process served to this
+     session: a state-changing request carrying it came from here, and one that
+     does not did not. #}
   <meta name="sighop-token" content="{{ token }}">
   <link rel="stylesheet" href="/static/panel.css">
   <script src="/static/htmx.min.js" defer></script>
@@ -29,6 +30,15 @@
       <a href="/admin/radio">radio</a>
       <a href="/admin/schema">schema</a>
     </nav>
+    {% if signed_in_as %}
+    {# A POST, never a link: following, prefetching or reloading a page must
+       not end a session (web-auth). #}
+    <form class="signout" method="post" action="/logout">
+      <input type="hidden" name="_token" value="{{ token }}">
+      <span class="note">signed in as <span class="mono">{{ signed_in_as }}</span></span>
+      <button type="submit">sign out</button>
+    </form>
+    {% endif %}
   </header>
 
   {# On every page, by construction rather than by discipline (design D12). #}

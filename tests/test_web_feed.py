@@ -42,7 +42,7 @@ from sighop.web.app import allowed_hosts, create_app
 from sighop.web.feed import DEFAULT_CONNECTION_QUEUE, FeedHub
 from sighop.web.serialize import HISTORY, LIVE, logged_packet, rx_record, tx_record
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import stub_state
+from tests.webfixtures import authenticator, signed_client, stub_state
 
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 HOSTS = allowed_hosts("127.0.0.1", 8080)
@@ -349,16 +349,20 @@ def _open_feed(client: TestClient):
 
     `TestClient.websocket_connect` sends `Host: testserver` regardless of the
     base URL, and the rebinding guard refuses a host it was not configured to
-    serve — which is exactly what it is for (design D9).
+    serve — which is exactly what it is for (design D9). A browser also sends
+    `Origin` on every handshake, and milestone 9's guard refuses one that does
+    not name a served host.
     """
-    return client.websocket_connect("/feed", headers={"Host": "127.0.0.1:8080"})
+    return client.websocket_connect(
+        "/feed", headers={"Host": "127.0.0.1:8080", "Origin": "http://127.0.0.1:8080"}
+    )
 
 
 def _app(state: object | None = None, feed: FeedHub | None = None) -> tuple[FastAPI, FeedHub]:
     hub = feed or FeedHub()
     panel = state or stub_state()
     return (
-        create_app(panel, feed=hub, hosts=HOSTS, logger=RecordingLogger()),  # type: ignore[arg-type]
+        create_app(panel, auth=authenticator(), feed=hub, hosts=HOSTS, logger=RecordingLogger()),  # type: ignore[arg-type]
         hub,
     )
 
@@ -368,7 +372,7 @@ def test_the_socket_paints_history_then_marks_the_boundary_then_streams() -> Non
     app, hub = _app()
 
     with (
-        TestClient(app, base_url="http://127.0.0.1:8080") as client,
+        signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
             history = socket.receive_json()
@@ -385,18 +389,18 @@ def test_the_socket_paints_history_then_marks_the_boundary_then_streams() -> Non
             assert live["records"][0]["source"] == LIVE
 
 
-def test_with_no_database_the_feed_starts_empty_and_says_why() -> None:
+def test_with_no_readable_history_the_feed_starts_empty_and_says_why() -> None:
     """10.5, `web-dashboard`: not a mesh that has been quiet — no history at all."""
     app, _hub = _app()
 
     with (
-        TestClient(app, base_url="http://127.0.0.1:8080") as client,
+        signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
             history = socket.receive_json()
 
     assert history["records"] == []
-    assert "no database is configured" in history["note"]
+    assert "could not be read" in history["note"]
     assert "only records from now on" in history["note"]
 
 
@@ -405,7 +409,7 @@ def test_a_transmission_reaches_a_connected_browser() -> None:
     app, hub = _app()
 
     with (
-        TestClient(app, base_url="http://127.0.0.1:8080") as client,
+        signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
             socket.receive_json()  # history
@@ -425,7 +429,7 @@ def test_the_drop_count_reaches_the_browser() -> None:
     app, _hub = _app(feed=hub)
 
     with (
-        TestClient(app, base_url="http://127.0.0.1:8080") as client,
+        signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
             socket.receive_json()  # history
@@ -454,10 +458,10 @@ def test_a_closed_connection_emits_one_event_with_its_counts() -> None:
     logger = RecordingLogger()
     hub = FeedHub()
     state = stub_state()
-    app = create_app(state, feed=hub, hosts=HOSTS, logger=logger)
+    app = create_app(state, auth=authenticator(), feed=hub, hosts=HOSTS, logger=logger)
 
     with (
-        TestClient(app, base_url="http://127.0.0.1:8080") as client,
+        signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
             socket.receive_json()

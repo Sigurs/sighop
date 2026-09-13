@@ -12,17 +12,21 @@ Five of the panel's actions are not ordinary configuration changes:
   unsent.
 
 §8 requires each to be re-confirmed and logged as its own wide event with the
-acting user recorded. There is no acting user until milestone 9, and that is the
-one field that changes when there is: everything else about these events —
-their names, their targets, their outcomes, the confirmation in front of them —
-is built here to survive real users arriving.
+acting user recorded. Milestone 9 fills that field in: `audit()`'s `actor` is a
+required keyword with no default, so a call site that forgets it is a type error
+rather than an event that silently names nobody.
 
 The pattern is deliberately not "a link that does it":
 
 1. A **confirmation view** states what this specific action does, and mints a
    nonce that exists only for it.
-2. A **POST** carries the provenance token (design D9, every state-changing
-   request) *plus* that nonce. Without both, nothing happens.
+2. A **POST** carries the session's provenance token (design D9, every
+   state-changing request) *plus* that nonce — and, for the four actions that
+   change what the station may do or who it can impersonate, the acting user's
+   **password**, verified against a fresh read of their account (milestone 9
+   design D7). A room post does not ask for one: it is content, not a change of
+   permission, and a password prompt on every post would train operators to
+   type their password without reading.
 3. The action emits its **own** structured event, separate from the request's,
    naming the action, the target and the outcome — including when it was
    refused, because a refused attempt at revealing a key is the more
@@ -54,6 +58,9 @@ ENABLE_TRANSMIT = "enable_transmit"
 RAISE_CEILING = "raise_airtime_ceiling"
 EXPORT_KEY = "export_private_key"
 POST_TO_ROOM = "post_to_room"
+
+REAUTHENTICATED_ACTIONS = frozenset({REVEAL_KEY, EXPORT_KEY, ENABLE_TRANSMIT, RAISE_CEILING})
+"""The guarded actions whose confirmation carries the acting user's password."""
 
 ACTION_DESCRIPTIONS = {
     REVEAL_KEY: (
@@ -139,14 +146,15 @@ def audit(
     action: str,
     target: str,
     outcome: str,
+    actor: str,
     **fields: object,
 ) -> None:
     """One guarded action, as its own wide event (§8, design D10).
 
     Separate from the request's event on purpose: a reader looking for "who
     revealed a key" is not looking for "a POST returned 200", and the two have
-    different retention value. `actor` is the field milestone 9 fills in; it is
-    present and empty now so nothing else about this event has to change then.
+    different retention value. `actor` is the signed-in username and has no
+    default (milestone 9 design D7).
     """
     log = logger or get_logger(component="web")
     emit = log.info if outcome == "success" else log.error
@@ -155,8 +163,6 @@ def audit(
         outcome=outcome,
         action=action,
         target=target,
-        # No authentication in this build: there is no acting user to name, and
-        # saying so is more honest than omitting the field.
-        actor="unauthenticated",
+        actor=actor,
         **fields,
     )

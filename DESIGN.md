@@ -63,8 +63,9 @@ whole outgoing-path design (§4.3).
 | Transmit | **Receive-only mode is a first-class setting, and the default on a fresh install.** | We develop against a live mesh with real users on it. Nothing transmits until an operator deliberately enables it. |
 | Modem hardware | **Heltec WiFi LoRa 32 V3 or V4** — either, interchangeably. | Both are ESP32-S3 + SX1262 running the same board-agnostic KISS example; time-on-air is identical, so nothing above the transport can tell them apart. §4.1 names the four seams where the board is visible, all probe-detected. Capture on the V3 to date. |
 | Test peer | A second dedicated board. | Repeatable, automatable testing at milestone 4 without involving the live mesh's real users. The spare V4 fills this: the peer needs the full companion firmware, where its proper board definition, 16 MB flash and OLED support are genuinely better. |
+| Test entity naming | **Every test room, companion, bot, identity and other entity is named with a `dev-` prefix, and existing ones are reused when possible** rather than a fresh one created per exercise. | Test entities advertise on a live mesh with real users; the prefix makes them recognisable as ours at a glance, in their contact lists and in our own database. Reuse keeps contact lists and the database from filling with near-duplicates, and keeps each test identity's history in one place. |
 | Radio count | **One radio. No separate RX and TX devices.** | Co-sited transmitter and receiver on the same frequency is one radio destroying another, not two independent radios (§4.3). The second board is better spent as the test peer. A second radio on a *different* preset or band is a separate question, left open by the multi-modem non-goal. |
-| WebUI auth | Built-in session login, Argon2id, secure cookie. | Standalone, no external dependency. The UI holds private keys and can key a transmitter; it does not ship unauthenticated. |
+| WebUI auth | Built-in session login: accounts in the database, Argon2id, an `HttpOnly; SameSite=Strict` cookie over plain HTTP (milestone 9 — not `Secure`, see §8). | Standalone, no external dependency. The UI holds private keys and can key a transmitter; it does not ship unauthenticated. |
 
 ### Explicit non-goals for v1
 
@@ -456,7 +457,8 @@ must not render channel sender names in a way that implies verified identity.
 
 Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
-them. Milestone 8 adds a tenth.
+them. Milestone 8 adds a tenth, and milestone 9 an eleventh that is not about the mesh at
+all.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -491,6 +493,22 @@ them. Milestone 8 adds a tenth.
   `wire_timestamp` (`BIGINT`, the peer's clock as it travels), `handled_at` (`TIMESTAMPTZ`,
   ours), `ref`, `packet_ids`, attempts, route flood, route path, outcome,
   `ack_latency_ms`, unique on (entity public key, `ref`)
+
+**Built (milestone 9, migration `0005`):**
+
+- **web_user** — id, username (stored normalised: NFKC then `casefold()`; **unique**),
+  Argon2id `password_hash` with its parameters, enabled, `created_at`, `password_set_at`
+  (both `TIMESTAMPTZ`)
+
+**The eleventh table holds operator accounts** for the web interface (§8). They are durable
+state because revoking one has to reach a running process: each session re-reads its row at
+most once a minute, and `password_set_at` is the credential epoch it compares, so no
+separate session-generation counter can drift from the thing it describes. Normalising the
+username in one function (`normalise_username`, used by the repository, the CLI and sign-in)
+makes the plain `UNIQUE` case-insensitive without `citext`, an extension the measured role
+may not be able to create. **A downgrade from `0005` deletes every account** — only hashes
+were ever stored, so nothing is recoverable — and `run --web` then cannot start until the
+schema is upgraded again and accounts are re-added. The migration's docstring says so.
 
 **The tenth table exists because `message` is room-scoped.** `message` hangs off `room_id`
 because a room server's whole purpose is to hold what was posted to it; a person's own
@@ -593,7 +611,9 @@ promptly and never dropped (re-acquiring one means waiting for the peer to adver
 advert floor is 24 h), while a route and a log row are dropped freely and counted, because
 the next reception regenerates one and the other is a feed. Migrations are the only
 authority on schema; `sighop run` refuses a database that is not at the revision the code
-expects, and never migrates as a side effect of starting.
+expects, and never migrates as a side effect of starting — unless asked by name with
+`run --migrate`, which the compose deployment passes (milestone 9) and which still refuses a
+database ahead of the code.
 
 **`bot_state` is the exception to write-behind, and it is the sharpest one.** A dropped
 contact costs a re-learn; a dropped greeting record costs a *second unsolicited message to a
@@ -937,50 +957,106 @@ wins over instrumentation.
 ### Authentication
 
 The WebUI controls radio transmission and holds private keys, so it ships with real auth
-rather than assuming a protective network. Built-in session login: username plus Argon2id
-password hash, secure `HttpOnly`/`SameSite` cookie, no external identity dependency.
+rather than assuming a protective network. **As built in milestone 9:**
 
-Two rules follow from what the UI can do:
+- **Accounts live in the database** — a `web_user` table (§6, migration `0005`): a
+  username stored normalised (NFKC, then `casefold()`, so uniqueness is case-insensitive
+  without `citext`), an Argon2id hash with its parameters, an enabled flag, and
+  `password_set_at`, which doubles as the credential epoch. `run --web` therefore requires a
+  database *and* at least one enabled account, and refuses at startup — before any socket
+  exists — naming the command that fixes either. A run without `--web` needs neither.
+- **Accounts are managed from a terminal only**: `sighop web user
+  add|list|passwd|disable|enable|remove`. Passwords come from a prompt (asked twice) or
+  standard input, never argv — the rule room passwords already follow — and disabling or
+  removing the last enabled account needs `--allow-no-accounts`. The browser offers none of
+  it (see below).
+- **Every page, form and the feed's WebSocket require a session, by default-deny.** The
+  public set is fixed in `web/guard.py` — `GET`/`POST /login` and `/static/` — and anything
+  not named in it refuses a request with no session (`303` to the sign-in form for a safe
+  method, `401` otherwise; the WebSocket closes with `1008` before `accept()`, and also
+  checks `Origin`). A test walks the route table to prove it. There is no option,
+  environment variable or constructor argument that turns authentication off, on loopback
+  or anywhere else — `create_app` requires an authenticator, and tests sign in through the
+  production session store.
+- **Sessions are in memory**, keyed by `sha256` of the cookie (the store never holds a
+  presentable token), bounded at 256, ending after 12 h idle or 24 h absolute, at sign-out
+  (a POST — there is no `GET /logout`), and at restart. Sign-in issues a new identifier
+  whatever the browser held. Each session re-reads its account at most once a minute and
+  ends when the row is gone, disabled, or its `password_set_at` moved — which is how a
+  terminal `disable` or `passwd` reaches a running panel within a minute with no IPC. If
+  that read fails because the database is degraded, pages keep working and every guarded
+  action is refused with "this account cannot currently be verified".
+- **Sign-in reveals nothing to a guesser.** One response, byte for byte, for an unknown
+  user, a disabled account and a wrong password; exactly one Argon2id verification in each
+  case (an unknown user verifies against a hash computed at startup); throttling by
+  normalised username and by socket address, five free failures then `min(2^(n-5), 900)`
+  seconds, refused *without* verifying, in LRU maps bounded at 4096 keys. The panel has its
+  own `PasswordHasher`, so a burst of room logins cannot queue an operator's sign-in (peak
+  Argon2id memory 4 × 64 MiB). `web_login` records the outcome and reason; the password
+  never reaches an event.
+- **The cookie is `sighop_session; HttpOnly; SameSite=Strict; Path=/` — and not `Secure`.**
+  *(Corrected in milestone 9. This section said "secure cookie".)* sighop serves plain HTTP
+  by operator decision and does not terminate TLS; a `Secure` cookie set over HTTP on
+  anything but `localhost` is discarded by the browser, so sign-in would succeed on the
+  server and loop back to the form — the kind of failure that gets "fixed" by removing the
+  check. `__Host-` requires `Secure` and is unavailable for the same reason. `Strict` rather
+  than `Lax` costs one thing — following a link to the panel from another site shows the
+  sign-in form — and makes "GET never changes state" a second wall rather than the only one.
 
-- **The interface binds to loopback by default, and a wider bind is a deliberate,
-  announced operator decision.** *(Corrected in milestone 8. This section previously said
-  "no unauthenticated mode, at any milestone"; milestone 8 ships the WebUI before
-  authentication exists, so that rule described something the code does not enforce. What
-  is enforced instead: `sighop run --web` defaults `--web-host` to `127.0.0.1`; any other
+Three rules follow from what the UI can do:
+
+- **The interface binds to loopback by default, and a wider bind is announced.** Any other
   address is permitted and is reported at startup — in the run's output and as its own
-  logged event, with no option that suppresses it — as unauthenticated, reachable from the
-  network, and able to transmit and reveal private key material. Milestone 9 closes the
-  gap; until then it is stated rather than implied.)*
-- **Because there is no authentication, request provenance is enforced.** Every
-  state-changing request carries a token issued by this process and present only in pages
-  it served, and every request's `Host` header must be one the interface was configured to
-  answer to. Neither is authentication: they are the difference between "reachable by
-  anything that can route to the port" and "reachable by anything that can render a page in
-  the operator's browser", and CSRF and DNS rebinding are what make that difference matter
-  (milestone 8, design D9).
-- Actions that reveal a private key, enable transmit, or raise the duty-cycle ceiling are
-  re-authenticated and logged as their own wide events with the acting user recorded. Until
-  milestone 9 the re-authentication is a per-action confirmation carrying a one-shot nonce,
-  and the actor field reads `unauthenticated` — the only part of those events that changes
-  when real users arrive.
+  logged event, with no option that suppresses it — as reachable from the network over
+  plain HTTP, with passwords and session cookies unencrypted in transit, and the remedy (a
+  tunnel). *(Milestone 8 announced "no authentication" here; that sentence is gone because
+  it is no longer true, and the plain-HTTP one replaced it because it still is.)*
+  `--web-allowed-host` names further host names the rebinding check accepts — a panel bound
+  to `0.0.0.0` in a container is reached as `localhost:8080` — and extends, never replaces,
+  the bind-derived set; a wildcard is refused at startup.
+- **Request provenance is enforced alongside authentication, not instead of it.** A page on
+  another origin can ride a signed-in browser, and a rebound name can make its script
+  same-origin with the panel. Every state-changing request carries the *session's own*
+  token (the sign-in form carries a per-process one, which is all a pre-session request can
+  be bound to; another session's token is refused like none), and every request's `Host`
+  must be one the interface answers to (milestone 8 design D9, milestone 9 design D6).
+- **Actions that reveal or export a private key, enable transmit, or raise the duty-cycle
+  ceiling are re-authenticated**: the confirmation carries the one-shot nonce *and* the
+  acting user's password, verified against a fresh read of the account. A wrong or missing
+  password refuses the action as its own event and counts toward the sign-in throttle, but
+  does not end the session. A room post stays confirm-and-nonce: it is content, not a change
+  to what the station may do, and a password prompt on every post would train operators to
+  type it without reading. Every `web_request` and `web_guarded_action` event carries
+  `actor` — the username, or `unauthenticated` — and `audit()` takes it as a required
+  keyword with no default. Transmit and ceiling changes made in the browser are also printed
+  in the run's own output, naming the account.
 
-Reverse-proxy trust is deliberately *not* supported in v1. It is a reasonable deployment
-pattern, but "trust this header" is a footgun that turns one proxy misconfiguration into
-unauthenticated key access, and it can be added later without disturbing anything.
+Reverse-proxy trust is deliberately *not* supported in v1: forwarding headers are never read
+for the client address, the throttle key or the cookie's attributes. It is a reasonable
+deployment pattern, but "trust this header" is a footgun that turns one proxy
+misconfiguration into a bypassed throttle, and it can be added later without disturbing
+anything. Behind a proxy the per-address throttle degrades to a global one, which is the
+safe direction.
 
 ### What the interface deliberately does not expose
 
-The browser reaches every `sighop` capability an operator administers a node with, with two
-exceptions. Both are deliberate, both are stated *in the interface* at the point an
-operator would look for them rather than only here, and neither is a gap waiting to be
-closed by whoever notices it first.
+The browser reaches every `sighop` capability an operator administers a node with, with three
+exceptions. All are deliberate, all are stated *in the interface* at the point an operator
+would look for them rather than only here, and none is a gap waiting to be closed by
+whoever notices it first.
 
 - **Applying a migration.** `sighop db upgrade` has no browser equivalent. §6 makes
   applying a migration an act an operator takes on purpose and never a side effect of
-  starting something, and this build's port has no authentication — so offering it here
-  would make schema migration reachable by anything that can route to that port. The schema
-  page shows the applied and expected revisions, says the two disagree when they do, gives
-  the command that reconciles them, and says why the button is not there.
+  starting something, and the interface has no roles — every account is an operator — so
+  offering it here would make a stolen session enough to change the schema. The schema page
+  shows the applied and expected revisions, says the two disagree when they do, gives the
+  command that reconciles them, and says why the button is not there.
+- **Managing accounts** (milestone 9). `sighop web user` has no browser equivalent. With no
+  roles, anyone signed in could create a second account for themselves, and a stolen
+  session would become a credential that outlives it; terminal access to the host is the
+  stronger proof of being the operator. "Change my own password" was the one safe subset
+  and is also left out — it still lets a stolen session lock the owner out — and can be
+  added later without disturbing anything. The schema page names the command and says why.
 - **Generating the sealing secret.** `sighop keys secret` has no browser equivalent for a
   smaller reason: it prints a value once that must be kept and must never be regenerated —
   losing it makes every stored identity unrecoverable — and a browser is a poor place to
@@ -1042,6 +1118,110 @@ airtime budget was exhausted" — not "sync failed".
 
 ## 10. Container and deployment
 
+**As built in milestone 9** — `Dockerfile`, `.dockerignore`, `compose.yaml`, `build.sh`. The
+paragraphs after this list are the original intent; where the build departs from them it
+says so here.
+
+- **The image.** Two stages on the same digest-pinned `python:3.13-alpine` (musl), `uv`
+  copied from a pinned `ghcr.io/astral-sh/uv` image. `uv sync --locked --no-dev
+  --no-install-project` (the cached dependency layer), then the source and `uv sync --locked
+  --no-dev --no-editable`, bytecode compiled at build. **`--locked`, not `--frozen`**:
+  `--frozen` installs from a stale lock without complaint, and a lock that disagrees with
+  `pyproject.toml` must fail the build (it does — verified). The final stage holds
+  `/app/.venv`, `alembic/` and `alembic.ini` — one `COPY` of `/app`, byte-compiled and
+  `chmod -R a+rX` in the build stage, no `RUN` — sets `SIGHOP_ALEMBIC_DIR`, `PATH`,
+  `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, **no `USER`**,
+  `ENTRYPOINT ["sighop"]`, `CMD ["--help"]`, OCI version/revision labels and
+  `SIGHOP_COMMIT_HASH` from build arguments — so every event from a container names its
+  build (verified: `"version": "0.1.0", "commit_hash": …`). The image adds no compiler, no
+  `uv` and no package installer to its base, and no `tests/`, `captures/`, `keys/`, `.env*` or `.git` — `.dockerignore` is an allowlist
+  (`*`, then `!src !alembic !alembic.ini !pyproject.toml !uv.lock`), so nothing arrives by
+  someone forgetting to list it. `sighop db current` works from the image alone.
+- **Alpine, not slim.** Built first on `python:3.13-slim-trixie` (307 MB, 56 HIGH/CRITICAL
+  Debian-package findings), then switched by operator decision to `python:3.13-alpine`
+  (200 MB, 7 HIGH, all `libuuid`, no CRITICAL). Every native dependency ships a musl wheel,
+  so nothing compiles. The test suite runs on glibc, so `build.sh` has a `replay` gate that
+  replays every committed capture on the host and inside the image and requires identical
+  output. **Nothing the base ships is deleted.** An earlier version removed `pip` and `apk`
+  in the final stage: that saves no bytes, since they stay in the base layers, and it hides
+  them from the scan while still shipping them — removing `/lib/apk/db` too made the scan
+  report zero OS findings, a blind scan that looked clean. The base's `pip` and `apk` stay,
+  reported by the scan, and cannot install anything under a read-only root as a non-root
+  user.
+- **Deviation: a base with a shell, not Wolfi.** §10 below says "no shell utilities
+  beyond what the runtime needs". Wolfi/Chainguard `python` would honour that, and was
+  rejected: its free tier publishes `latest` only, so an unrelated rebuild would move the
+  interpreter to 3.14 under a lock resolved for 3.13. Alpine keeps busybox's shell and
+  applets; the compensating controls are the deployment's read-only root, all
+  capabilities dropped and `no-new-privileges` (milestone 9 design D13).
+- **The deployment.** `sighop` runs as `user: "${UID}:${GID}"` with `group_add:
+  ["${DIALOUT_GID}"]` — **numeric**, because a group *name* resolves against the image's
+  `/etc/group`, not the host's, and because the name differs by distribution: on the
+  development host (Arch) serial devices belong to `uucp` (GID 984), not `dialout`. The
+  variable keeps §10's name; its comment gives `stat -c %g /dev/serial/by-id/…` as the way
+  to find the value. The modem is mapped by `/dev/serial/by-id/…` to `/dev/modem` in the
+  long `devices:` syntax, because by-id names carry colons (the V4's USB serial is its MAC
+  address) and the short form splits on them. `read_only`, a `/tmp` tmpfs, `cap_drop: [ALL]`,
+  `no-new-privileges`, `init: true` (signal forwarding: `docker compose stop` is the same
+  graceful stop as Ctrl-C, exit 0), `restart: unless-stopped`, `stop_grace_period: 20s`,
+  `json-file` log rotation. The panel is published on `127.0.0.1:8080` only, with
+  `--web-allowed-host localhost:8080` and `127.0.0.1:8080`; inside the container it binds
+  `0.0.0.0`, so the plain-HTTP warning always prints there — correctly, since whether the
+  published port is host loopback is compose's decision, not something the process can see.
+  `UID`, `GID`, `DIALOUT_GID` and `SIGHOP_MODEM` are `${VAR:?reason}`: compose refuses to
+  start and names the missing one.
+- **Two services, and migration on start** (operator decision). `sighop` starts with
+  `run --migrate`, which applies outstanding migrations before the schema-version check and
+  emits `database_migrated` with the revision before and after. Only a database *behind* is
+  moved; one ahead of the image is refused as anywhere else, so restarting an older image
+  after a newer one migrated still fails loudly. A plain `run` outside compose still refuses.
+  This replaced a separate `migrate` service under a profile, judged too complicated for a
+  single-container deployment where starting the new image *is* the deploy.
+- **The database** is `postgres:17-trixie` by digest, on a `db` network with `internal:
+  true`, no `ports`, a named volume, a `pg_isready` healthcheck that `sighop` waits on. From
+  another machine it is unreachable; the Docker host itself can still reach the container's
+  bridge address, which is how Linux bridge networking works and needs root-equivalent
+  access (the `docker` group) to exploit anyway.
+- **Secrets come from `.env`** (gitignored, operator decision): `POSTGRES_PASSWORD` for
+  Postgres and interpolated into sighop's `DATABASE_URL` — so it must be URL-safe, e.g.
+  `openssl rand -hex 24` — and `SIGHOP_SECRET_KEY`. Both are `${VAR:?…}`, so compose refuses
+  to start naming the unset one. They are visible to `docker inspect`, i.e. to the `docker`
+  group, which is root-equivalent anyway.
+  Accounts are added with `docker compose run --rm -it sighop web user add <name>`, so the
+  password never touches the compose file, the environment or shell history.
+- **No healthcheck on `sighop`**, deliberately: the image has no HTTP client, every panel
+  route requires a session, and an unauthenticated `/healthz` would be the first public
+  route that reflects platform state. A probe of `/login` would prove the web server
+  answers, not that the radio is alive — a false green for the failure that matters. A fatal
+  error exits, and `restart` handles that.
+- **`build.sh`** runs `lock` (`uv lock --check`), `lint`, `types`, `test`, `image`,
+  `smoke`, `replay` and `scan`, stopping at the first failure and naming it. `smoke` starts the image
+  as UID 52037 on a read-only root with every capability dropped and no network, for
+  `--help` and `run --help` — `cli.py` imports the web application at module level, so that
+  proves the whole application imports as a stranger. `scan` feeds a `docker save` tarball
+  to a digest-pinned `aquasec/trivy` container — never the Docker socket, which would hand a
+  third-party image root on the host — and **prints** every HIGH/CRITICAL finding, fixed or
+  not, without failing the build; only a scan that cannot run fails the gate. That is an
+  operator decision taken when the newest `python:3.13-slim` digest (the base then) carried 12 fixable
+  Debian-package findings and no image could be built; distroless was measured and not
+  adopted (6 fixable findings of its own, patchable only by Google's rebuild, and `User=0`
+  in its config). A `.trivyignore` entry must sit under a `#` comment giving the reason, or
+  the build fails before scanning. The version comes from `uv
+  version`, the commit from git with `-dirty` on a modified tree; the image is tagged
+  `sighop:<version>-<commit>` and `sighop:local`, and never pushed by the script. Images are
+  built without provenance or SBOM attestations, so each is a single manifest.
+- **CI** (`.github/workflows/build.yml`) runs `./build.sh` on every pull request and push. On
+  a push to the main branch or a manual run it pushes the image to GHCR as
+  `<commit12>-<YYYYMMDD>-<HHMMSS>` (UTC), posts the tag and digest to Discord through the
+  `notify-discord` action in `Sigurs/container-rebuilds`, and deletes all but the newest
+  three package versions — one push being one version is why attestations are off. Every
+  action is pinned to a commit. One pitfall found while
+  building it: `set -e` does not apply inside a function run as an `if` condition, so every
+  step in a gate ends in `|| return 1` — without that, the smoke gate passed an image that
+  failed to start.
+
+The original intent, kept for the reasoning:
+
 Multi-stage build on Wolfi or `python:3.13-slim`, `uv sync --frozen` in the build stage,
 only the venv and application in the final image. No build toolchain, no shell utilities
 beyond what the runtime needs.
@@ -1064,8 +1244,8 @@ the intent of the requirement is preserved without loosening host permissions.
 Also: `read_only: true` root filesystem with an explicit tmpfs, `cap_drop: [ALL]`,
 `no-new-privileges: true`, and Postgres on an internal network with no published port.
 
-Secrets (`SIGHOP_SECRET_KEY`, DB password) come from the environment or Docker secrets —
-never baked into the image or committed.
+Secrets (`SIGHOP_SECRET_KEY`, DB password) come from the environment — in compose, the
+gitignored `.env` — never baked into the image or committed.
 
 The build script (`build.sh`) covers: lint, typecheck, test, image build, and a
 vulnerability scan of the result.
@@ -1090,30 +1270,37 @@ sighop/
 │   ├── bots/           base.py (the Bot protocol and BotContext),
 │   │                   runtime.py (dispatch, limits, mode, state),
 │   │                   drivers.py (the registry), greeter.py
-│   ├── db/             models.py (the four tables), repositories.py (what net/
+│   ├── db/             models.py (the eleven tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
 │   │                   writer.py (bounded write-behind), sealing.py (seeds at
 │   │                   rest), packetlog.py (feed rows, pruner),
 │   │                   persistence.py (the wiring), migrations.py (alembic)
 │   ├── web/            state.py (the read seam as Protocols), app.py (the
-│   │                   application and the bound socket), guard.py (host check,
-│   │                   provenance token, one wide event per request),
+│   │                   application and the bound socket), auth.py (accounts
+│   │                   protocol, sessions, throttle, sign-in and
+│   │                   re-authentication), guard.py (host check, session,
+│   │                   default-deny public paths, provenance token, one wide
+│   │                   event per request with its actor),
 │   │                   guarded.py (confirm-then-act and its audit event),
 │   │                   feed.py (one bus subscription, per-connection queues),
 │   │                   chat.py (this run's own conversations),
 │   │                   serialize.py, render.py (view models), deps.py,
-│   │                   routes/, templates/, static/ (vendored htmx, no bundler)
+│   │                   routes/ (session.py: sign-in and sign-out), templates/,
+│   │                   static/ (vendored htmx, no bundler)
 │   ├── logging.py      structlog config, wide-event helpers
 │   ├── config.py       DATABASE_URL and SIGHOP_SECRET_KEY from the environment,
-│   │                   validated and password-redacted. No dotenv dependency:
-│   │                   `uv run --env-file` and compose already read the file
+│   │                   validated and password-redacted. No dotenv dependency: `uv run
+│   │                   --env-file` and compose already read the file
 │   └── cli.py
 ├── alembic/            async env.py (design D1) and one migration per milestone
 ├── alembic.ini         no URL in it — config.py is the single source
 ├── tests/
-├── compose.yaml
-├── build.sh
-├── Dockerfile
+├── compose.yaml        sighop (run --migrate), postgres (internal network)
+├── build.sh            lock, lint, types, test, image, smoke, replay, scan (scan reports only)
+├── .github/workflows/  build.yml: build.sh on PRs; push, Discord, keep-3 on main
+├── Dockerfile          two stages, digest-pinned python:3.13-alpine, no USER
+├── .dockerignore       an allowlist
+├── .trivyignore        suppressions, each with its reason (none today)
 └── pyproject.toml
 ```
 

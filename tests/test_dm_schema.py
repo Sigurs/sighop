@@ -233,7 +233,9 @@ async def test_a_database_at_0003_is_refused_naming_both_revisions_and_the_comma
             await handle.open()
         message = str(excinfo.value)
         assert "0003" in message, "the message must name where the database is"
-        assert "0004" in message, "and where the code expects it to be"
+        # The head moves on (0005 is milestone 9's); where the code expects
+        # the database is whatever this checkout's head is.
+        assert migrations.expected_revision() in message, "and where the code expects it"
         assert migrations.UPGRADE_COMMAND in message
     finally:
         await handle.dispose()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -13,12 +12,10 @@ from typing import IO, Any
 from sighop.bots import drivers as bot_drivers
 from sighop.bots.base import BotConfigError, BotMode, UnknownDriverError
 from sighop.config import (
-    SECRET_KEY_VARIABLE,
     Config,
     ConfigError,
     DatabaseConfig,
     generate_secret_key,
-    parse_secret_key,
 )
 from sighop.db import migrations
 from sighop.db.engine import (
@@ -44,7 +41,10 @@ from sighop.db.repositories import (
     LoadedEntity,
     RoomExistsError,
     RoomRecord,
+    UsernameError,
+    WebUserExistsError,
     advert_config_for,
+    normalise_username,
 )
 from sighop.db.sealing import SealError
 from sighop.keystore import (
@@ -85,9 +85,14 @@ from sighop.runtime import (
 from sighop.web.app import (
     DEFAULT_WEB_HOST,
     DEFAULT_WEB_PORT,
+    NO_DATABASE_FOR_WEB,
+    NO_ENABLED_ACCOUNT,
     WebBindError,
     WebInterface,
+    WebStartupError,
+    validate_allowed_hosts,
 )
+from sighop.web.auth import Authenticator
 from sighop.web.chat import ConversationLog
 from sighop.web.feed import FeedHub
 
@@ -299,9 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "serve the web panel from inside this run. WITHOUT THIS FLAG no "
-            "socket is listened on. The interface is UNAUTHENTICATED in this "
-            "build: anything that can reach the port can transmit and reveal "
-            "private key material"
+            "socket is listened on. Every page requires signing in with an "
+            "account from `sighop web user add`, so this needs a database holding "
+            "at least one enabled account"
         ),
     )
     run.add_argument(
@@ -311,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "address the panel listens on (default: %(default)s). A "
             "non-loopback address is permitted and is announced at startup as "
-            "unauthenticated and reachable from the network"
+            "reachable from the network over plain HTTP, with passwords and "
+            "session cookies unencrypted in transit"
         ),
     )
     run.add_argument(
@@ -320,7 +326,29 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_WEB_PORT,
         help="port the panel listens on (default: %(default)s); 0 asks the OS",
     )
+    run.add_argument(
+        "--web-allowed-host",
+        action="append",
+        default=[],
+        metavar="NAME[:PORT]",
+        help=(
+            "another host name the panel answers to, beside those the bound "
+            "address implies — for example localhost:8080 for a panel bound to "
+            "0.0.0.0 inside a container. Repeatable. No wildcards; every other "
+            "host name is refused as a rebinding attempt"
+        ),
+    )
     _add_database_url_argument(run)
+    run.add_argument(
+        "--migrate",
+        action="store_true",
+        help=(
+            "apply outstanding migrations before starting, as `sighop db upgrade` "
+            "would. Meant for the container, whose start is the deploy; without it "
+            "a database at an older revision refuses to start, naming that command. "
+            "A database ahead of this build refuses either way"
+        ),
+    )
     run.add_argument(
         "--persist-replay",
         action="store_true",
@@ -640,6 +668,68 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         _add_database_url_argument(bot_parser)
 
+    web = subparsers.add_parser(
+        "web", help="manage what the web interface needs from a terminal (accounts)"
+    )
+    web_actions = web.add_subparsers(dest="web_command", required=True)
+    web_user = web_actions.add_parser(
+        "user",
+        help=(
+            "add, list, re-password, disable, enable and remove the accounts that "
+            "sign in to the web interface. Terminal only: the browser offers none "
+            "of this (needs a database)"
+        ),
+    )
+    user_actions = web_user.add_subparsers(dest="web_user_command", required=True)
+    user_add = user_actions.add_parser(
+        "add",
+        help=(
+            "add an enabled account. The password is read from a prompt (asked "
+            "twice) or from standard input, never from an argument"
+        ),
+    )
+    user_actions.add_parser("list", help="list accounts; never shows a hash")
+    user_passwd = user_actions.add_parser(
+        "passwd",
+        help=(
+            "set an account's password. Sessions signed in with the old one end "
+            "within a minute on every run using this database"
+        ),
+    )
+    user_disable = user_actions.add_parser(
+        "disable", help="stop an account signing in; its sessions end within a minute"
+    )
+    user_enable = user_actions.add_parser("enable", help="let a disabled account sign in again")
+    user_remove = user_actions.add_parser(
+        "remove", help="delete an account; its sessions end within a minute"
+    )
+    for account_parser in (user_add, user_passwd, user_disable, user_enable, user_remove):
+        account_parser.add_argument("username", help="the account's username (case-insensitive)")
+        # A second positional exists only to be refused with a reason. Without
+        # it, `sighop web user add alice hunter2` is an argparse usage error that
+        # does not say why — and the why is the point (`runtime-cli`).
+        account_parser.add_argument("refused_arguments", nargs="*", help=argparse.SUPPRESS)
+        account_parser.add_argument(
+            "--password", action="store_true", dest="password_flag", help=argparse.SUPPRESS
+        )
+    for secret_parser in (user_add, user_passwd):
+        secret_parser.add_argument(
+            "--password-stdin",
+            action="store_true",
+            help="read the password from standard input rather than prompting",
+        )
+    for last_parser in (user_disable, user_remove):
+        last_parser.add_argument(
+            "--allow-no-accounts",
+            action="store_true",
+            help=(
+                "permit this change when it leaves no enabled account. No run can "
+                "then start its web interface until one is added or enabled"
+            ),
+        )
+    for account_parser in user_actions.choices.values():
+        _add_database_url_argument(account_parser)
+
     database = subparsers.add_parser(
         "db", help="apply and report database migrations (never done by `run`)"
     )
@@ -794,7 +884,15 @@ async def open_persistence(
     """
     config = Config.from_environment(database_url=args.database_url)
     if config.database is None:
+        if getattr(args, "migrate", False):
+            raise ConfigError(
+                "--migrate applies migrations to the configured database, and none is "
+                "configured: set DATABASE_URL or pass --database-url"
+            )
         return None, ()
+
+    if getattr(args, "migrate", False):
+        await migrate_on_start(config.database)
 
     persistence = Persistence(
         database=Database(config=config.database),
@@ -820,6 +918,34 @@ async def open_persistence(
         await persistence.stop()
         raise
     return persistence, tuple(loaded.value)
+
+
+async def migrate_on_start(database: DatabaseConfig) -> None:
+    """`run --migrate`: bring a database that is behind up to this build's head.
+
+    Only *behind* is fixed here. A database ahead of the code is left untouched
+    for the schema-version check to refuse: nothing in this build describes its
+    schema, and Alembic would fail on it less legibly than that check does.
+    """
+    logger = get_logger(component="db")
+    before = await _read_revision(database)
+    try:
+        if before is not None and not migrations.knows_revision(before):
+            migrations.migrations_dir()  # a missing chain, not an ahead database
+            return
+        await migrations.upgrade_async(database)
+    except MigrationsNotFoundError as exc:
+        raise ConfigError(str(exc)) from exc
+    except Exception as exc:  # the driver's own failures, classified for the operator
+        raise classify(exc, config=database, operation="migrate") from exc
+    after = await _read_revision(database)
+    logger.info(
+        "database_migrated",
+        outcome="success",
+        from_revision=before,
+        to_revision=after,
+        applied=before != after,
+    )
 
 
 # --- Key management (design D12) --------------------------------------------
@@ -894,13 +1020,18 @@ def _keys_list(args: argparse.Namespace, out: IO[str]) -> int:
     return 0
 
 
+def _secret_key() -> bytes:
+    """`SIGHOP_SECRET_KEY`, through `Config` like every other read of it."""
+    return Config.from_environment().secret_key_bytes()
+
+
 def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
     """Milestone 4's promised one-function conversion (its design D1)."""
     database = _database_config(args, out)
     if database is None:
         return 2
     try:
-        secret = parse_secret_key(os.environ.get(SECRET_KEY_VARIABLE))
+        secret = _secret_key()
         keyfile = load_keyfile(args.keyfile)
     except (ConfigError, KeyfileError) as exc:
         print(str(exc), file=sys.stderr)
@@ -948,7 +1079,7 @@ def _keys_export(args: argparse.Namespace, out: IO[str]) -> int:
     if database is None:
         return 2
     try:
-        secret = parse_secret_key(os.environ.get(SECRET_KEY_VARIABLE))
+        secret = _secret_key()
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1033,9 +1164,11 @@ def _keys_show(args: argparse.Namespace, out: IO[str]) -> int:
 
 # --- Migrations (design D5) -------------------------------------------------
 #
-# Applying migrations is a deliberate act and never a side effect of `run`: an
-# old binary restarted after a failed deploy meets a schema it does not know,
-# and a new binary racing another instance applies DDL twice.
+# Applying migrations is a deliberate act and never a side effect of a plain
+# `run`: an old binary restarted after a failed deploy meets a schema it does not
+# know, and a new binary racing another instance applies DDL twice. The one
+# exception is asked for by name — `run --migrate`, which the compose deployment
+# passes because there, starting the new image *is* the deploy (milestone 9).
 
 
 def _database_config(args: argparse.Namespace, out: IO[str]) -> DatabaseConfig | None:
@@ -1140,13 +1273,25 @@ async def _with_rooms[T](
         await handle.dispose()
 
 
-def _read_password(prompt: str, *, from_stdin: bool) -> str:
-    """A password, from standard input or from a prompt that does not echo."""
+class PasswordMismatchError(ValueError):
+    """Two prompted entries of a password differed."""
+
+
+def _read_password(prompt: str, *, from_stdin: bool, confirm: bool = False) -> str:
+    """A password, from standard input or from a prompt that does not echo.
+
+    `confirm` asks a second time at an interactive prompt and refuses a
+    mismatch. Standard input is read once: a script piping a password in has
+    already typed it correctly or not, and asking it twice proves nothing.
+    """
     if from_stdin or not sys.stdin.isatty():
         return sys.stdin.readline().rstrip("\n")
     import getpass
 
-    return getpass.getpass(prompt)
+    first = getpass.getpass(prompt)
+    if confirm and getpass.getpass(f"again, {prompt}") != first:
+        raise PasswordMismatchError("the two entries differ; nothing was changed")
+    return first
 
 
 def _render_room(record: RoomRecord, *, members: int, messages: int, out: IO[str]) -> None:
@@ -2070,7 +2215,233 @@ def _bot_state(args: argparse.Namespace, database: DatabaseConfig, out: IO[str])
     return 0
 
 
-def _attach_web(
+# --- Web interface accounts (milestone 9) ------------------------------------
+#
+# Terminal only (milestone 9 design D2). With no roles, anyone signed in to a
+# browser that could create accounts could create a second one for themselves,
+# and a stolen session would become a persistent credential. Terminal access to
+# the host is the stronger proof of being the operator.
+
+ACCOUNTS_NEED_A_DATABASE = (
+    "no database is configured: web interface accounts are stored in the "
+    "database, so this command needs one. Set DATABASE_URL "
+    "or pass --database-url"
+)
+
+PASSWORD_IS_NEVER_AN_ARGUMENT = (
+    "a password is never accepted as a command-line argument: process arguments "
+    "are readable by every user on this host (`ps`). Run the command with the "
+    "username only, and type the password at the prompt or pipe it to standard "
+    "input with --password-stdin"
+)
+
+SESSIONS_END_WITHIN_A_MINUTE = (
+    "sessions already signed in to it end within a minute on every run using this database"
+)
+
+NO_ACCOUNT_LEFT = (
+    "no run could then start its web interface, because `run --web` refuses a "
+    "database with no enabled account. Pass --allow-no-accounts to do it anyway"
+)
+
+
+def _web_user_command(args: argparse.Namespace, out: IO[str]) -> int:
+    if getattr(args, "refused_arguments", None) or getattr(args, "password_flag", False):
+        print(PASSWORD_IS_NEVER_AN_ARGUMENT, file=sys.stderr)
+        return 2
+    try:
+        config = Config.from_environment(database_url=getattr(args, "database_url", None))
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if config.database is None:
+        print(ACCOUNTS_NEED_A_DATABASE, file=sys.stderr)
+        return 2
+    database = config.database
+    try:
+        match args.web_user_command:
+            case "add":
+                return _web_user_add(args, database, out)
+            case "list":
+                return _web_user_list(database, out)
+            case "passwd":
+                return _web_user_passwd(args, database, out)
+            case "enable":
+                return _web_user_enablement(args, database, out, enabled=True)
+            case "disable":
+                return _web_user_enablement(args, database, out, enabled=False)
+            case _:
+                return _web_user_remove(args, database, out)
+    except (UsernameError, WebUserExistsError, PasswordMismatchError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except DatabaseError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _new_web_password(args: argparse.Namespace) -> str | None:
+    password = _read_password(
+        f"password for {normalise_username(args.username)}: ",
+        from_stdin=args.password_stdin,
+        confirm=True,
+    )
+    if not password:
+        print(
+            "a web account password cannot be empty: it is the only thing between "
+            "the network and the transmit gate",
+            file=sys.stderr,
+        )
+        return None
+    return password
+
+
+def _web_user_add(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    name = normalise_username(args.username)
+    password = _new_web_password(args)
+    if password is None:
+        return 2
+    hashed = hash_password(password)
+
+    async def work(persistence: Persistence) -> Any:
+        return await persistence.web_users.add(name, password_hash=hashed)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    print(f"account {outcome.value.username!r} is added and enabled", file=out)
+    print(
+        "it can sign in to the web interface of any run using this database "
+        f"({database.redacted_url}); the password is stored as an Argon2id hash",
+        file=out,
+    )
+    return 0
+
+
+def _web_user_list(database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        return await persistence.web_users.list()
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print(
+            "no accounts: `run --web` cannot start until one is added with "
+            "`sighop web user add <username>`",
+            file=out,
+        )
+        return 0
+    width = max(len("username"), *(len(record.username) for record in outcome.value))
+    print(f"{'username':<{width}}  enabled  created                    password_set", file=out)
+    for record in outcome.value:
+        print(
+            f"{record.username:<{width}}  {'yes' if record.enabled else 'no ':<7}  "
+            f"{record.created_at.isoformat(timespec='seconds'):<25}  "
+            f"{record.password_set_at.isoformat(timespec='seconds')}",
+            file=out,
+        )
+    return 0
+
+
+def _web_user_passwd(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    name = normalise_username(args.username)
+    password = _new_web_password(args)
+    if password is None:
+        return 2
+    hashed = hash_password(password)
+
+    async def work(persistence: Persistence) -> Any:
+        return await persistence.web_users.set_password(name, password_hash=hashed)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print(f"no account named {name!r}", file=sys.stderr)
+        return 2
+    print(f"the password for {name!r} is changed and stored as an Argon2id hash", file=out)
+    print(f"{SESSIONS_END_WITHIN_A_MINUTE} with the old password", file=out)
+    return 0
+
+
+async def _leaves_no_account(persistence: Persistence, name: str) -> Any:
+    """Whether disabling or removing `name` would leave nothing enabled.
+
+    Returns a `Failed`, None for "no such account", or the answer.
+    """
+    account = await persistence.web_users.get(name)
+    if isinstance(account, Failed) or account.value is None:
+        return account if isinstance(account, Failed) else None
+    enabled = await persistence.web_users.count_enabled()
+    if isinstance(enabled, Failed):
+        return enabled
+    return account.value.enabled and enabled.value <= 1
+
+
+def _web_user_enablement(
+    args: argparse.Namespace, database: DatabaseConfig, out: IO[str], *, enabled: bool
+) -> int:
+    name = normalise_username(args.username)
+
+    async def work(persistence: Persistence) -> Any:
+        if not enabled and not args.allow_no_accounts:
+            last = await _leaves_no_account(persistence, name)
+            if last is None or isinstance(last, Failed):
+                return last
+            if last:
+                return "last"
+        return await persistence.web_users.set_enabled(name, enabled)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome == "last":
+        print(f"{name!r} is the only enabled account; disabling it is refused: {NO_ACCOUNT_LEFT}",
+              file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None or not outcome.value:
+        print(f"no account named {name!r}", file=sys.stderr)
+        return 2
+    if enabled:
+        print(f"account {name!r} is enabled and can sign in again", file=out)
+    else:
+        print(f"account {name!r} is disabled; {SESSIONS_END_WITHIN_A_MINUTE}", file=out)
+    return 0
+
+
+def _web_user_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    name = normalise_username(args.username)
+
+    async def work(persistence: Persistence) -> Any:
+        if not args.allow_no_accounts:
+            last = await _leaves_no_account(persistence, name)
+            if last is None or isinstance(last, Failed):
+                return last
+            if last:
+                return "last"
+        return await persistence.web_users.remove(name)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if outcome == "last":
+        print(f"{name!r} is the only enabled account; removing it is refused: {NO_ACCOUNT_LEFT}",
+              file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None or not outcome.value:
+        print(f"no account named {name!r}", file=sys.stderr)
+        return 2
+    print(f"account {name!r} is removed; {SESSIONS_END_WITHIN_A_MINUTE}", file=out)
+    return 0
+
+
+async def _attach_web(
     args: argparse.Namespace, runtime: Runtime, out: IO[str] | None
 ) -> WebInterface | None:
     """Bind the panel's socket and hang it off the run, or do nothing at all.
@@ -2080,11 +2451,26 @@ def _attach_web(
     been transmitted, and the run does not continue with a silently absent
     interface (`web-server`, `runtime-cli`).
 
+    Milestone 9 puts three refusals in front of the bind, each before any socket
+    exists: an allowed host name that is a wildcard or a URL, a run with no
+    database (the accounts live there), and a database with no enabled account
+    (nobody could sign in). The account count is read here and reported.
+
     A run that was not asked for the interface returns here having listened on
     nothing and said nothing — the whole of "opt-in and off by default".
     """
     if not getattr(args, "web", False):
         return None
+    allowed = validate_allowed_hosts(getattr(args, "web_allowed_host", ()) or ())
+    persistence = runtime.persistence
+    if persistence is None:
+        raise WebStartupError(NO_DATABASE_FOR_WEB)
+    enabled = await persistence.web_users.count_enabled()
+    if isinstance(enabled, Failed):
+        raise enabled.error
+    if enabled.value < 1:
+        raise WebStartupError(NO_ENABLED_ACCOUNT)
+    auth = Authenticator(accounts=persistence.web_users)
     # One hub for the process, fed by the pipeline's observer and the run's TX
     # resolution callback, and fanning out to a bounded queue per browser
     # (design D4). The runtime is handed two plain callables and never learns
@@ -2098,17 +2484,21 @@ def _attach_web(
         ),
     )
     # The panel's own view of this run's conversations, attached as a second
-    # record sink beside the durable one. It is what makes chat work on a run
-    # with no database, and the live half of it on a run with one.
+    # record sink beside the durable one: the live half of chat, which keeps
+    # working while the database is degraded.
     conversations = ConversationLog()
     runtime.watch_messages(conversations)
     interface = WebInterface.bind(
         runtime,
+        auth=auth,
+        accounts_enabled=enabled.value,
         host=args.web_host,
         port=args.web_port,
+        allowed=allowed,
         feed=hub,
         conversations=conversations,
         sealing_secret=_web_sealing_secret(args, runtime),
+        announce=runtime.say,
     )
     # The event first, then the output. Both are unconditional: there is no
     # option that serves a non-loopback bind without saying what it exposes.
@@ -2172,7 +2562,7 @@ async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int
             capture_probe=probe_result,
             persistence=persistence,
         )
-        interface = _attach_web(args, runtime, out)
+        interface = await _attach_web(args, runtime, out)
         runtime.install_signal_handlers()
         await runtime.run()
     finally:
@@ -2216,7 +2606,7 @@ async def _run_replay(args: argparse.Namespace, out: IO[str] | None = None) -> i
         out=out,
         persistence=persistence,
     )
-    interface = _attach_web(args, runtime, out)
+    interface = await _attach_web(args, runtime, out)
     runtime.install_signal_handlers()
     try:
         await runtime.run()
@@ -2282,6 +2672,10 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
         configure_logging(stream=sys.stderr)
         return _bot_command(args, stream)
 
+    if args.command == "web":
+        configure_logging(stream=sys.stderr)
+        return _web_user_command(args, stream)
+
     if args.command == "db":
         configure_logging(stream=sys.stderr)
         if args.db_command == "upgrade":
@@ -2336,7 +2730,14 @@ async def _run(args: argparse.Namespace) -> int:
         run = _run_live(args)
     try:
         return await run
-    except (ConfigError, DatabaseError, EntityLoadError, SealError, WebBindError) as exc:
+    except (
+        ConfigError,
+        DatabaseError,
+        EntityLoadError,
+        SealError,
+        WebBindError,
+        WebStartupError,
+    ) as exc:
         # A configured database that cannot be reached, is unauthenticated, is
         # at the wrong revision, or whose seeds will not open is a *startup*
         # failure that applies nothing and transmits nothing (`database` and

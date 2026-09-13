@@ -84,6 +84,26 @@ a {
   color: var(--accent);
 }
 
+.signout {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+}
+
+/* --- Sign-in (milestone 9) ----------------------------------------------- */
+
+.login form {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 22rem;
+}
+
+.login label {
+  display: grid;
+  gap: 0.2rem;
+}
+
 /* --- The duty-cycle meter (§8's most important element) ------------------ */
 
 .meter {

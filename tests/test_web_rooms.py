@@ -25,7 +25,13 @@ from sighop.web.app import allowed_hosts, create_app
 from sighop.web.guard import TOKEN_FIELD
 from sighop.web.routes.rooms import PAGE_SIZE
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, stub_state
+from tests.webfixtures import (
+    StubState,
+    authenticator,
+    csrf,
+    signed_async_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
@@ -33,7 +39,7 @@ SECRET = base64.b64decode(generate_secret_key())
 
 def _live(app: FastAPI) -> httpx2.AsyncClient:
     """A client in this event loop, so the database engine is the test's own."""
-    return httpx2.AsyncClient(
+    return signed_async_client(
         transport=httpx2.ASGITransport(app=app),
         base_url="http://127.0.0.1:8080",
         follow_redirects=False,
@@ -60,7 +66,7 @@ async def _room(database: Database, *, name: str = "[redacted]"):
 
 
 def _app(state: StubState) -> FastAPI:
-    return create_app(state, hosts=HOSTS, logger=RecordingLogger())
+    return create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
 
 
 # --- 14.1 History -----------------------------------------------------------
@@ -296,7 +302,7 @@ async def test_revocation_states_what_it_removes_and_then_removes_it(
 
         unconfirmed = await client.post(
             f"/rooms/{room.id}/members/{member.hex()}/revoke",
-            data={TOKEN_FIELD: app.state.token},
+            data={TOKEN_FIELD: csrf(client)},
         )
         assert unconfirmed.status_code == 303
 
@@ -307,7 +313,7 @@ async def test_revocation_states_what_it_removes_and_then_removes_it(
     async with _live(app) as client:
         confirmed = await client.post(
             f"/rooms/{room.id}/members/{member.hex()}/revoke",
-            data={TOKEN_FIELD: app.state.token, "confirm": "yes"},
+            data={TOKEN_FIELD: csrf(client), "confirm": "yes"},
         )
         assert confirmed.status_code == 303
 

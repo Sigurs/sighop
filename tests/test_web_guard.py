@@ -1,10 +1,11 @@
 """Request provenance and the request's wide event (design D9, §9).
 
-Every assertion here exists because this build has no authentication. A page in
-the operator's browser can reach a loopback port, and a hostname an attacker
-controls can be made to resolve to one — so a state-changing request has to be
-attributable to a page this process served, and a request declaring somebody
-else's host name has to be refused before a handler sees it.
+Every assertion here held before milestone 9 added authentication, and holds
+beside it: a page in the operator's browser can reach a loopback port and ride a
+signed-in browser, and a hostname an attacker controls can be made to resolve to
+one — so a state-changing request has to be attributable to a page this process
+served *to this session*, and a request declaring somebody else's host name has
+to be refused before a handler sees it.
 
 The safe-method sweep is the other half, and it is enumerated over the route
 table rather than written once per route: a rule asserted route by route is a
@@ -14,16 +15,24 @@ rule that stops holding the first time somebody adds a route.
 from __future__ import annotations
 
 import re
+import secrets
 
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from starlette.routing import Route
 
-from sighop.web.app import allowed_hosts, create_app, new_token
+from sighop.web.app import allowed_hosts, create_app
 from sighop.web.guard import REBINDING_STATUS, TOKEN_FIELD, TOKEN_HEADER
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, registered_routes, stub_state
+from tests.webfixtures import (
+    StubState,
+    authenticator,
+    csrf,
+    registered_routes,
+    signed_client,
+    stub_state,
+)
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 
@@ -41,7 +50,7 @@ class Probe:
 
 def _app_with_probe(
     *, hosts: frozenset[str] | None = HOSTS, logger: RecordingLogger | None = None
-) -> tuple[FastAPI, Probe, str, StubState]:
+) -> tuple[FastAPI, Probe, StubState]:
     """The real application, plus one state-changing route to aim at.
 
     A probe rather than one of the panel's own actions: what is under test is
@@ -49,19 +58,21 @@ def _app_with_probe(
     would be testing two things and reporting one.
     """
     state = stub_state()
-    token = new_token()
     app = create_app(
-        state, token=token, hosts=hosts, logger=logger or RecordingLogger()
+        state, auth=authenticator(), hosts=hosts, logger=logger or RecordingLogger()
     )
     probe = Probe()
     app.post("/probe")(probe)
-    return app, probe, token, state
+    return app, probe, state
 
 
 def _client(app: FastAPI) -> TestClient:
-    # The host the guard was configured for, so a request is ordinary unless a
-    # test deliberately makes it otherwise.
-    return TestClient(app, base_url="http://127.0.0.1:8080")
+    """Signed in, with no token sent by default — the token is what is under test.
+
+    The host the guard was configured for, so a request is ordinary unless a
+    test deliberately makes it otherwise.
+    """
+    return signed_client(app, send_token=False, base_url="http://127.0.0.1:8080")
 
 
 # --- 8.1 The provenance token -----------------------------------------------
@@ -69,7 +80,7 @@ def _client(app: FastAPI) -> TestClient:
 
 def test_a_post_without_the_token_changes_nothing_and_is_rejected() -> None:
     """8.1: the CSRF case — a page on another origin posting to loopback."""
-    app, probe, _token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
         response = client.post("/probe")
@@ -80,10 +91,10 @@ def test_a_post_without_the_token_changes_nothing_and_is_rejected() -> None:
 
 def test_a_post_carrying_the_token_as_a_header_is_served() -> None:
     """8.1: what HTMX sends, because the base template sets `hx-headers`."""
-    app, probe, token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
-        response = client.post("/probe", headers={TOKEN_HEADER: token})
+        response = client.post("/probe", headers={TOKEN_HEADER: csrf(client)})
 
     assert response.status_code == 200
     assert probe.calls == 1
@@ -91,10 +102,10 @@ def test_a_post_carrying_the_token_as_a_header_is_served() -> None:
 
 def test_a_post_carrying_the_token_as_a_form_field_is_served() -> None:
     """8.1: what a plain `<form method="post">` sends, with no script running."""
-    app, probe, token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
-        response = client.post("/probe", data={TOKEN_FIELD: token})
+        response = client.post("/probe", data={TOKEN_FIELD: csrf(client)})
 
     assert response.status_code == 200
     assert probe.calls == 1
@@ -107,8 +118,7 @@ def test_the_handler_still_reads_the_body_the_browser_sent() -> None:
     see an empty form. The guard hands the body back down; this is what says so.
     """
     state = stub_state()
-    token = new_token()
-    app = create_app(state, token=token, hosts=HOSTS, logger=RecordingLogger())
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
     seen: dict[str, str] = {}
 
     @app.post("/echo")
@@ -118,7 +128,7 @@ def test_the_handler_still_reads_the_body_the_browser_sent() -> None:
         return dict(seen)
 
     with _client(app) as client:
-        response = client.post("/echo", data={TOKEN_FIELD: token, "text": "hello"})
+        response = client.post("/echo", data={TOKEN_FIELD: csrf(client), "text": "hello"})
 
     assert response.status_code == 200
     assert seen["text"] == "hello"
@@ -126,10 +136,34 @@ def test_the_handler_still_reads_the_body_the_browser_sent() -> None:
 
 def test_a_wrong_token_is_refused() -> None:
     """8.1: the token is compared, not merely required to be present."""
-    app, probe, _token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
-        response = client.post("/probe", headers={TOKEN_HEADER: new_token()})
+        response = client.post("/probe", headers={TOKEN_HEADER: secrets.token_urlsafe(32)})
+
+    assert response.status_code == 403
+    assert probe.calls == 0
+
+
+def test_a_token_from_another_session_is_refused_like_none() -> None:
+    """6.2, `web-server`: bound to the session its page was served to."""
+    app, probe, _state = _app_with_probe()
+
+    with _client(app) as client, _client(app) as other:
+        response = client.post("/probe", headers={TOKEN_HEADER: csrf(other)})
+        form = client.post("/probe", data={TOKEN_FIELD: csrf(other)})
+
+    assert response.status_code == 403
+    assert form.status_code == 403
+    assert probe.calls == 0
+
+
+def test_the_process_token_is_not_a_session_token() -> None:
+    """6.2: the sign-in form's token authorises the sign-in form, nothing else."""
+    app, probe, _state = _app_with_probe()
+
+    with _client(app) as client:
+        response = client.post("/probe", headers={TOKEN_HEADER: app.state.auth.login_token})
 
     assert response.status_code == 403
     assert probe.calls == 0
@@ -137,12 +171,12 @@ def test_a_wrong_token_is_refused() -> None:
 
 def test_a_cross_site_post_is_refused_even_carrying_a_token() -> None:
     """8.1: `Sec-Fetch-Site` is checked where the browser sends it."""
-    app, probe, token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
         response = client.post(
             "/probe",
-            headers={TOKEN_HEADER: token, "Sec-Fetch-Site": "cross-site"},
+            headers={TOKEN_HEADER: csrf(client), "Sec-Fetch-Site": "cross-site"},
         )
 
     assert response.status_code == 403
@@ -152,7 +186,7 @@ def test_a_cross_site_post_is_refused_even_carrying_a_token() -> None:
 def test_the_rejection_appears_in_the_requests_event() -> None:
     """8.1: a refusal nobody can see is a refusal nobody will investigate."""
     logger = RecordingLogger()
-    app, _probe, _token, _state = _app_with_probe(logger=logger)
+    app, _probe, _state = _app_with_probe(logger=logger)
 
     with _client(app) as client:
         client.post("/probe")
@@ -164,15 +198,16 @@ def test_the_rejection_appears_in_the_requests_event() -> None:
     assert events[0]["method"] == "POST"
 
 
-def test_every_served_page_carries_the_token() -> None:
+def test_every_served_page_carries_the_sessions_token() -> None:
     """8.1: embedded in the page, so a form and an HTMX request both have it."""
-    app, _probe, token, _state = _app_with_probe()
+    app, _probe, _state = _app_with_probe()
 
     with _client(app) as client:
         page = client.get("/").text
+        token = csrf(client)
 
     assert f'content="{token}"' in page
-    assert token in page
+    assert app.state.auth.login_token not in page
 
 
 # --- 8.2 The declared host --------------------------------------------------
@@ -180,12 +215,12 @@ def test_every_served_page_carries_the_token() -> None:
 
 def test_a_rebinding_shaped_host_is_rejected_before_any_handler_runs() -> None:
     """8.2: the DNS rebinding case, which is what makes reading responses possible."""
-    app, probe, token, _state = _app_with_probe()
+    app, probe, _state = _app_with_probe()
 
     with _client(app) as client:
         refused = client.post(
             "/probe",
-            headers={TOKEN_HEADER: token, "Host": "rebind.attacker.example"},
+            headers={TOKEN_HEADER: csrf(client), "Host": "rebind.attacker.example"},
         )
         page = client.get("/", headers={"Host": "rebind.attacker.example"})
 
@@ -200,7 +235,9 @@ def test_the_host_check_is_configured_from_what_was_actually_bound() -> None:
 
     from sighop.web.app import WebInterface
 
-    interface = WebInterface.bind(stub_state(), host="127.0.0.1", port=0)
+    interface = WebInterface.bind(
+        stub_state(), auth=authenticator(), accounts_enabled=1, host="127.0.0.1", port=0
+    )
     try:
         app = interface.build_app()
         assert app.state.hosts == allowed_hosts("127.0.0.1", interface.port)
@@ -211,15 +248,18 @@ def test_the_host_check_is_configured_from_what_was_actually_bound() -> None:
 
 
 def test_an_application_off_a_socket_has_no_host_to_check_against() -> None:
-    """8.2: `None` is the documented off switch, and it is not the served path."""
-    app, probe, token, _state = _app_with_probe(hosts=None)
+    """8.2: `None` turns off the rebinding check only — never authentication."""
+    app, probe, _state = _app_with_probe(hosts=None)
 
     with _client(app) as client:
         response = client.post(
-            "/probe", headers={TOKEN_HEADER: token, "Host": "anything.example"}
+            "/probe", headers={TOKEN_HEADER: csrf(client), "Host": "anything.example"}
         )
+    with TestClient(app, base_url="http://127.0.0.1:8080") as anonymous:
+        refused = anonymous.post("/probe", headers={"Host": "anything.example"})
 
     assert response.status_code == 200
+    assert refused.status_code == 401
     assert probe.calls == 1
 
 
@@ -249,7 +289,7 @@ def _safe_routes(app: FastAPI) -> list[tuple[str, str]]:
 def test_no_safe_request_transmits_or_changes_state() -> None:
     """8.3: enumerated over the route table, so a new route joins the rule."""
     state = stub_state(stub_names=("panel-identity",))
-    app = create_app(state, hosts=HOSTS, logger=RecordingLogger())
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
     routes = _safe_routes(app)
     assert routes, "there are no safe routes to sweep; the assertion would be vacuous"
 
@@ -274,7 +314,7 @@ def test_no_safe_request_reveals_private_key_material() -> None:
     action's confirmation. Everything else is swept here.
     """
     state = stub_state(stub_names=("panel-identity",))
-    app = create_app(state, hosts=HOSTS, logger=RecordingLogger())
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
     seeds = [stub.identity.seed for stub in state.adverts.stubs]
     assert seeds, "the state holds no identity; the assertion would be vacuous"
 
@@ -298,11 +338,11 @@ def _base64ish(seed: bytes) -> str:
 def test_exactly_one_event_is_emitted_per_request() -> None:
     """8.4, §9: one unit of work, one event — never two, never none."""
     logger = RecordingLogger()
-    app, _probe, token, _state = _app_with_probe(logger=logger)
+    app, _probe, _state = _app_with_probe(logger=logger)
 
     with _client(app) as client:
         client.get("/")
-        client.post("/probe", headers={TOKEN_HEADER: token})
+        client.post("/probe", headers={TOKEN_HEADER: csrf(client)})
 
     events = logger.named("web_request")
     assert len(events) == 2
@@ -317,7 +357,7 @@ def test_the_event_carries_the_route_rather_than_only_the_path() -> None:
     """8.4: a route is what a reader compares across requests."""
     logger = RecordingLogger()
     state = stub_state()
-    app = create_app(state, hosts=HOSTS, logger=logger)
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=logger)
 
     @app.get("/thing/{name}")
     async def thing(name: str) -> dict[str, str]:
@@ -334,7 +374,7 @@ def test_the_event_carries_the_route_rather_than_only_the_path() -> None:
 def test_no_event_carries_the_query_string() -> None:
     """8.4: the one part of a request a password could reach by mistake."""
     logger = RecordingLogger()
-    app, _probe, _token, _state = _app_with_probe(logger=logger)
+    app, _probe, _state = _app_with_probe(logger=logger)
 
     with _client(app) as client:
         client.get("/?password=hunter2")
@@ -350,13 +390,13 @@ def test_a_failing_route_serves_a_generic_page_and_records_the_failure() -> None
     """8.5: no traceback, no path, no internal detail — and one event saying so."""
     logger = RecordingLogger()
     state = stub_state()
-    app = create_app(state, hosts=HOSTS, logger=logger)
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=logger)
 
     @app.get("/boom")
     async def boom() -> None:
         raise RuntimeError("the secret internal detail")
 
-    with TestClient(
+    with signed_client(
         app, base_url="http://127.0.0.1:8080", raise_server_exceptions=False
     ) as client:
         response = client.get("/boom")
@@ -379,7 +419,7 @@ def test_a_failing_route_serves_a_generic_page_and_records_the_failure() -> None
 def test_a_missing_page_is_a_refusal_not_a_failure(method: str) -> None:
     """8.4: a 404 is a completed request with a refused outcome, and one event."""
     logger = RecordingLogger()
-    app, _probe, _token, _state = _app_with_probe(logger=logger)
+    app, _probe, _state = _app_with_probe(logger=logger)
 
     with _client(app) as client:
         response = client.request(method, "/nowhere")

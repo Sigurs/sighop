@@ -328,6 +328,12 @@ async def post(
     command line does not have; what the panel does instead is *say* that
     nothing goes on the air until the gate opens (design D4).
     """
+    actor = page.actor(request)
+    unverified = page.unverified(
+        request, action=POST_TO_ROOM, target=room_id, title="post to a room"
+    )
+    if unverified is not None:
+        return unverified
     room = await _room(page, room_id)
     encoded = text.encode("utf-8")
     if (
@@ -340,6 +346,7 @@ async def post(
             action=POST_TO_ROOM,
             target=room_id,
             outcome="refused",
+            actor=actor,
             reason="no confirmation was minted for this action",
             room_name="" if room is None else room.name,
         )
@@ -355,6 +362,7 @@ async def post(
             action=POST_TO_ROOM,
             target=room_id,
             outcome="refused",
+            actor=actor,
             reason="the identity this room is bound to is not stored",
             room_name=room.name,
         )
@@ -371,6 +379,7 @@ async def post(
             action=POST_TO_ROOM,
             target=room_id,
             outcome="refused",
+            actor=actor,
             reason=str(stored.error),
             room_name=room.name,
         )
@@ -382,6 +391,7 @@ async def post(
         action=POST_TO_ROOM,
         target=room_id,
         outcome="success",
+        actor=actor,
         room_name=room.name,
         post_timestamp=stored.value.post_timestamp,
         bytes=len(encoded),

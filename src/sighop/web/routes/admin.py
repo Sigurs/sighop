@@ -50,6 +50,8 @@ from sighop.web.render import (
     Refusal,
     collection_for,
     refused,
+    render_ceiling_change,
+    render_transmit_change,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -813,14 +815,28 @@ async def clear_state(
 
 MIGRATIONS_ARE_A_TERMINAL_ACT = (
     "Migrations are not applied from here, and that is deliberate rather than "
-    "unbuilt. Applying DDL from a port with no authentication would make schema "
-    "migration reachable by anything that can route to it; and DESIGN.md §6 "
-    "makes applying a migration an act an operator takes on purpose, never a "
-    "side effect of starting something. It is one command in a terminal."
+    "unbuilt. There are no roles in this interface — every account is an "
+    "operator — so offering DDL here would make a stolen session enough to "
+    "change the schema; and DESIGN.md §6 makes applying a migration an act an "
+    "operator takes on purpose, never a side effect of starting something. It "
+    "is one command in a terminal."
 )
 """Design D6. An operator who has just been told the revisions disagree will
 look for the button, and not finding one is ambiguous between "not built yet"
 and "deliberately not offered". This says which."""
+
+ACCOUNT_COMMAND = "sighop web user"
+
+ACCOUNTS_ARE_A_TERMINAL_ACT = (
+    "Accounts are not managed from here: adding one, setting a password and "
+    "disabling or removing one are done in a terminal on the host with "
+    f"`{ACCOUNT_COMMAND} add|passwd|disable|enable|remove|list`. With no roles, "
+    "anyone signed in could otherwise create a second account for themselves, "
+    "and a stolen session would become a credential that outlives it. Terminal "
+    "access to the host is the stronger proof of being the operator. A change "
+    "made there ends affected sessions within a minute."
+)
+"""Milestone 9 design D2, stated where it would be looked for."""
 
 
 @router.get("/schema", response_class=HTMLResponse)
@@ -854,6 +870,8 @@ async def schema(request: Request, page: PanelDep) -> HTMLResponse:
         unavailable=unavailable,
         upgrade_command=migrations.UPGRADE_COMMAND,
         migrations_note=MIGRATIONS_ARE_A_TERMINAL_ACT,
+        accounts_note=ACCOUNTS_ARE_A_TERMINAL_ACT,
+        account_command=ACCOUNT_COMMAND,
     )
 
 
@@ -902,12 +920,14 @@ async def reveal(
     request: Request,
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
+    password: Annotated[str | None, Form()] = None,
 ) -> HTMLResponse:
     """The one response body in this application that contains key material.
 
     Not reachable by navigation, not linked from anywhere, and not rendered
     again: reloading this page re-posts nothing, because the nonce that
-    authorised it has been spent.
+    authorised it has been spent. The acting user's password is verified after
+    the nonce, against a fresh read of their account (milestone 9 design D7).
     """
     stub = _loaded(page, entity_id)
     if stub is None or not page.nonces.spend(nonce, REVEAL_KEY, entity_id):
@@ -916,16 +936,27 @@ async def reveal(
             action=REVEAL_KEY,
             target=entity_id,
             outcome="refused",
+            actor=page.actor(request),
             reason="no confirmation was minted for this action",
         )
         return page.page(
             request, "admin/refused.html", title="reveal a private key", status_code=403
         )
+    refusal = await page.reauthenticate(
+        request,
+        action=REVEAL_KEY,
+        target=entity_id,
+        password=password,
+        title="reveal a private key",
+    )
+    if refusal is not None:
+        return refusal
     audit(
         page.logger,
         action=REVEAL_KEY,
         target=entity_id,
         outcome="success",
+        actor=page.actor(request),
         entity_name=stub.name,
         public_key=stub.identity.public_key.hex(),
     )
@@ -966,23 +997,36 @@ async def enable_transmit(
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
     enabled: Annotated[str, Form()] = "true",
+    password: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse | HTMLResponse:
     """Change the run's gate and the panel's indication together.
 
     One value, read from the scheduler: the indicator is not a copy of the gate
-    kept in the panel, it *is* the gate, so the two cannot drift.
+    kept in the panel, it *is* the gate, so the two cannot drift. The change is
+    also written to the run's own output, naming the account that made it.
     """
+    actor = page.actor(request)
     if not page.nonces.spend(nonce, ENABLE_TRANSMIT, "run"):
         audit(
             page.logger,
             action=ENABLE_TRANSMIT,
             target="run",
             outcome="refused",
+            actor=actor,
             reason="no confirmation was minted for this action",
         )
         return page.page(
             request, "admin/refused.html", title="enable transmission", status_code=403
         )
+    refusal = await page.reauthenticate(
+        request,
+        action=ENABLE_TRANSMIT,
+        target="run",
+        password=password,
+        title="enable transmission",
+    )
+    if refusal is not None:
+        return refusal
     wanted = enabled == "true"
     page.state.scheduler.enable_transmit(wanted)
     audit(
@@ -990,8 +1034,10 @@ async def enable_transmit(
         action=ENABLE_TRANSMIT,
         target="run",
         outcome="success",
+        actor=actor,
         transmit_enabled=wanted,
     )
+    page.say(render_transmit_change(wanted, actor=actor))
     return RedirectResponse("/", status_code=SEE_OTHER)
 
 
@@ -1019,16 +1065,19 @@ async def raise_ceiling(
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
     fraction: Annotated[str, Form()] = "",
+    password: Annotated[str | None, Form()] = None,
 ) -> RedirectResponse | HTMLResponse:
     """Carry the old and the new value into the event, not only the new one."""
     budget = page.state.scheduler.budget
     previous = budget.ceiling_fraction
+    actor = page.actor(request)
     if not page.nonces.spend(nonce, RAISE_CEILING, "budget"):
         audit(
             page.logger,
             action=RAISE_CEILING,
             target="budget",
             outcome="refused",
+            actor=actor,
             reason="no confirmation was minted for this action",
             ceiling_fraction=previous,
         )
@@ -1038,6 +1087,16 @@ async def raise_ceiling(
             title="raise the airtime ceiling",
             status_code=403,
         )
+    refusal = await page.reauthenticate(
+        request,
+        action=RAISE_CEILING,
+        target="budget",
+        password=password,
+        title="raise the airtime ceiling",
+        ceiling_fraction=previous,
+    )
+    if refusal is not None:
+        return refusal
     try:
         wanted = float(fraction)
         if not 0 < wanted <= 1:
@@ -1048,6 +1107,7 @@ async def raise_ceiling(
             action=RAISE_CEILING,
             target="budget",
             outcome="refused",
+            actor=actor,
             reason=str(exc),
             ceiling_fraction=previous,
         )
@@ -1063,8 +1123,10 @@ async def raise_ceiling(
         action=RAISE_CEILING,
         target="budget",
         outcome="success",
+        actor=actor,
         previous_ceiling_fraction=previous,
         ceiling_fraction=wanted,
         above_regulatory_default=wanted > DEFAULT_CEILING_FRACTION,
     )
+    page.say(render_ceiling_change(previous, wanted, actor=actor))
     return RedirectResponse("/", status_code=SEE_OTHER)

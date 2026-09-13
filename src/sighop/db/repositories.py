@@ -17,6 +17,7 @@ database fault and must not be reported as one.
 from __future__ import annotations
 
 import datetime as dt
+import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from sighop.db.models import PacketLog as PacketLogRowModel
 from sighop.db.models import Path as PathRow
 from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
+from sighop.db.models import WebUser as WebUserRow
 from sighop.db.sealing import open_seed, seal_seed
 from sighop.db.times import ensure_utc
 from sighop.net.contacts import Contact
@@ -2037,4 +2039,228 @@ def _direct_message(row: DirectMessageRow) -> DirectMessageRecord:
         route_path=None if row.route_path is None else bytes(row.route_path),
         ack_latency_ms=row.ack_latency_ms,
         row_id=int(row.id),
+    )
+
+
+# --- Web accounts (milestone 9) ---------------------------------------------
+#
+# The operators who sign in to the web interface. Accounts are managed from the
+# terminal only (milestone 9 design D2), read by the panel at sign-in and at
+# each session's revalidation, and never rendered with their hash.
+
+MAX_USERNAME_LENGTH = 64
+
+
+class UsernameError(ValueError):
+    """A username that cannot be stored. Says which rule it broke."""
+
+
+class WebUserExistsError(RuntimeError):
+    """An account with this normalised username exists. Names the existing one."""
+
+
+def normalise_username(value: str) -> str:
+    """The one form a username is stored, compared and looked up in (design D1).
+
+    NFKC first, so a compatibility form (a full-width letter, a ligature) is the
+    letter it stands for; then `casefold()`, which is `lower()` done properly for
+    the scripts where the two differ. The same function is used by the
+    repository, the command line and sign-in, so "differs only in case" cannot
+    mean one thing in one surface and another in the next.
+
+    Empty, whitespace and control characters are refused rather than stripped:
+    a username that silently lost a character is a different username.
+    """
+    normalised = unicodedata.normalize("NFKC", value).casefold()
+    if not normalised:
+        raise UsernameError("a username cannot be empty")
+    if len(normalised) > MAX_USERNAME_LENGTH:
+        raise UsernameError(
+            f"a username is at most {MAX_USERNAME_LENGTH} characters; this one is "
+            f"{len(normalised)}"
+        )
+    for character in normalised:
+        if character.isspace():
+            raise UsernameError("a username cannot contain whitespace")
+        if unicodedata.category(character).startswith("C"):
+            raise UsernameError(
+                f"a username cannot contain control or unassigned characters "
+                f"(found U+{ord(character):04X})"
+            )
+    return normalised
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class WebUserRecord:
+    """One account as stored, hash included, rendered without it.
+
+    The hash is here because sign-in has to verify against it and there is
+    nowhere else for it to live. `repr` and `as_json` are the two rendering
+    paths and neither carries it — a traceback is a rendering path too.
+    """
+
+    id: uuid.UUID
+    username: str
+    password_hash: str
+    enabled: bool
+    created_at: dt.datetime
+    password_set_at: dt.datetime
+
+    def __repr__(self) -> str:
+        return (
+            f"WebUserRecord(id={self.id}, username={self.username!r}, "
+            f"password_hash=<redacted>, enabled={self.enabled}, "
+            f"created_at={self.created_at.isoformat()}, "
+            f"password_set_at={self.password_set_at.isoformat()})"
+        )
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "web_user_id": str(self.id),
+            "username": self.username,
+            "enabled": self.enabled,
+            "created_at": self.created_at.isoformat(),
+            "password_set_at": self.password_set_at.isoformat(),
+        }
+
+
+@dataclass(slots=True)
+class WebUserRepository:
+    """The `web_user` table. Every username argument is normalised here."""
+
+    database: Database
+
+    async def add(
+        self,
+        username: str,
+        *,
+        password_hash: str,
+        enabled: bool = True,
+        created_at: dt.datetime | None = None,
+    ) -> Outcome[WebUserRecord]:
+        """Store a new account, refusing a username that already exists.
+
+        Refused *here*, naming the stored account, for the reason
+        `EntityRepository.store` refuses here. The unique constraint on the
+        normalised column stays the backstop: this check loses a race and the
+        constraint does not.
+        """
+        name = normalise_username(username)
+        existing = await self.get(name)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise WebUserExistsError(
+                f"an account named {existing.value.username!r} already exists "
+                f"({existing.value.id}); usernames are compared without regard to "
+                "case, and the stored account is unchanged"
+            )
+        at = ensure_utc(created_at or dt.datetime.now(dt.UTC), field="web_user.created_at")
+        record = WebUserRecord(
+            id=uuid.uuid4(),
+            username=name,
+            password_hash=password_hash,
+            enabled=enabled,
+            created_at=at,
+            password_set_at=at,
+        )
+
+        async def work(session: object) -> WebUserRecord:
+            session.add(  # type: ignore[attr-defined]
+                WebUserRow(
+                    id=record.id,
+                    username=record.username,
+                    password_hash=record.password_hash,
+                    enabled=record.enabled,
+                    created_at=record.created_at,
+                    password_set_at=record.password_set_at,
+                )
+            )
+            return record
+
+        return await self.database.run("add_web_user", work)
+
+    async def get(self, username: str) -> Outcome[WebUserRecord | None]:
+        name = normalise_username(username)
+
+        async def work(session: object) -> WebUserRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(WebUserRow).where(WebUserRow.username == name)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _web_user(row)
+
+        return await self.database.run("get_web_user", work)
+
+    async def list(self) -> Outcome[tuple[WebUserRecord, ...]]:
+        async def work(session: object) -> tuple[WebUserRecord, ...]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(WebUserRow).order_by(WebUserRow.created_at, WebUserRow.username)
+                )
+            ).scalars()
+            return tuple(_web_user(row) for row in rows)
+
+        return await self.database.run("list_web_users", work)
+
+    async def set_password(
+        self, username: str, *, password_hash: str, at: dt.datetime | None = None
+    ) -> Outcome[bool]:
+        """Replace the hash and move the credential epoch, in one statement.
+
+        Moving `password_set_at` is what ends every session issued under the old
+        password at its next revalidation; a hash change that left it alone
+        would leave those sessions signed in.
+        """
+        when = ensure_utc(at or dt.datetime.now(dt.UTC), field="web_user.password_set_at")
+        return await self._update(
+            username, "set_web_user_password", password_hash=password_hash, password_set_at=when
+        )
+
+    async def set_enabled(self, username: str, enabled: bool) -> Outcome[bool]:
+        return await self._update(username, "set_web_user_enabled", enabled=enabled)
+
+    async def remove(self, username: str) -> Outcome[bool]:
+        name = normalise_username(username)
+
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(WebUserRow).where(WebUserRow.username == name)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("remove_web_user", work)
+
+    async def count_enabled(self) -> Outcome[int]:
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count())
+                    .select_from(WebUserRow)
+                    .where(WebUserRow.enabled.is_(True))
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_enabled_web_users", work)
+
+    async def _update(self, username: str, operation: str, **values: object) -> Outcome[bool]:
+        name = normalise_username(username)
+
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(WebUserRow).where(WebUserRow.username == name).values(**values)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run(operation, work)
+
+
+def _web_user(row: WebUserRow) -> WebUserRecord:
+    return WebUserRecord(
+        id=row.id,
+        username=row.username,
+        password_hash=row.password_hash,
+        enabled=row.enabled,
+        created_at=row.created_at,
+        password_set_at=row.password_set_at,
     )

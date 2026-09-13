@@ -97,10 +97,12 @@ class LiveState(Protocol):
 class DurableState(Protocol):
     """The database behind the panel, or its absence.
 
-    `None` is a first-class answer and is the reason this is separate from
-    `LiveState`: a run with no database serves the whole interface, and the
-    sections backed by durable state say that no database is configured rather
-    than rendering empty (`web-server`).
+    Separate from `LiveState` because the two fail differently. Since milestone
+    9 a run serving the interface always has a database — its accounts live
+    there — so `None` is what a `Runtime` without `--web` holds, and what a page
+    test's stub may hold; the served answer to "durable state is unavailable" is
+    a degraded database, which every section states rather than rendering empty
+    (`web-server`).
     """
 
     @property

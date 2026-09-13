@@ -61,9 +61,21 @@ AUTHENTICATION_NOTE = (
 )
 
 NOT_RECORDED = (
-    "This conversation is not being recorded and will not survive the run: "
-    "messages sent and received are shown from this session's own memory."
+    "The database is unreachable, so messages from this point are not being "
+    "recorded and will not survive the run: what is shown comes from this "
+    "session's own memory. Sending and receiving continue."
 )
+"""The degraded state. Since milestone 9 a served panel always has a database —
+its accounts live there — so "not recorded" only ever means an outage."""
+
+HISTORY_UNREADABLE = (
+    "Stored history cannot be read while the database is unreachable: only the "
+    "messages this run has seen are shown, and new messages are not being "
+    "recorded. Sending is still available."
+)
+"""A conversation opened (or refreshed) while its durable half cannot be read.
+Different from `NOT_RECORDED`: here the page is also missing messages that exist,
+and an operator must not read a short conversation as the whole of it."""
 
 
 # --- The conversation list --------------------------------------------------
@@ -89,9 +101,16 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
             contact.public_key.hex(): identity_for(contact) for contact in contacts
         },
         channels_absent=CHANNELS_ABSENT,
-        recorded=page.has_database and not page.degraded,
+        recorded=_recorded(page),
         not_recorded=NOT_RECORDED,
     )
+
+
+def _recorded(page: Panel) -> bool:
+    """Whether what happens now reaches the database. False only in an outage
+    on a served panel; a page test's stub with no persistence records nothing
+    either, and says so rather than claiming otherwise."""
+    return page.persistence is not None and not page.degraded
 
 
 async def _conversations(page: Panel) -> list[dict[str, object]]:
@@ -191,7 +210,7 @@ async def _conversation_context(
     page: Panel, entity: object, contact: Contact
 ) -> dict[str, Any]:
     entity_key = entity.identity.public_key  # type: ignore[attr-defined]
-    messages = await _messages(page, entity_key, contact.public_key)
+    messages, history_readable = await _messages(page, entity_key, contact.public_key)
     return {
         "entity": entity,
         "entity_key": entity_key.hex(),
@@ -203,8 +222,10 @@ async def _conversation_context(
         "route": _route_note(page, contact),
         "authentication_note": AUTHENTICATION_NOTE,
         "channels_absent": CHANNELS_ABSENT,
-        "recorded": page.has_database and not page.degraded,
+        "recorded": _recorded(page),
         "not_recorded": NOT_RECORDED,
+        "history_readable": history_readable,
+        "history_unreadable": HISTORY_UNREADABLE,
         "refusal": "",
         "draft": "",
     }
@@ -212,24 +233,27 @@ async def _conversation_context(
 
 async def _messages(
     page: Panel, entity_key: bytes, peer_key: bytes
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], bool]:
     """This conversation, durable rows and this session's own, merged on `ref`.
 
     The session's copy wins where both hold a message: it is the more recent
     knowledge of the same row, because the durable write happens behind the
-    message path rather than in front of it.
+    message path rather than in front of it. The second value says whether the
+    durable half was read at all.
     """
     merged: dict[str, DirectMessageRecord] = {}
+    readable = False
     if page.persistence is not None:
         stored = await page.persistence.direct_messages.conversation(
             entity_key, peer_key
         )
         if isinstance(stored, Succeeded):
             merged = {record.ref: record for record in stored.value}
+            readable = True
     for record in page.chat.conversation(entity_key, peer_key):
         merged[record.ref] = record
     ordered = sorted(merged.values(), key=lambda record: record.handled_at, reverse=True)
-    return [_message_view(record) for record in ordered]
+    return [_message_view(record) for record in ordered], readable
 
 
 def _message_view(record: DirectMessageRecord) -> dict[str, object]:

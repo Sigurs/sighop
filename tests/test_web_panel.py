@@ -40,7 +40,13 @@ from sighop.web.render import (
     unreadable,
 )
 from tests.test_web_state import RecordingLogger
-from tests.webfixtures import StubState, safe_pages, stub_state
+from tests.webfixtures import (
+    StubState,
+    authenticator,
+    safe_pages,
+    signed_client,
+    stub_state,
+)
 
 TEMPLATE_DIR = Path(sighop.web.__file__).parent / "templates"
 HOSTS = allowed_hosts("127.0.0.1", 8080)
@@ -48,16 +54,20 @@ HOSTS = allowed_hosts("127.0.0.1", 8080)
 
 def _app(**kwargs: object) -> tuple[FastAPI, StubState]:
     state = stub_state(**kwargs)  # type: ignore[arg-type]
-    return create_app(state, hosts=HOSTS, logger=RecordingLogger()), state
+    return create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger()), state
 
 
 def _client(app: FastAPI) -> TestClient:
-    return TestClient(app, base_url="http://127.0.0.1:8080")
+    return signed_client(app, base_url="http://127.0.0.1:8080")
 
 
 def _pages(app: FastAPI) -> list[str]:
-    """Every page, routers included — see `webfixtures.registered_routes`."""
-    return safe_pages(app)
+    """Every page behind sign-in, routers included — see `registered_routes`.
+
+    The sign-in form is the one public page and deliberately renders no
+    platform state at all, meter included (milestone 9 design D5).
+    """
+    return [path for path in safe_pages(app) if path != "/login"]
 
 
 # --- 9.1 The meter is on every page -----------------------------------------
@@ -91,6 +101,10 @@ def test_every_page_extends_the_base_template() -> None:
         source = template.read_text()
         if template.name == "error.html":
             assert "does not extend base.html" in source
+            continue
+        if template.name == "login.html":
+            assert "Deliberately standalone" in source
+            assert "platform state" in source
             continue
         assert '{% extends "base.html" %}' in source, f"{template.name} has no shell"
 

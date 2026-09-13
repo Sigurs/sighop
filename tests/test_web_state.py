@@ -24,7 +24,13 @@ import sighop.runtime
 import sighop.web
 from sighop.runtime import Runtime, RuntimeConfig
 from sighop.web.state import DurableState, LiveState, PanelState
-from tests.webfixtures import StubState, as_panel_state, stub_state
+from tests.webfixtures import (
+    StubState,
+    as_panel_state,
+    authenticator,
+    signed_client,
+    stub_state,
+)
 
 
 class RecordingLogger:
@@ -226,16 +232,15 @@ def test_a_stub_drives_every_page_with_no_runtime_present() -> None:
     this stops being true is a new page reaching for something only a `Runtime`
     has, and that page would be the one nobody thought to add a test for.
     """
-    from fastapi.testclient import TestClient
 
     from sighop.web.app import allowed_hosts, create_app
     from tests.webfixtures import safe_pages
 
     state = stub_state(stub_names=("panel-identity",))
-    app = create_app(state, hosts=allowed_hosts("127.0.0.1", 8080), logger=RecordingLogger())
+    app = create_app(state, auth=authenticator(), hosts=allowed_hosts("127.0.0.1", 8080), logger=RecordingLogger())
     pages = safe_pages(app)
     assert len(pages) > 5, f"only {pages} were enumerated; the router walk is broken"
 
-    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+    with signed_client(app, base_url="http://127.0.0.1:8080") as client:
         for path in pages:
             assert client.get(path).status_code == 200, f"{path} needs a Runtime"

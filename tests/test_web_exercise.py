@@ -31,6 +31,7 @@ from tests.protocol.corpus import EXPECTED_RECEIVED_COUNT
 from tests.test_dm import Entity, messenger
 from tests.test_room_exercise import _replayed
 from tests.test_tx import RecordingLogger
+from tests.webfixtures import signed_client
 
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
@@ -197,19 +198,19 @@ def test_every_panel_test_that_needs_a_database_says_so() -> None:
 @pytest.mark.parametrize("configuration", ["no database", "no interface", "both"])
 def test_the_panel_is_constructible_in_every_configuration(configuration: str) -> None:
     """16.3: a page renders with no database, no feed, or neither."""
-    from fastapi.testclient import TestClient
 
     from sighop.web.app import allowed_hosts, create_app
-    from tests.webfixtures import stub_state
+    from tests.webfixtures import authenticator, stub_state
 
     feed = FeedHub() if configuration != "no interface" else None
     app = create_app(
         stub_state(),
+        auth=authenticator(),
         feed=feed,
         hosts=allowed_hosts("127.0.0.1", 8080),
         logger=RecordingLogger(),
     )
-    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+    with signed_client(app, base_url="http://127.0.0.1:8080") as client:
         assert client.get("/").status_code == 200
 
 

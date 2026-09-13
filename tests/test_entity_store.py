@@ -468,3 +468,22 @@ def test_the_stored_entity_record_carries_nothing_secret() -> None:
     assert identity.seed.hex() not in rendered
     assert "sealed" not in rendered
     assert os.environ.get(SECRET_KEY_VARIABLE, "\0") not in rendered
+
+
+def test_no_command_reads_the_secret_key_around_config() -> None:
+    """Statically: every read of the secret goes through `Config`."""
+    import ast
+    from pathlib import Path
+
+    import sighop
+
+    offenders = []
+    for path in sorted(Path(sighop.__file__).parent.rglob("*.py")):
+        if path.name == "config.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Attribute) and node.attr == "environ":
+                source = ast.get_source_segment(path.read_text(), node) or ""
+                offenders.append(f"{path.name}:{node.lineno}: {source}")
+    allowed = {"migrations.py", "logging.py"}
+    assert [entry for entry in offenders if entry.split(":")[0] not in allowed] == []

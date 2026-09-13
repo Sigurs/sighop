@@ -4,6 +4,13 @@
 {% import "_identity.html" as identity %}
 <div id="conversation" hx-get="/chat/{{ entity_key }}/{{ peer_key }}/messages"
      hx-trigger="every 3s" hx-swap="outerHTML">
+{# Inside the refreshed partial, so a database that goes away mid-conversation
+   is said on the next refresh rather than on the next reload (web-chat). #}
+{% if not history_readable %}
+<p class="unavailable">{{ history_unreadable }}</p>
+{% elif not recorded %}
+<p class="unavailable">{{ not_recorded }}</p>
+{% endif %}
 {% if messages %}
 <table class="conversation">
   <thead>

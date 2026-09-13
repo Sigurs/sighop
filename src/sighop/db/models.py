@@ -1,4 +1,4 @@
-"""The ten tables (milestone 5 D3, milestone 6 D2, milestone 7 D3, milestone 8 D7).
+"""The eleven tables (milestone 5 D3, 6 D2, 7 D3, 8 D7, 9 D1).
 
 DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
 and writes on every packet — `entity`, `contact`, `path`, `packet_log` —
@@ -12,6 +12,10 @@ Milestone 8 adds the tenth, `direct_message`. §6's `message` is room-scoped —
 it hangs off `room_id` because a room server's whole purpose is to hold what was
 posted to it — so a person's own conversation had nowhere to live and a page
 refresh lost a conversation the radio actually carried (milestone 8 design D7).
+
+Milestone 9 adds the eleventh, `web_user`: the operator accounts that sign in to
+the web interface. It is not platform state about the mesh at all, and it lives
+here because revoking an account has to reach a running process (design D1).
 
 Three details are deliberate rather than accidental:
 
@@ -487,3 +491,34 @@ class DirectMessage(Base):
             "handled_at",
         ),
     )
+
+
+class WebUser(Base):
+    """An operator account that signs in to the web interface (milestone 9 D1).
+
+    Not one of §6's tables: §6 predates the panel. Accounts are durable state
+    because revoking one has to reach a running process without re-reading a
+    file, and `sighop web user disable` in another process reaches it through
+    the revalidation every session does against this row.
+
+    * **`username` is stored normalised** — NFKC, then `casefold()` — by the one
+      function every surface uses (`normalise_username`), so `UNIQUE` here is a
+      case-insensitive uniqueness without the `citext` extension a measured role
+      may not be able to create.
+    * **`password_hash` is the encoded `$argon2id$…` string**, parameters and
+      salt included, as `room.admin_password_hash` is. Nothing renders it.
+    * **`password_set_at` doubles as the credential epoch.** A session records
+      the value it was issued under and ends when the row's differs, so there is
+      no separate generation counter to drift from the thing it describes.
+    """
+
+    __tablename__ = "web_user"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    username: Mapped[str] = mapped_column(Text, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    password_set_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (UniqueConstraint("username", name="uq_web_user_username"),)

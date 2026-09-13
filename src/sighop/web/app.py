@@ -2,9 +2,11 @@
 
 Three things live here and they are deliberately separate:
 
-* `create_app` builds the ASGI application from the read seam. It touches no
-  socket and starts nothing, so a test can construct one with a stub state, no
-  runtime and no database and request every page.
+* `create_app` builds the ASGI application from the read seam and an
+  `Authenticator`. It touches no socket and starts nothing, so a test can
+  construct one with a stub state, no runtime, no database and an in-memory
+  account store, and request every page — signed in through the production
+  session store, because there is no other way in.
 * `WebInterface.bind` takes the listening socket. It happens **before** the run
   starts, because a port that cannot be bound is a startup failure in the same
   way a configured database that cannot be reached is (`web-server`): reported
@@ -33,7 +35,6 @@ import asyncio
 import contextlib
 import datetime as dt
 import errno
-import secrets
 import socket
 import time
 from collections.abc import Awaitable, Callable, Generator, Iterable
@@ -48,19 +49,17 @@ from fastapi.templating import Jinja2Templates
 
 from sighop.db.engine import Succeeded
 from sighop.logging import Logger, get_logger
+from sighop.web.auth import Authenticator
 from sighop.web.chat import ConversationLog
 from sighop.web.deps import Panel
 from sighop.web.feed import Connection, EntityTraffic, FeedHub
-from sighop.web.guard import RequestGuard
+from sighop.web.guard import UNAUTHENTICATED, RequestGuard, current_session
 from sighop.web.render import (
-    REGULATORY_NOTE,
     contact_rows,
-    meter_for,
     modem_readings,
-    persistence_view,
     queue_rows,
 )
-from sighop.web.routes import admin, chat, keys, rooms
+from sighop.web.routes import admin, chat, keys, rooms, session
 from sighop.web.serialize import logged_packet
 from sighop.web.state import PanelState
 
@@ -71,8 +70,8 @@ never drains; without a bound here, that connection would hold a task for the
 life of the process (`web-dashboard`: "the connection is eventually closed")."""
 
 DEFAULT_WEB_HOST = "127.0.0.1"
-"""Loopback, and it is the default because the alternative is a transmit-capable,
-key-revealing surface with no authentication reachable from the network. An
+"""Loopback, and it is the default because the panel is served over plain HTTP:
+off loopback, passwords and session cookies cross the network unencrypted. An
 operator may choose otherwise; the choice is announced (`web-server`)."""
 
 DEFAULT_WEB_PORT = 8080
@@ -86,42 +85,42 @@ PACKAGE_DIR = Path(__file__).parent
 TEMPLATE_DIR = PACKAGE_DIR / "templates"
 STATIC_DIR = PACKAGE_DIR / "static"
 
-NO_AUTHENTICATION = (
-    "this build has no authentication: anything that can reach the port can "
-    "transmit and reveal private key material"
+PLAIN_HTTP_WARNING = (
+    "passwords and session cookies cross the network unencrypted — reach this "
+    "over a tunnel (SSH, WireGuard)"
 )
-"""Said in full wherever the interface's exposure is reported. Milestone 9 adds
-authentication; until then the gap is stated rather than implied."""
+"""Said in full wherever a non-loopback bind is reported, and never suppressible
+(milestone 9 design D11). sighop does not terminate TLS by operator decision;
+this sentence is what that decision costs, stated rather than implied."""
 
 
 class WebBindError(RuntimeError):
     """The interface could not listen. Names the address, port and reason."""
 
 
+class WebStartupError(RuntimeError):
+    """The interface was asked for and cannot be served. Names what fixes it."""
+
+
 # --- The application --------------------------------------------------------
-
-
-def new_token() -> str:
-    """One provenance token, minted per process (design D9).
-
-    Not a session and not a credential: it identifies a page *this process
-    served*, which is the whole of what it claims. It never leaves the pages
-    this process renders and it dies with the process.
-    """
-    return secrets.token_urlsafe(32)
 
 
 def create_app(
     state: PanelState,
     *,
+    auth: Authenticator,
     feed: FeedHub | None = None,
     logger: Logger | None = None,
-    token: str | None = None,
     hosts: frozenset[str] | None = None,
     conversations: ConversationLog | None = None,
     sealing_secret: bytes | None = None,
+    announce: Callable[[str], None] | None = None,
 ) -> FastAPI:
-    """Build the panel over one read seam.
+    """Build the panel over one read seam, behind one authenticator.
+
+    `auth` is required and has no default: there is no way to build this
+    application without authentication, including "only for tests" (milestone
+    9). A test passes an `Authenticator` over an in-memory account store.
 
     Takes the state and the feed hub; the repositories arrive with the state,
     because `PanelState.persistence` is where they live and a second way to
@@ -141,7 +140,6 @@ def create_app(
     Nothing here binds, listens or connects. The application is a value.
     """
     log = logger or get_logger(component="web")
-    issued = token or new_token()
     app = FastAPI(
         title="sighop",
         docs_url=None,
@@ -157,31 +155,29 @@ def create_app(
     app.state.panel = Panel(
         state=state,
         templates=templates,
-        token=issued,
+        auth=auth,
         logger=log,
         feed=feed,
         sealing_secret=sealing_secret,
         chat=conversations or ConversationLog(),
+        announce=announce,
     )
     app.state.feed = feed
     app.state.templates = templates
     app.state.log = log
-    app.state.token = issued
+    app.state.auth = auth
     app.state.hosts = hosts
 
-    app.add_middleware(RequestGuard, token=issued, hosts=hosts, logger=log)
+    app.add_middleware(RequestGuard, auth=auth, hosts=hosts, logger=log)
     app.add_exception_handler(Exception, _error_page)
+    app.include_router(session.router)
     app.include_router(admin.router)
     app.include_router(keys.router)
     app.include_router(rooms.router)
     app.include_router(chat.router)
 
     def page(request: Request, name: str, **extra: object) -> HTMLResponse:
-        return templates.TemplateResponse(
-            request=request,
-            name=name,
-            context={**page_context(state, token=issued), **extra},
-        )
+        return app.state.panel.page(request, name, **extra)  # type: ignore[no-any-return]
 
     @app.get("/", response_class=HTMLResponse)
     async def overview(request: Request) -> HTMLResponse:
@@ -240,10 +236,16 @@ async def serve_feed(
 ) -> None:
     """One feed connection, from accept to its closing event.
 
+    The guard has already refused a socket with no session or a foreign
+    `Origin`, before `accept()`; the closing event names the account whose
+    browser held the connection.
+
     Written as a function rather than inline so it can be driven by a test with
     no browser: the socket is the only thing a browser brings, and everything
     interesting here is about what is sent and in what order.
     """
+    signed_in = current_session(websocket)
+    actor = UNAUTHENTICATED if signed_in is None else signed_in.username
     await websocket.accept()
     started = time.perf_counter()
     hub = feed or FeedHub(logger=logger)
@@ -275,6 +277,7 @@ async def serve_feed(
             "web_feed_closed",
             outcome="success" if reason in ("closed", "disconnected") else reason,
             reason=reason,
+            actor=actor,
             delivered=connection.delivered,
             dropped=connection.dropped,
             incomplete=connection.incomplete,
@@ -287,24 +290,21 @@ async def _paint_history(
 ) -> None:
     """The recent recorded packets, newest first, before anything live.
 
-    With no database — or one that cannot be read — the feed starts empty and
-    says that only live records are shown, rather than looking like a mesh that
-    has been quiet (`web-dashboard`).
+    With a database that cannot be read the feed starts empty and says that only
+    live records are shown, rather than looking like a mesh that has been quiet
+    (`web-dashboard`). A served panel always has a database (milestone 9), so
+    there is no separate "none configured" wording to keep.
     """
     persistence = state.persistence
     rows: list[dict[str, object]] = []
     note = ""
-    if persistence is None:
-        note = "no database is configured, so only records from now on are shown"
+    recent = None if persistence is None else await persistence.packet_log.recent()
+    if isinstance(recent, Succeeded):
+        rows = [logged_packet(row) for row in recent.value]
     else:
-        recent = await persistence.packet_log.recent()
-        if isinstance(recent, Succeeded):
-            rows = [logged_packet(row) for row in recent.value]
-        else:
-            note = (
-                "the recorded history could not be read, so only records from "
-                "now on are shown"
-            )
+        note = (
+            "the recorded history could not be read, so only records from now on are shown"
+        )
     await _send(websocket, {"kind": "history", "records": rows, "note": note})
     # The boundary itself, as its own message: "this happened before you
     # connected" and "this is happening" are different claims.
@@ -336,16 +336,15 @@ async def _send(websocket: WebSocket, message: dict[str, object]) -> None:
 async def _error_page(request: Request, exc: Exception) -> HTMLResponse:
     """One generic page for an unhandled failure (`web-server`).
 
-    No traceback, no path, no exception text, no internal detail: a page that
-    explained the failure to a browser would be explaining it to whoever reached
-    the port, and on this build that is anyone who can. What actually happened
-    is in the request's wide event, which is where an operator looks anyway.
+    No traceback, no path, no exception text, no internal detail: what actually
+    happened is in the request's wide event, which is where an operator looks
+    anyway, and a page is a rendering path to whoever holds the browser.
     """
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
     return templates.TemplateResponse(
         request=request,
         name="error.html",
-        context={"token": getattr(request.app.state, "token", "")},
+        context={},
         status_code=500,
     )
 
@@ -376,28 +375,6 @@ def entity_rows(state: PanelState, feed: FeedHub | None) -> list[dict[str, objec
     return rows
 
 
-def page_context(state: PanelState, *, token: str = "") -> dict[str, object]:
-    """What every page is given, whatever else it also reads.
-
-    The duty-cycle meter, the transmit gate and the persistence state are on
-    every page by construction (design D12), so they are assembled once here
-    rather than remembered per route. The provenance token rides along for the
-    same reason: a page that forgot it would be a page whose forms silently
-    stopped working.
-    """
-    status = state.scheduler.status()
-    return {
-        "state": state,
-        "scheduler": state.scheduler,
-        "status": status,
-        "meter": meter_for(status),
-        "durability": persistence_view(state.persistence),
-        "regulatory_note": REGULATORY_NOTE,
-        "persistence": state.persistence,
-        "token": token,
-    }
-
-
 # --- The service ------------------------------------------------------------
 
 
@@ -422,6 +399,15 @@ class WebInterface:
     host: str
     port: int
     listener: socket.socket
+    auth: Authenticator
+    accounts_enabled: int = 0
+    """Read before the bind, reported at startup (design D11)."""
+
+    extra_hosts: tuple[str, ...] = ()
+    """`--web-allowed-host` values, validated. Added to, never replacing, the
+    host names the bound address implies (design D10)."""
+
+    announce: Callable[[str], None] | None = None
     feed: FeedHub | None = None
     conversations: ConversationLog | None = None
     logger: Logger | None = None
@@ -437,20 +423,28 @@ class WebInterface:
         cls,
         state: PanelState,
         *,
+        auth: Authenticator,
+        accounts_enabled: int,
         host: str = DEFAULT_WEB_HOST,
         port: int = DEFAULT_WEB_PORT,
+        allowed: Iterable[str] = (),
         feed: FeedHub | None = None,
         conversations: ConversationLog | None = None,
         logger: Logger | None = None,
         sealing_secret: bytes | None = None,
+        announce: Callable[[str], None] | None = None,
     ) -> WebInterface:
         """Take the listening socket now, or fail startup saying why.
 
         Binding here rather than inside the server is what makes a port clash a
         *startup* failure: it happens before the pipeline exists, so a run that
         cannot serve the interface it was asked for does not quietly become a
-        run without one.
+        run without one. The allowed host names are validated first, so a
+        wildcard is refused with no port ever listened on.
         """
+        extra_hosts = validate_allowed_hosts(allowed)
+        if accounts_enabled < 1:
+            raise WebStartupError(NO_ENABLED_ACCOUNT)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         try:
             listener = socket.create_server(
@@ -466,6 +460,10 @@ class WebInterface:
             # the port somebody can actually open, not the zero that was asked.
             port=int(bound[1]),
             listener=listener,
+            auth=auth,
+            accounts_enabled=accounts_enabled,
+            extra_hosts=extra_hosts,
+            announce=announce,
             feed=feed,
             conversations=conversations,
             logger=logger or get_logger(component="web"),
@@ -487,6 +485,11 @@ class WebInterface:
         host = f"[{self.host}]" if ":" in self.host else self.host
         return f"http://{host}:{self.port}"
 
+    @property
+    def hosts(self) -> frozenset[str]:
+        """Every `Host` value this interface answers to (design D10)."""
+        return allowed_hosts(self.host, self.port, extra=self.extra_hosts)
+
     def startup_lines(self) -> list[str]:
         """What the run's output says about the interface. Never empty.
 
@@ -494,14 +497,19 @@ class WebInterface:
         the requirement rather than an oversight: there is no option that serves
         that bind without saying what it exposes (`web-server`).
         """
-        lines = [f"web: {self.url} — the panel is served from inside this run"]
+        lines = [
+            f"web: {self.url} — sign-in required; "
+            f"{self.accounts_enabled} enabled account(s)"
+        ]
         if self.loopback:
-            lines.append(f"     reachable from this host only; {NO_AUTHENTICATION}")
+            lines.append("     reachable from this host only")
         else:
             lines.append(
-                f"     REACHABLE FROM THE NETWORK on {self.host}: {NO_AUTHENTICATION}. "
-                "Authentication arrives in milestone 9"
+                f"     REACHABLE FROM THE NETWORK on {self.host} over plain HTTP: "
+                f"{PLAIN_HTTP_WARNING}"
             )
+        if self.extra_hosts:
+            lines.append(f"     also answers to: {', '.join(self.extra_hosts)}")
         return lines
 
     def report(self) -> None:
@@ -513,11 +521,14 @@ class WebInterface:
             web_host=self.host,
             web_port=self.port,
             loopback=self.loopback,
-            authenticated=False,
+            authenticated=True,
+            encrypted=False,
+            accounts_enabled=self.accounts_enabled,
+            allowed_hosts=sorted(self.extra_hosts),
             detail=(
-                NO_AUTHENTICATION
+                "reachable from this host only"
                 if self.loopback
-                else f"reachable from the network; {NO_AUTHENTICATION}"
+                else f"reachable from the network over plain HTTP; {PLAIN_HTTP_WARNING}"
             ),
         )
 
@@ -530,11 +541,13 @@ class WebInterface:
         """
         return create_app(
             self.state,
+            auth=self.auth,
             feed=self.feed,
             logger=self.logger,
-            hosts=allowed_hosts(self.host, self.port),
+            hosts=self.hosts,
             conversations=self.conversations,
             sealing_secret=self.sealing_secret,
+            announce=self.announce,
         )
 
     def service(self) -> Callable[[], Awaitable[None]]:
@@ -549,6 +562,9 @@ class WebInterface:
         in-flight requests finish, close the connections — rather than a socket
         torn out from under a half-written response.
         """
+        # Before the first request: an unknown username at sign-in verifies
+        # against this, so it costs what a wrong password costs (design D8).
+        await self.auth.start()
         config = uvicorn.Config(
             self.build_app(),
             # Neither is used: the socket is already bound and is handed in.
@@ -621,12 +637,14 @@ def _bind_message(host: str, port: int, exc: OSError) -> str:
     )
 
 
-def allowed_hosts(host: str, port: int) -> frozenset[str]:
-    """The `Host` header values this interface will answer to (design D9).
+def allowed_hosts(host: str, port: int, *, extra: Iterable[str] = ()) -> frozenset[str]:
+    """The `Host` header values this interface will answer to (design D9, D10).
 
     Milestone 8's rebinding defence is built on this set; it is computed here,
     beside the bind, because it is a fact about what was bound rather than a
-    policy a request handler gets to decide.
+    policy a request handler gets to decide. `extra` is `--web-allowed-host`,
+    already validated: a bare name is added with and without the bound port,
+    and a `name:port` exactly as given. It extends the set and never replaces it.
     """
     names: Iterable[str] = (host,) if not _is_loopback(host) else ("127.0.0.1", "::1", "localhost")
     values: set[str] = set()
@@ -634,4 +652,63 @@ def allowed_hosts(host: str, port: int) -> frozenset[str]:
         bracketed = f"[{name}]" if ":" in name else name
         values.add(bracketed)
         values.add(f"{bracketed}:{port}")
+    for value in extra:
+        values.add(value)
+        if not _has_port(value):
+            values.add(f"{value}:{port}")
     return frozenset(values)
+
+
+NO_DATABASE_FOR_WEB = (
+    "the web interface's accounts are stored in the database, and no database is "
+    "configured: set DATABASE_URL or pass --database-url, "
+    "or run without --web. Nothing was received or transmitted"
+)
+
+NO_ENABLED_ACCOUNT = (
+    "the database holds no enabled web account, so nobody could sign in to the "
+    "interface: add one with `sighop web user add <username>`, or run without "
+    "--web. No port was listened on"
+)
+
+
+def validate_allowed_hosts(values: Iterable[str]) -> tuple[str, ...]:
+    """`--web-allowed-host` values, or a startup failure naming the bad one.
+
+    A name, or `name:port`, or a bracketed IPv6 literal with an optional port.
+    Refused: empty, anything containing `*`, a scheme, a path, a query, userinfo
+    or whitespace — each of those is either a wildcard in disguise or a sign the
+    operator pasted a URL, and guessing what they meant would widen the
+    rebinding defence by accident.
+    """
+    accepted: list[str] = []
+    for raw in values:
+        value = raw.strip().lower()
+        problem = None
+        if not value:
+            problem = "it is empty"
+        elif "*" in value:
+            problem = "wildcards are not accepted; name each host"
+        elif "://" in value or any(mark in value for mark in "/?#@\\") or any(
+            character.isspace() for character in value
+        ):
+            problem = "give a host name or host:port, not a URL"
+        elif value.startswith("[") and "]" not in value:
+            problem = "an IPv6 literal needs its closing bracket"
+        elif not value.startswith("[") and value.count(":") > 1:
+            problem = "an IPv6 literal must be bracketed, as in [::1]:8080"
+        elif _has_port(value) and not value.rsplit(":", 1)[1].isdigit():
+            problem = "the port must be a number"
+        if problem is not None:
+            raise WebStartupError(
+                f"--web-allowed-host {raw!r} is refused: {problem}. No port was listened on"
+            )
+        if value not in accepted:
+            accepted.append(value)
+    return tuple(accepted)
+
+
+def _has_port(value: str) -> bool:
+    if value.startswith("["):
+        return "]:" in value
+    return ":" in value
