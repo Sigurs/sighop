@@ -378,7 +378,7 @@ class AdvertScheduler:
         handles: list[TxHandle] = []
 
         for stub in self.due(now):
-            gap = self._gap_remaining(now)
+            gap = self.flood_gap_remaining(now)
             if gap > 0:
                 # Two local entities must not burst together, so the later one
                 # waits rather than being dropped.
@@ -483,6 +483,17 @@ class AdvertScheduler:
             detail="repeated by every repeater in the mesh; the schedule moved with it",
         )
         return handle
+
+    def flood_gap_remaining(self, now: dt.datetime) -> float:
+        """Seconds until another flood advert from this run is outside the gap.
+
+        Every flood counts — scheduled, requested by a bot, requested by an
+        operator — because the gap exists so local entities never burst
+        together, whoever asked. Zero when no flood has been submitted this run.
+        A caller that refuses to flood inside the gap reads this; `tick()`
+        defers by it.
+        """
+        return self._gap_remaining(now)
 
     def _gap_remaining(self, now: dt.datetime) -> float:
         if self.last_global_flood_at is None:

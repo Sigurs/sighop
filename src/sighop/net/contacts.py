@@ -154,7 +154,17 @@ answer would be a race whose wrong branch greets a peer twice or not at all.
 
 Invoked synchronously, after the store has been updated and before the next
 observation is processed, so a first sighting is an ordered fact. It is expected
-to *offer* work to a queue of its own, not to do it here."""
+to *offer* work to a queue of its own, not to do it here.
+
+A store holds any number of listeners (the bot host, the webhook dispatcher),
+invoked in registration order with the same observation. Each is isolated from
+the others: one that raises is counted and reported, and the rest still hear
+about the advert (webhook-notifications design D1)."""
+
+
+def _listener_name(listener: ObservationListener) -> str:
+    """Which listener failed, for the log: a bound method's qualified name."""
+    return getattr(listener, "__qualname__", None) or type(listener).__qualname__
 
 
 def parse_public_key(text: str) -> bytes:
@@ -185,7 +195,9 @@ class ContactStore:
         self._by_node_hash: dict[int, set[Contact]] = {}
         self._log = logger or get_logger(component="contacts")
         self._sink = sink
-        self._on_observation = on_observation
+        self._listeners: tuple[ObservationListener, ...] = (
+            () if on_observation is None else (on_observation,)
+        )
         self._unpersisted: set[bytes] = set()
         self.adverts_recorded = 0
         self.restored = 0
@@ -193,10 +205,14 @@ class ContactStore:
         self.writes_refused = 0
         self.listener_failures = 0
 
-    def set_observation_listener(self, listener: ObservationListener | None) -> None:
-        """Wire an observer, or remove one. Set before any traffic is processed;
-        a listener attached mid-run would miss the sightings it exists for."""
-        self._on_observation = listener
+    def add_observation_listener(self, listener: ObservationListener) -> None:
+        """Wire another observer. Add before any traffic is processed; a
+        listener attached mid-run would miss the sightings it exists for."""
+        self._listeners = (*self._listeners, listener)
+
+    @property
+    def observation_listeners(self) -> tuple[ObservationListener, ...]:
+        return self._listeners
 
     # --- Reading -----------------------------------------------------------
 
@@ -425,29 +441,30 @@ class ContactStore:
                 return
 
     def _report(self, observation: ContactObservation, record: RxRecord) -> None:
-        """Tell the listener, and survive it.
+        """Tell every listener, and survive each of them.
 
-        A listener is untrusted with respect to the store: the contact is
-        already recorded and already offered for persistence by the time this
-        runs, and a listener that raises must cost none of that and must not
-        stop the next advert being processed. The failure is reported — a
-        listener failing silently is a bot that has quietly stopped seeing the
-        mesh.
+        A listener is untrusted with respect to the store and to every other
+        listener: the contact is already recorded and already offered for
+        persistence by the time this runs, and a listener that raises must cost
+        none of that, must not keep the observation from the listeners after
+        it, and must not stop the next advert being processed. The failure is
+        reported — a listener failing silently is a bot or a webhook that has
+        quietly stopped seeing the mesh.
         """
-        if self._on_observation is None:
-            return
-        try:
-            self._on_observation(observation, record)
-        except Exception as exc:
-            self.listener_failures += 1
-            self._log.error(
-                "contact_listener_failed",
-                outcome="error",
-                packet_id=record.packet_id,
-                public_key=observation.contact.public_key.hex(),
-                error=f"{type(exc).__name__}: {exc}",
-                listener_failures=self.listener_failures,
-            )
+        for listener in self._listeners:
+            try:
+                listener(observation, record)
+            except Exception as exc:
+                self.listener_failures += 1
+                self._log.error(
+                    "contact_listener_failed",
+                    outcome="error",
+                    listener=_listener_name(listener),
+                    packet_id=record.packet_id,
+                    public_key=observation.contact.public_key.hex(),
+                    error=f"{type(exc).__name__}: {exc}",
+                    listener_failures=self.listener_failures,
+                )
 
     def subscribe(self, bus: NetworkBus, *, name: str = "contacts") -> Subscription:
         return bus.subscribe(name, handler=self.handle)

@@ -59,7 +59,7 @@ from sighop.web.render import (
     modem_readings,
     queue_rows,
 )
-from sighop.web.routes import admin, chat, keys, rooms, session
+from sighop.web.routes import admin, chat, keys, rooms, session, setup
 from sighop.web.serialize import logged_packet
 from sighop.web.state import PanelState
 
@@ -171,6 +171,7 @@ def create_app(
     app.add_middleware(RequestGuard, auth=auth, hosts=hosts, logger=log)
     app.add_exception_handler(Exception, _error_page)
     app.include_router(session.router)
+    app.include_router(setup.router)
     app.include_router(admin.router)
     app.include_router(keys.router)
     app.include_router(rooms.router)
@@ -401,7 +402,8 @@ class WebInterface:
     listener: socket.socket
     auth: Authenticator
     accounts_enabled: int = 0
-    """Read before the bind, reported at startup (design D11)."""
+    """Read before the bind, reported at startup (design D11). Zero only while
+    first-run setup is pending (web-first-run-setup design D1)."""
 
     extra_hosts: tuple[str, ...] = ()
     """`--web-allowed-host` values, validated. Added to, never replacing, the
@@ -441,9 +443,12 @@ class WebInterface:
         cannot serve the interface it was asked for does not quietly become a
         run without one. The allowed host names are validated first, so a
         wildcard is refused with no port ever listened on.
+
+        No enabled account is refused unless `auth` carries a pending first-run
+        setup, which `cli.py` builds only for a database with no account at all.
         """
         extra_hosts = validate_allowed_hosts(allowed)
-        if accounts_enabled < 1:
+        if accounts_enabled < 1 and not auth.setup_pending:
             raise WebStartupError(NO_ENABLED_ACCOUNT)
         family = socket.AF_INET6 if ":" in host else socket.AF_INET
         try:
@@ -496,11 +501,22 @@ class WebInterface:
         The non-loopback warning has no off switch and no quiet mode, which is
         the requirement rather than an oversight: there is no option that serves
         that bind without saying what it exposes (`web-server`).
+
+        While first-run setup is pending, the code is printed here and nowhere
+        else: this is the run's human output, never an event (web-first-run-setup
+        design D4). The exposure line follows it unchanged.
         """
-        lines = [
-            f"web: {self.url} — sign-in required; "
-            f"{self.accounts_enabled} enabled account(s)"
-        ]
+        setup = self.auth.setup
+        if setup is not None and setup.pending:
+            lines = [
+                f"web: {self.url} — FIRST-RUN SETUP PENDING: no account exists",
+                f"     open {self.url}/setup and enter setup code {setup.display}",
+            ]
+        else:
+            lines = [
+                f"web: {self.url} — sign-in required; "
+                f"{self.accounts_enabled} enabled account(s)"
+            ]
         if self.loopback:
             lines.append("     reachable from this host only")
         else:
@@ -524,6 +540,8 @@ class WebInterface:
             authenticated=True,
             encrypted=False,
             accounts_enabled=self.accounts_enabled,
+            # Whether setup is pending, and never its code (design D4).
+            setup_pending=self.auth.setup_pending,
             allowed_hosts=sorted(self.extra_hosts),
             detail=(
                 "reachable from this host only"
@@ -666,9 +684,11 @@ NO_DATABASE_FOR_WEB = (
 )
 
 NO_ENABLED_ACCOUNT = (
-    "the database holds no enabled web account, so nobody could sign in to the "
-    "interface: add one with `sighop web user add <username>`, or run without "
-    "--web. No port was listened on"
+    "the database holds web accounts but none of them is enabled, so nobody could "
+    "sign in to the interface: enable one with `sighop web user enable <username>` "
+    "or add one with `sighop web user add <username>`, or run without --web. "
+    "First-run setup is offered only when no account exists at all. No port was "
+    "listened on"
 )
 
 

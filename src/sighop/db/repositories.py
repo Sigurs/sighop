@@ -23,6 +23,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import delete, func, literal, select, tuple_, update
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert
 
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
@@ -36,8 +37,9 @@ from sighop.db.models import PacketLog as PacketLogRowModel
 from sighop.db.models import Path as PathRow
 from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
+from sighop.db.models import Webhook as WebhookRow
 from sighop.db.models import WebUser as WebUserRow
-from sighop.db.sealing import open_seed, seal_seed
+from sighop.db.sealing import SealError, open_seed, open_value, seal_seed, seal_value
 from sighop.db.times import ensure_utc
 from sighop.net.contacts import Contact
 from sighop.net.dm import DirectMessageRecord, RecordedOutcome
@@ -48,6 +50,14 @@ from sighop.protocol.payloads import (
     NodeType,
     Permission,
     WireText,
+)
+from sighop.webhooks.config import (
+    WebhookExistsError,
+    parse_format,
+    parse_max_hops,
+    parse_name,
+    parse_triggers,
+    parse_url,
 )
 
 DEFAULT_RECENT_PACKETS = 200
@@ -2178,6 +2188,58 @@ class WebUserRepository:
 
         return await self.database.run("add_web_user", work)
 
+    async def add_first(
+        self, username: str, *, password_hash: str, created_at: dt.datetime | None = None
+    ) -> Outcome[WebUserRecord | None]:
+        """Store an enabled account only if the table holds none at all.
+
+        First-run setup's one write (web-first-run-setup design D6). The count
+        and the insert are one transaction under `SHARE ROW EXCLUSIVE`, which
+        conflicts with itself and with the `ROW EXCLUSIVE` lock a plain `add`'s
+        insert takes: two setups serialise, and a terminal `add` either commits
+        first (this sees it and inserts nothing) or waits for this to commit.
+        `INSERT … WHERE NOT EXISTS` without the lock would not do: under READ
+        COMMITTED two concurrent statements both see an empty table.
+
+        `None` means an account already existed, disabled ones included.
+        """
+        name = normalise_username(username)
+        at = ensure_utc(created_at or dt.datetime.now(dt.UTC), field="web_user.created_at")
+        record = WebUserRecord(
+            id=uuid.uuid4(),
+            username=name,
+            password_hash=password_hash,
+            enabled=True,
+            created_at=at,
+            password_set_at=at,
+        )
+
+        async def work(session: object) -> WebUserRecord | None:
+            await session.execute(  # type: ignore[attr-defined]
+                sql_text("LOCK TABLE web_user IN SHARE ROW EXCLUSIVE MODE")
+            )
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count()).select_from(WebUserRow)
+                )
+            ).scalar_one()
+            if total:
+                return None
+            session.add(  # type: ignore[attr-defined]
+                WebUserRow(
+                    id=record.id,
+                    username=record.username,
+                    password_hash=record.password_hash,
+                    enabled=record.enabled,
+                    created_at=record.created_at,
+                    password_set_at=record.password_set_at,
+                )
+            )
+            await session.flush()  # type: ignore[attr-defined]
+            return record
+
+        return await self.database.run("add_first_web_user", work)
+
     async def get(self, username: str) -> Outcome[WebUserRecord | None]:
         name = normalise_username(username)
 
@@ -2230,6 +2292,19 @@ class WebUserRepository:
 
         return await self.database.run("remove_web_user", work)
 
+    async def count(self) -> Outcome[int]:
+        """Every account, enabled or not. Zero is what offers first-run setup."""
+
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count()).select_from(WebUserRow)
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_web_users", work)
+
     async def count_enabled(self) -> Outcome[int]:
         async def work(session: object) -> int:
             total = (
@@ -2264,3 +2339,317 @@ def _web_user(row: WebUserRow) -> WebUserRecord:
         created_at=row.created_at,
         password_set_at=row.password_set_at,
     )
+
+
+# --- Webhooks (webhook-notifications) ---------------------------------------
+#
+# Stored configuration read by the dispatcher at each event, and written by the
+# command line and the panel through the same methods (design D4, D7). The URL
+# is sealed on the way in and opened only for delivery; nothing here returns it
+# to a caller that renders.
+
+MAX_FAILURE_REASON_LENGTH = 500
+
+
+class _Unset:
+    """A keyword left out, as distinct from one given as `None`."""
+
+
+UNSET = _Unset()
+
+
+@dataclass(frozen=True, slots=True)
+class WebhookRecord:
+    """One webhook as stored, with its target reduced to scheme and host.
+
+    Carries no URL, sealed or open: every place a record is shown is a place the
+    URL must not be (the `webhooks` requirement), so the type cannot leak it.
+    """
+
+    id: uuid.UUID
+    name: str
+    url_host: str
+    format: str
+    triggers: tuple[str, ...]
+    max_hops: int | None
+    enabled: bool
+    created_at: dt.datetime
+    last_delivered_at: dt.datetime | None = None
+    last_failed_at: dt.datetime | None = None
+    last_failure: str | None = None
+
+    @property
+    def plaintext_http(self) -> bool:
+        return self.url_host.startswith("http://")
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "webhook_id": str(self.id),
+            "webhook_name": self.name,
+            "url_host": self.url_host,
+            "format": self.format,
+            "triggers": list(self.triggers),
+            "max_hops": self.max_hops,
+            "enabled": self.enabled,
+        }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OpenedWebhook:
+    """A record with its URL opened for delivery, or the reason it could not be.
+
+    `repr` omits the URL: a traceback is a rendering path too.
+    """
+
+    record: WebhookRecord
+    url: str | None
+    error: str | None = None
+
+    def __repr__(self) -> str:
+        state = "<redacted>" if self.url is not None else f"unsealable: {self.error}"
+        return f"OpenedWebhook(name={self.record.name!r}, url={state})"
+
+
+@dataclass(slots=True)
+class WebhookRepository:
+    """The `webhook` table. Every setting is validated here, before any write."""
+
+    database: Database
+
+    async def create(
+        self,
+        *,
+        name: str,
+        url: str,
+        format: str,
+        triggers: Iterable[str],
+        max_hops: int | str | None = None,
+        secret: bytes,
+        created_at: dt.datetime | None = None,
+    ) -> Outcome[WebhookRecord]:
+        """Store a new, enabled webhook, refusing anything the rules refuse.
+
+        The name clash is checked here so the refusal can name it; the unique
+        constraint stays the backstop for the race this check loses.
+        """
+        checked_name = parse_name(name)
+        parsed = parse_url(url)
+        checked_format = parse_format(format)
+        checked_triggers = parse_triggers(triggers)
+        checked_hops = parse_max_hops(max_hops)
+        existing = await self.get_by_name(checked_name)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise WebhookExistsError(
+                f"a webhook named {checked_name!r} already exists; the stored webhook "
+                "is unchanged"
+            )
+        sealed = seal_value(parsed.url.encode("utf-8"), secret)
+        record = WebhookRecord(
+            id=uuid.uuid4(),
+            name=checked_name,
+            url_host=parsed.url_host,
+            format=checked_format.value,
+            triggers=tuple(trigger.value for trigger in checked_triggers),
+            max_hops=checked_hops,
+            enabled=True,
+            created_at=ensure_utc(
+                created_at or dt.datetime.now(dt.UTC), field="webhook.created_at"
+            ),
+        )
+
+        async def work(session: object) -> WebhookRecord:
+            session.add(  # type: ignore[attr-defined]
+                WebhookRow(
+                    id=record.id,
+                    name=record.name,
+                    sealed_url=sealed,
+                    url_host=record.url_host,
+                    format=record.format,
+                    triggers=list(record.triggers),
+                    max_hops=record.max_hops,
+                    enabled=record.enabled,
+                    created_at=record.created_at,
+                )
+            )
+            return record
+
+        return await self.database.run("create_webhook", work)
+
+    async def list_all(self) -> Outcome[list[WebhookRecord]]:
+        async def work(session: object) -> list[WebhookRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(WebhookRow).order_by(WebhookRow.created_at, WebhookRow.name)
+                )
+            ).scalars()
+            return [_webhook(row) for row in rows]
+
+        return await self.database.run("list_webhooks", work)
+
+    async def list_enabled(self, secret: bytes) -> Outcome[list[OpenedWebhook]]:
+        """Every enabled webhook with its URL opened, one row's failure its own.
+
+        Opening happens outside `run`, for `EntityRepository.load_all`'s reason:
+        a wrong secret or an altered row is not a database fault, and a row
+        that does not open must not take the other webhooks with it.
+        """
+
+        async def work(session: object) -> list[tuple[WebhookRecord, bytes]]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(WebhookRow)
+                    .where(WebhookRow.enabled.is_(True))
+                    .order_by(WebhookRow.created_at, WebhookRow.name)
+                )
+            ).scalars()
+            return [(_webhook(row), bytes(row.sealed_url)) for row in rows]
+
+        outcome = await self.database.run("list_enabled_webhooks", work)
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        return Succeeded(
+            [_open_webhook(record, sealed, secret) for record, sealed in outcome.value]
+        )
+
+    async def open_url(
+        self, webhook_id: uuid.UUID, secret: bytes
+    ) -> Outcome[OpenedWebhook | None]:
+        """One webhook with its URL opened, enabled or not — for a test send."""
+
+        async def work(session: object) -> tuple[WebhookRecord, bytes] | None:
+            row = await session.get(WebhookRow, webhook_id)  # type: ignore[attr-defined]
+            return None if row is None else (_webhook(row), bytes(row.sealed_url))
+
+        outcome = await self.database.run("open_webhook", work)
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        if outcome.value is None:
+            return Succeeded(None)
+        record, sealed = outcome.value
+        return Succeeded(_open_webhook(record, sealed, secret))
+
+    async def get_by_name(self, name: str) -> Outcome[WebhookRecord | None]:
+        wanted = name.strip()
+
+        async def work(session: object) -> WebhookRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(WebhookRow).where(WebhookRow.name == wanted)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _webhook(row)
+
+        return await self.database.run("get_webhook_by_name", work)
+
+    async def get_by_id(self, webhook_id: uuid.UUID) -> Outcome[WebhookRecord | None]:
+        async def work(session: object) -> WebhookRecord | None:
+            row = await session.get(WebhookRow, webhook_id)  # type: ignore[attr-defined]
+            return None if row is None else _webhook(row)
+
+        return await self.database.run("get_webhook", work)
+
+    async def set_enabled(self, webhook_id: uuid.UUID, enabled: bool) -> Outcome[bool]:
+        return await self._update(webhook_id, "set_webhook_enabled", enabled=enabled)
+
+    async def update(
+        self,
+        webhook_id: uuid.UUID,
+        *,
+        triggers: Iterable[str] | None = None,
+        format: str | None = None,
+        max_hops: int | str | _Unset | None = UNSET,
+    ) -> Outcome[bool]:
+        """Change what was given, validating all of it before writing any.
+
+        `max_hops=None` removes the limit; leaving it out keeps the stored one.
+        """
+        values: dict[str, object] = {}
+        if triggers is not None:
+            values["triggers"] = [trigger.value for trigger in parse_triggers(triggers)]
+        if format is not None:
+            values["format"] = parse_format(format).value
+        if not isinstance(max_hops, _Unset):
+            values["max_hops"] = parse_max_hops(max_hops)
+        if not values:
+            return await self._exists(webhook_id)
+        return await self._update(webhook_id, "update_webhook", **values)
+
+    async def set_url(
+        self, webhook_id: uuid.UUID, url: str, *, secret: bytes
+    ) -> Outcome[str | None]:
+        """Replace the URL. The new scheme and host, or `None` for no such webhook."""
+        parsed = parse_url(url)
+        sealed = seal_value(parsed.url.encode("utf-8"), secret)
+        outcome = await self._update(
+            webhook_id, "set_webhook_url", sealed_url=sealed, url_host=parsed.url_host
+        )
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        return Succeeded(parsed.url_host if outcome.value else None)
+
+    async def remove(self, webhook_id: uuid.UUID) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(WebhookRow).where(WebhookRow.id == webhook_id)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("remove_webhook", work)
+
+    async def record_delivery(self, webhook_id: uuid.UUID, at: dt.datetime) -> Outcome[bool]:
+        return await self._update(
+            webhook_id,
+            "record_webhook_delivery",
+            last_delivered_at=ensure_utc(at, field="webhook.last_delivered_at"),
+        )
+
+    async def record_failure(
+        self, webhook_id: uuid.UUID, at: dt.datetime, reason: str
+    ) -> Outcome[bool]:
+        return await self._update(
+            webhook_id,
+            "record_webhook_failure",
+            last_failed_at=ensure_utc(at, field="webhook.last_failed_at"),
+            last_failure=reason[:MAX_FAILURE_REASON_LENGTH],
+        )
+
+    async def _exists(self, webhook_id: uuid.UUID) -> Outcome[bool]:
+        outcome = await self.get_by_id(webhook_id)
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        return Succeeded(outcome.value is not None)
+
+    async def _update(
+        self, webhook_id: uuid.UUID, operation: str, **values: object
+    ) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(WebhookRow).where(WebhookRow.id == webhook_id).values(**values)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run(operation, work)
+
+
+def _webhook(row: WebhookRow) -> WebhookRecord:
+    return WebhookRecord(
+        id=row.id,
+        name=row.name,
+        url_host=row.url_host,
+        format=row.format,
+        triggers=tuple(row.triggers or ()),
+        max_hops=row.max_hops,
+        enabled=row.enabled,
+        created_at=row.created_at,
+        last_delivered_at=row.last_delivered_at,
+        last_failed_at=row.last_failed_at,
+        last_failure=row.last_failure,
+    )
+
+
+def _open_webhook(record: WebhookRecord, sealed: bytes, secret: bytes) -> OpenedWebhook:
+    try:
+        opened = open_value(sealed, secret, what=f"webhook {record.name!r}")
+        return OpenedWebhook(record=record, url=opened.decode("utf-8"))
+    except (SealError, UnicodeDecodeError) as exc:
+        return OpenedWebhook(record=record, url=None, error=str(exc))

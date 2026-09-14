@@ -1,4 +1,4 @@
-"""The eleven tables (milestone 5 D3, 6 D2, 7 D3, 8 D7, 9 D1).
+"""The twelve tables (milestone 5 D3, 6 D2, 7 D3, 8 D7, 9 D1, webhook-notifications D5).
 
 DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
 and writes on every packet — `entity`, `contact`, `path`, `packet_log` —
@@ -16,6 +16,10 @@ refresh lost a conversation the radio actually carried (milestone 8 design D7).
 Milestone 9 adds the eleventh, `web_user`: the operator accounts that sign in to
 the web interface. It is not platform state about the mesh at all, and it lives
 here because revoking an account has to reach a running process (design D1).
+
+The twelfth, `webhook`, holds the outside systems told about new repeaters and
+companions; its URL is sealed because the URL is the posting credential
+(webhook-notifications design D5, D6).
 
 Three details are deliberate rather than accidental:
 
@@ -46,6 +50,7 @@ import uuid
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -522,3 +527,38 @@ class WebUser(Base):
     password_set_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
 
     __table_args__ = (UniqueConstraint("username", name="uq_web_user_username"),)
+
+
+class Webhook(Base):
+    """A target outside sighop told about events on the mesh (webhook-notifications D5).
+
+    * **`sealed_url` is ciphertext** (seal version 2): a Discord or n8n URL is
+      the credential that lets anyone post, so it is sealed like a seed and never
+      read back onto a surface. `url_host` is its scheme and host, in the clear,
+      so listing webhooks needs no secret.
+    * **`triggers` is `TEXT[]`, not an enum.** The repository validates it
+      against `Trigger`, so a new trigger is a code change, not a migration.
+    * **The outcome columns are best-effort.** The dispatcher writes them
+      without waiting, and a failed write never affects delivery.
+    """
+
+    __tablename__ = "webhook"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    sealed_url: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    url_host: Mapped[str] = mapped_column(Text, nullable=False)
+    format: Mapped[str] = mapped_column(Text, nullable=False)
+    triggers: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)
+    max_hops: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    last_delivered_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    last_failed_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    last_failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_webhook_name"),
+        CheckConstraint("format IN ('json', 'discord')", name="format"),
+        CheckConstraint("max_hops IS NULL OR max_hops >= 0", name="max_hops"),
+    )

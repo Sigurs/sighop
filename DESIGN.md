@@ -323,6 +323,10 @@ sighop therefore:
   flood adverts from any two local entities**, so N entities never burst together
 - staggers initial adverts across the interval at startup rather than firing N back-to-back
 - refuses to configure an interval below the minimum without an explicit override
+- treats a flood advert requested outside the schedule — by a bot's greeter or by an
+  operator from the panel — as that identity's scheduled flood: the next one moves a full
+  jittered interval out rather than arriving on top of it, and the request counts toward
+  the inter-entity gap like any other flood
 
 At the 2–5 entity target these defaults put sighop at roughly the advert load of the 2–5
 real nodes it is standing in for, which is the correct amount. The failure mode this guards
@@ -457,8 +461,8 @@ must not render channel sender names in a way that implies verified identity.
 
 Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
-them. Milestone 8 adds a tenth, and milestone 9 an eleventh that is not about the mesh at
-all.
+them. Milestone 8 adds a tenth, milestone 9 an eleventh that is not about the mesh at
+all, and change `webhook-notifications` a twelfth.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -499,6 +503,19 @@ all.
 - **web_user** — id, username (stored normalised: NFKC then `casefold()`; **unique**),
   Argon2id `password_hash` with its parameters, enabled, `created_at`, `password_set_at`
   (both `TIMESTAMPTZ`)
+
+**Built (change `webhook-notifications`, migration `0006`):**
+
+- **webhook** — id, **unique** name, **sealed** URL (seal version 2), `url_host` (scheme and
+  host, clear), format (`json`|`discord`, checked), triggers (`TEXT[]`, validated in the
+  repository rather than a database enum), nullable `max_hops` (checked `>= 0`), enabled,
+  `created_at`, nullable `last_delivered_at`, `last_failed_at`, `last_failure`
+
+**The twelfth table holds webhooks** (§7). The URL is sealed like a seed, because a Discord
+or n8n webhook URL is itself the posting credential and a dump must not hand one out;
+`url_host` is kept beside it so a listing needs no secret and shows no path. Triggers are
+text, so adding one is a code change and never a migration. **A downgrade from `0006` deletes
+every webhook**, URLs included; they have to be copied again from wherever they were issued.
 
 **The eleventh table holds operator accounts** for the web interface (§8). They are durable
 state because revoking one has to reach a running process: each session re-reads its row at
@@ -921,6 +938,56 @@ wait.
 Every suppression is counted by reason and reported, because a greeter that silently greets
 nobody looks exactly like a mesh that went quiet — and exactly like a broken greeter.
 
+### Webhooks
+
+Change `webhook-notifications`. Tells systems outside sighop — Discord, n8n, Home Assistant —
+when something worth an operator's attention happens, without anyone watching the panel.
+
+- **Triggers.** `new_repeater` and `new_companion`: a verified advert that **creates** a
+  contact of node type repeater or chat. "New" is the contact store's own `created`, so a key
+  heard before, restored from the database or pasted in by an operator is not new, and a
+  flood copy of the same advert raises nothing. Room servers, sensors and undefined node
+  types raise nothing. The dispatcher is a contact-store listener of its own beside the bot
+  host; the store isolates listeners, so a raising bot host cannot starve webhooks.
+- **Formats.** `json` is sighop's documented event, `schema: 1`: `event`, `event_id` (fixed
+  at the moment of the sighting, identical across retries and webhooks), `occurred_at`,
+  `test`, `node` (`public_key` hex, `node_hash` as two hex digits, `name`, `node_type` as a
+  lower-case name, `position` or null) and `reception` (`hop_count`, `snr_db`, `rssi_dbm`,
+  `received_at`, each null when unknown). Fields are added in a later schema version, never
+  removed or repurposed within one. `discord` is one embed; every advert-derived string is
+  markdown-escaped and `allowed_mentions` is empty, because advert names are written by
+  strangers.
+- **Best-effort delivery, off the reception path.** The listener builds an event and offers it
+  to a bounded queue (64, drop-oldest, counted). One task reads the queue and starts a task
+  per matching webhook; each POSTs with the standard library in a worker thread (no runtime
+  HTTP dependency), 10 s timeout, no redirects followed, up to 4 attempts at 2 s, 10 s and
+  60 s, retrying connection failures, timeouts, `5xx` and `429` (waiting at least
+  `Retry-After`, capped at 300 s). A semaphore of 4 is held only for an attempt, never across a
+  backoff, so one webhook in backoff delays no other. Pending events are not persisted: a
+  restart loses them. Each webhook's last success and last failure with its reason are
+  written without waiting, and a failed write is only logged.
+- **Configuration is read at event time.** The enabled webhooks are read from the database
+  when an event is taken off the queue, so `sighop webhook …` in another process and the panel
+  both apply to the next event without a restart. A failed read delivers to the last good list
+  and is logged. A row whose URL does not open under `SIGHOP_SECRET_KEY` is reported and
+  skipped; the others proceed.
+- **The URL is never shown after it is stored.** Every surface shows scheme and host only; the
+  URL is read from standard input on the command line and from a password field in the panel,
+  never re-filled after a refusal, and never in a log event.
+- **No database, no webhooks; a replay, no webhooks.** A replayed reception carries an earlier
+  session's timestamps, so announcing it would be false — whatever `--persist-replay` says.
+  Receive-only mode does not affect webhooks: they are not transmissions. A run with a
+  database but no usable secret sends none and says so at startup.
+- **First run.** A node with an empty contact table announces every repeater and companion it
+  hears within a day. `max_hops` narrows it (an unknown hop count passes only a webhook with
+  no limit), and Discord's own rate limit arrives as `429`. No seeding step is needed: every
+  restored contact is already not new.
+- **Later: `new_chatter`.** A new trigger member, its own event source calling
+  `WebhookDispatcher.offer`, and a renderer case — no schema change and no dispatcher change.
+- **SSRF.** Only signed-in operators configure webhooks, and they already control the host;
+  schemes are limited to `http`/`https` and redirects are not followed. Not otherwise
+  mitigated.
+
 ---
 
 ## 8. WebUI
@@ -963,17 +1030,41 @@ rather than assuming a protective network. **As built in milestone 9:**
   username stored normalised (NFKC, then `casefold()`, so uniqueness is case-insensitive
   without `citext`), an Argon2id hash with its parameters, an enabled flag, and
   `password_set_at`, which doubles as the credential epoch. `run --web` therefore requires a
-  database *and* at least one enabled account, and refuses at startup — before any socket
-  exists — naming the command that fixes either. A run without `--web` needs neither.
-- **Accounts are managed from a terminal only**: `sighop web user
+  database, and refuses at startup — before any socket exists — without one, or when the
+  database holds accounts and none is enabled, naming `web user enable` and `web user add`.
+  A database with *no account at all* is served in first-run setup instead (below). A run
+  without `--web` needs neither.
+- **Accounts are managed from a terminal, except the first**: `sighop web user
   add|list|passwd|disable|enable|remove`. Passwords come from a prompt (asked twice) or
   standard input, never argv — the rule room passwords already follow — and disabling or
-  removing the last enabled account needs `--allow-no-accounts`. The browser offers none of
-  it (see below).
+  removing the last enabled account needs `--allow-no-accounts`; removing the only account
+  says the next `run --web` will offer first-run setup. The browser offers none of it (see
+  below) beyond creating that first account.
+- **First-run setup** (change `web-first-run-setup`). When `web_user` is empty at startup,
+  `run --web` serves the panel anyway, and the only thing it offers is `GET`/`POST /setup`:
+  a one-time code, a username and a password entered twice. The code is 20 Crockford base32
+  characters (100 bits, no I/L/O/U, shown `XXXXX-XXXXX-XXXXX-XXXXX`, accepted in any case
+  and without separators), generated at startup and printed **only in the run's own
+  output** — so `docker compose logs sighop` shows it — never in an event, a page or the
+  database; the startup event says `setup_pending: true` and nothing more. A wrong code is
+  refused with one fixed sentence before any hashing, compared in constant time, and is
+  **not throttled**: at 100 bits guessing is hopeless at any rate the process can serve,
+  and in compose every client arrives from the Docker gateway address, so a per-client
+  delay would be a global lockout anyone on the network could trigger. The account is
+  created by `WebUserRepository.add_first` — `LOCK TABLE web_user IN SHARE ROW EXCLUSIVE
+  MODE`, count, insert only into an empty table, one transaction — which serialises two
+  setups and a racing terminal `web user add` alike, so setup never creates an account
+  beside another. Success signs that browser in exactly as `/login` does and closes setup;
+  so does any account appearing from a terminal. The code dies at completion or restart,
+  and a restart prints a new one. Setup is decided at startup from the *total* count, not
+  the enabled count: a database whose accounts are all disabled was locked deliberately,
+  and setup must not be a way around that. While setup is pending, a refused page request
+  goes to `/setup` and `/login` redirects there; completion is also announced in the run's
+  output.
 - **Every page, form and the feed's WebSocket require a session, by default-deny.** The
-  public set is fixed in `web/guard.py` — `GET`/`POST /login` and `/static/` — and anything
-  not named in it refuses a request with no session (`303` to the sign-in form for a safe
-  method, `401` otherwise; the WebSocket closes with `1008` before `accept()`, and also
+  public set is fixed in `web/guard.py` — `GET`/`POST /login`, `GET`/`POST /setup` and
+  `/static/` — and anything not named in it refuses a request with no session (`303` to
+  the sign-in form, or the setup form while setup is pending, for a safe method, `401` otherwise; the WebSocket closes with `1008` before `accept()`, and also
   checks `Origin`). A test walks the route table to prove it. There is no option,
   environment variable or constructor argument that turns authentication off, on loopback
   or anywhere else — `create_app` requires an authenticator, and tests sign in through the
@@ -1017,8 +1108,8 @@ Three rules follow from what the UI can do:
 - **Request provenance is enforced alongside authentication, not instead of it.** A page on
   another origin can ride a signed-in browser, and a rebound name can make its script
   same-origin with the panel. Every state-changing request carries the *session's own*
-  token (the sign-in form carries a per-process one, which is all a pre-session request can
-  be bound to; another session's token is refused like none), and every request's `Host`
+  token (the sign-in and setup forms carry a per-process one, which is all a pre-session
+  request can be bound to; another session's token is refused like none), and every request's `Host`
   must be one the interface answers to (milestone 8 design D9, milestone 9 design D6).
 - **Actions that reveal or export a private key, enable transmit, or raise the duty-cycle
   ceiling are re-authenticated**: the confirmation carries the one-shot nonce *and* the
@@ -1030,6 +1121,20 @@ Three rules follow from what the UI can do:
   `actor` — the username, or `unauthenticated` — and `audit()` takes it as a required
   keyword with no default. Transmit and ceiling changes made in the browser are also printed
   in the run's own output, naming the account.
+- **"Advert zero-hop now" and "advert flood now"** are confirm-and-nonce guarded actions
+  per loaded identity, like a room post: an advert is an ordinary transmission by an
+  identity the operator already runs, not a change to what the station may do. Each has its
+  own nonce bound to action and identity, so a zero-hop confirmation cannot be spent as a
+  flood or on another identity, and each is printed in the run's output naming the account.
+  Unlike a room post, **both refuse rather than defer** — with nothing submitted — when the
+  transmit gate is closed, when the board has not answered with its radio parameters, or when
+  the identity is not loaded. A post is a stored row that is delivered once the gate opens;
+  an advert is a packet, and a suppressed one is charged and gone — for a flood, also moving
+  the identity's next scheduled one a day out with nothing on the air. A flood is further
+  refused, stating the seconds remaining, while any flood from this run is inside the
+  inter-entity gap (§4.3): the gap exists so local identities never burst together, and an
+  operator clicking flood on three identities in a row is exactly that burst. There is no
+  other cooldown.
 
 Reverse-proxy trust is deliberately *not* supported in v1: forwarding headers are never read
 for the client address, the throttle key or the cookie's attributes. It is a reasonable
@@ -1051,9 +1156,10 @@ whoever notices it first.
   offering it here would make a stolen session enough to change the schema. The schema page
   shows the applied and expected revisions, says the two disagree when they do, gives the
   command that reconciles them, and says why the button is not there.
-- **Managing accounts** (milestone 9). `sighop web user` has no browser equivalent. With no
-  roles, anyone signed in could create a second account for themselves, and a stolen
-  session would become a credential that outlives it; terminal access to the host is the
+- **Managing accounts beyond the first** (milestone 9). `sighop web user` has no browser
+  equivalent; first-run setup creates the first account once, into an empty table, and
+  nothing else. With no roles, anyone signed in could create a second account for
+  themselves, and a stolen session would become a credential that outlives it; terminal access to the host is the
   stronger proof of being the operator. "Change my own password" was the one safe subset
   and is also left out — it still lets a stolen session lock the owner out — and can be
   added later without disturbing anything. The schema page names the command and says why.
@@ -1114,13 +1220,21 @@ Business context here means mesh context: entity name and type, room name, membe
 contact name. "Room server *skogen* failed to sync 47 messages to *sigurs* because the
 airtime budget was exhausted" — not "sync failed".
 
+Webhook delivery (§7) emits `webhook_event_raised` (trigger, node hash, `event_id`),
+`webhook_delivered` (webhook name, `url_host`, status, attempts, `duration_ms`),
+`webhook_attempt_failed` (status or error, next delay), `webhook_abandoned`,
+`webhook_dropped`, `webhook_config_read_failed`, `webhook_url_unsealable`,
+`webhook_outcome_record_failed` and `webhook_test_sent`. Only `url_host` ever appears — never
+a URL's path or query, which is where its token lives.
+
 ---
 
 ## 10. Container and deployment
 
-**As built in milestone 9** — `Dockerfile`, `.dockerignore`, `compose.yaml`, `build.sh`. The
-paragraphs after this list are the original intent; where the build departs from them it
-says so here.
+**As built in milestone 9** — `Dockerfile`, `.dockerignore`, `compose.yaml`, `build.sh` —
+with the compose file reduced to one service against an external database by change
+`compose-external-database`. The paragraphs after this list are the original intent; where
+the build departs from them it says so here.
 
 - **The image.** Two stages on the same digest-pinned `python:3.13-alpine` (musl), `uv`
   copied from a pinned `ghcr.io/astral-sh/uv` image. `uv sync --locked --no-dev
@@ -1164,31 +1278,53 @@ says so here.
   address) and the short form splits on them. `read_only`, a `/tmp` tmpfs, `cap_drop: [ALL]`,
   `no-new-privileges`, `init: true` (signal forwarding: `docker compose stop` is the same
   graceful stop as Ctrl-C, exit 0), `restart: unless-stopped`, `stop_grace_period: 20s`,
-  `json-file` log rotation. The panel is published on `127.0.0.1:8080` only, with
-  `--web-allowed-host localhost:8080` and `127.0.0.1:8080`; inside the container it binds
-  `0.0.0.0`, so the plain-HTTP warning always prints there — correctly, since whether the
-  published port is host loopback is compose's decision, not something the process can see.
+  `json-file` log rotation. The panel is published on
+  `${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}`, with `--web-allowed-host`
+  `localhost` and `127.0.0.1` on the *published* port — the one a browser's `Host` header
+  carries; milestone 9 hardcoded `:8080` there, which broke whenever `SIGHOP_WEB_PORT` was
+  set — plus `${SIGHOP_WEB_ALLOWED_HOST}` for one more name, such as a reverse proxy's.
+  Compose cannot drop an argument whose variable is unset, so that third flag defaults to
+  `localhost:<port>` and `validate_allowed_hosts` discards the duplicate: the defaults answer
+  to exactly the loopback pair, as before. A comma-separated list would have needed `sighop`
+  to parse it, and one name covers a proxy. Inside the container the panel binds `0.0.0.0`,
+  so the plain-HTTP warning always prints there — correctly, since whether the published
+  port is host loopback is compose's decision, not something the process can see.
   `UID`, `GID`, `DIALOUT_GID` and `SIGHOP_MODEM` are `${VAR:?reason}`: compose refuses to
   start and names the missing one.
-- **Two services, and migration on start** (operator decision). `sighop` starts with
+- **One service, and migration on start** (operator decisions). `sighop` starts with
   `run --migrate`, which applies outstanding migrations before the schema-version check and
   emits `database_migrated` with the revision before and after. Only a database *behind* is
   moved; one ahead of the image is refused as anywhere else, so restarting an older image
   after a newer one migrated still fails loudly. A plain `run` outside compose still refuses.
   This replaced a separate `migrate` service under a profile, judged too complicated for a
   single-container deployment where starting the new image *is* the deploy.
-- **The database** is `postgres:17-trixie` by digest, on a `db` network with `internal:
-  true`, no `ports`, a named volume, a `pg_isready` healthcheck that `sighop` waits on. From
-  another machine it is unreachable; the Docker host itself can still reach the container's
-  bridge address, which is how Linux bridge networking works and needs root-equivalent
-  access (the `docker` group) to exploit anyway.
-- **Secrets come from `.env`** (gitignored, operator decision): `POSTGRES_PASSWORD` for
-  Postgres and interpolated into sighop's `DATABASE_URL` — so it must be URL-safe, e.g.
-  `openssl rand -hex 24` — and `SIGHOP_SECRET_KEY`. Both are `${VAR:?…}`, so compose refuses
-  to start naming the unset one. They are visible to `docker inspect`, i.e. to the `docker`
-  group, which is root-equivalent anyway.
-  Accounts are added with `docker compose run --rm -it sighop web user add <name>`, so the
-  password never touches the compose file, the environment or shell history.
+- **The database is external, on every host** (change `compose-external-database`,
+  operator decision). Milestone 9 shipped a digest-pinned `postgres:17-trixie` beside
+  `sighop` on an `internal: true` network with a named volume and a `pg_isready`
+  healthcheck; development then needed a `compose.dev.yaml` override that reset the
+  environment, dependency and networks to reach the shared dev database instead. Production
+  uses an external database too, so the bundled service served neither, and both it and the
+  override are gone. Compose runs no database, creates no volume and declares no networks:
+  `sighop` sits on the project's default bridge, which routes to an off-host database.
+  Restricting who reaches that database is its own host's job. The file carries no `name:`,
+  so it is byte-identical on every host and the project name is the checkout directory's
+  unless `COMPOSE_PROJECT_NAME` says otherwise.
+- **Secrets come from `.env`** (gitignored, operator decision), and so does everything else
+  that differs per host: `DATABASE_URL` and `SIGHOP_SECRET_KEY` are both `${VAR:?…}` in
+  `environment:`, so compose refuses to start naming the unset one. **Interpolation, not
+  `env_file:`** — `env_file:` does not refuse a missing key, and would copy `UID`,
+  `SIGHOP_MODEM` and `COMPOSE_*` into the container too. Compose reads only `./.env`;
+  `.env.dev` keeps its role for `uv run --env-file`, so a development host repeats the two
+  lines. The values are visible to `docker inspect`, i.e. to the `docker` group, which is
+  root-equivalent anyway.
+  The first account is created through first-run setup at `http://localhost:8080/setup`,
+  with the code from `docker compose logs sighop`, or with `docker compose run --rm -it
+  sighop web user add <name>`; further accounts only the latter way. Either way the password
+  never touches the compose file, the environment or shell history.
+- **Outbound HTTPS to webhook hosts.** The container needs to reach whatever hosts the
+  operator's webhooks name (Discord, an n8n instance, Home Assistant); nothing inbound is
+  added. The default bridge already routes there; a host with egress filtering has to allow
+  them.
 - **No healthcheck on `sighop`**, deliberately: the image has no HTTP client, every panel
   route requires a session, and an unauthenticated `/healthz` would be the first public
   route that reflects platform state. A probe of `/login` would prove the web server
@@ -1270,10 +1406,14 @@ sighop/
 │   ├── bots/           base.py (the Bot protocol and BotContext),
 │   │                   runtime.py (dispatch, limits, mode, state),
 │   │                   drivers.py (the registry), greeter.py
-│   ├── db/             models.py (the eleven tables), repositories.py (what net/
+│   ├── webhooks/       triggers.py, config.py (the stored-configuration rules),
+│   │                   events.py, render.py (json and discord bodies),
+│   │                   transport.py (one stdlib POST), dispatcher.py (queue,
+│   │                   retries, sample sends)
+│   ├── db/             models.py (the twelve tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
-│   │                   writer.py (bounded write-behind), sealing.py (seeds at
-│   │                   rest), packetlog.py (feed rows, pruner),
+│   │                   writer.py (bounded write-behind), sealing.py (seeds and
+│   │                   webhook URLs at rest), packetlog.py (feed rows, pruner),
 │   │                   persistence.py (the wiring), migrations.py (alembic)
 │   ├── web/            state.py (the read seam as Protocols), app.py (the
 │   │                   application and the bound socket), auth.py (accounts
@@ -1295,7 +1435,7 @@ sighop/
 ├── alembic/            async env.py (design D1) and one migration per milestone
 ├── alembic.ini         no URL in it — config.py is the single source
 ├── tests/
-├── compose.yaml        sighop (run --migrate), postgres (internal network)
+├── compose.yaml        sighop (run --migrate), external DATABASE_URL
 ├── build.sh            lock, lint, types, test, image, smoke, replay, scan (scan reports only)
 ├── .github/workflows/  build.yml: build.sh on PRs; push, Discord, keep-3 on main
 ├── Dockerfile          two stages, digest-pinned python:3.13-alpine, no USER

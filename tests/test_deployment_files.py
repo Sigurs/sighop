@@ -111,10 +111,10 @@ def test_the_final_stage_has_no_user_the_entrypoint_and_the_build_identity() -> 
 # --- 12.x The deployment -----------------------------------------------------
 
 
-def test_the_deployment_is_two_services() -> None:
+def test_the_deployment_is_one_service() -> None:
     services = _block(_without_comments(COMPOSE.read_text()), "services", 0)
     names = re.findall(r"^  ([a-z_-]+):\s*$", services, re.M)
-    assert names == ["sighop", "postgres"]
+    assert names == ["sighop"]
 
 
 def test_the_platform_container_is_hardened() -> None:
@@ -126,11 +126,16 @@ def test_the_sighop_service_reaches_the_modem_by_stable_path_with_a_numeric_grou
     assert re.search(r"group_add:\n\s+- \"\$\{DIALOUT_GID:\?", body)
     assert re.search(r"source: \"\$\{SIGHOP_MODEM:\?[^}]+\}\"\n\s+target: /dev/modem", body)
     assert re.search(r"^\s+restart: unless-stopped$", body, re.M)
-    assert re.search(r"- \"127\.0\.0\.1:\$\{SIGHOP_WEB_PORT:-8080\}:8080\"", body)
-    assert "--web-allowed-host\n      - localhost:8080" in body
-    assert "--web-allowed-host\n      - 127.0.0.1:8080" in body
+    assert '- "${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}:8080"' in body
+    assert "--web-allowed-host\n      - localhost:${SIGHOP_WEB_PORT:-8080}\n" in body
+    assert "--web-allowed-host\n      - 127.0.0.1:${SIGHOP_WEB_PORT:-8080}\n" in body
+    # Compose cannot omit an argument, so the extra name defaults to one already
+    # listed and --web-allowed-host drops the duplicate.
+    assert (
+        "--web-allowed-host\n      - ${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}\n"
+        in body
+    )
     assert "--enable-transmit" not in body, "a fresh deployment is receive-only"
-    assert "condition: service_healthy" in body
     assert "privileged" not in body
 
 
@@ -139,28 +144,25 @@ def test_the_platform_migrates_on_start() -> None:
     assert re.search(r"command:\n\s+- run\n\s+- --migrate\n", body)
 
 
-def test_the_database_is_internal_only_with_a_volume_secret_and_healthcheck() -> None:
-    text = COMPOSE.read_text()
-    body = _block(_without_comments(text), "postgres", 2)
-    assert "ports" not in body
-    assert re.search(r"networks:\n\s+- db\n(?!\s+- )", body)
-    assert "pgdata:/var/lib/postgresql/data" in body
-    assert 'POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?' in body
-    assert "pg_isready" in body
-    assert re.search(r"postgres:17-trixie@sha256:[0-9a-f]{64}", body)
-    networks = _block(_without_comments(text), "networks", 0)
-    assert re.search(r"db:\n\s+internal: true", networks)
+def test_the_database_is_external_and_one_file_serves_every_host() -> None:
+    text = _without_comments(COMPOSE.read_text())
+    assert not re.search(r"\bpostgres\b", text), "a database service or image"
+    for fragment in ("pgdata", "POSTGRES_PASSWORD", "depends_on"):
+        assert fragment not in text, fragment
+    assert not re.search(r"internal:\s*true", text)
+    assert not re.search(r"^(volumes|networks):", text, re.M)
+    assert not (ROOT / "compose.dev.yaml").exists(), "an environment-specific override"
 
 
 def test_secrets_come_from_the_gitignored_env_file_and_are_never_values() -> None:
     text = COMPOSE.read_text()
     body = _service(text, "sighop")
-    assert '${POSTGRES_PASSWORD:?' in body
+    assert 'DATABASE_URL: "${DATABASE_URL:?' in body
     assert 'SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?' in body
     assert ".env" in (ROOT / ".gitignore").read_text().splitlines()
     assert not re.search(r"postgresql\+asyncpg://[^:\s]+:[^@\s$]+@", text), "a URL with a password"
+    assert not re.search(r"^\s+DATABASE_URL:[ ]*[^\s\"$]", text, re.M)
     assert not re.search(r"^\s+SIGHOP_SECRET_KEY:[ ]*[^\s\"$]", text, re.M)
-    assert not re.search(r"^\s+POSTGRES_PASSWORD:[ ]*[^\s\"$]", text, re.M)
 
 
 @pytest.mark.parametrize(("key", "line"), [("read_only", "    read_only: true\n"),

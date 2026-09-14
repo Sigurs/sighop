@@ -15,10 +15,13 @@
 
 <h2>loaded by this run</h2>
 {% if loaded %}
+<div class="table-wrap">
 <table>
   <thead>
     <tr><th>name</th><th>type</th><th class="mono">node hash</th>
-        <th class="mono">public key</th><th>source</th><th>key material</th></tr>
+        <th class="mono">public key</th><th>source</th>
+        <th>next flood</th><th>last flood</th><th class="num">adverts</th><th>override</th>
+        <th>actions</th></tr>
   </thead>
   <tbody>
     {% for stub in loaded %}
@@ -28,14 +31,31 @@
       <td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td>
       <td class="mono">{{ stub.identity.public_key.hex() }}</td>
       <td class="mono">{{ 'keyfile' if stub.persistent else 'ephemeral (generated this run)' }}</td>
-      <td><a href="/admin/reveal/{{ stub.entity_id }}">reveal private key…</a></td>
+      <td class="mono">{{ stub.next_flood_at.isoformat() if stub.next_flood_at else '—' }}</td>
+      <td class="mono">{{ stub.last_flood_at.isoformat() if stub.last_flood_at else 'none this run' }}</td>
+      <td class="num">{{ stub.adverts_sent }}</td>
+      <td class="mono">
+        {% if stub.override and stub.override.active(advert_now) %}
+        {{ '%g s'|format(stub.override.interval_seconds) }} until {{ stub.override.expires_at.isoformat() }}
+        {% else %}—{% endif %}
+      </td>
+      <td>
+        <a href="/admin/reveal/{{ stub.entity_id }}">reveal private key…</a>
+        ·
+        <a href="/admin/advert/{{ stub.entity_id }}/zero-hop">advert zero-hop…</a>
+        ·
+        <a href="/admin/advert/{{ stub.entity_id }}/flood">advert flood…</a>
+      </td>
     </tr>
     {% endfor %}
   </tbody>
 </table>
+</div>
 <p class="note">
-  Revealing a private key is confirmed on its own page and recorded as its own
-  event. The link goes to that confirmation; it reveals nothing by being followed.
+  Revealing a private key and adverting now are each confirmed on their own page
+  and recorded as their own event. The links go to those confirmations; they
+  reveal and send nothing by being followed. A flood advert counts as the
+  identity's scheduled flood, so its next one moves a full interval out.
 </p>
 {% else %}
 <p class="empty"><strong>No identities loaded.</strong> This run holds none.</p>

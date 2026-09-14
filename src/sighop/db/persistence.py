@@ -48,6 +48,7 @@ from sighop.db.repositories import (
     PathRepository,
     RoomMemberRepository,
     RoomRepository,
+    WebhookRepository,
     WebUserRepository,
 )
 from sighop.db.writer import WriteBehind
@@ -140,6 +141,11 @@ class Persistence:
     # rather than something to retry behind the caller's back.
     web_users: WebUserRepository = field(init=False)
 
+    # Webhooks have no queue and no mirror either (webhook-notifications D4):
+    # the dispatcher reads the enabled ones at each event, which is how a change
+    # made from another process reaches a running one.
+    webhooks: WebhookRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -166,6 +172,7 @@ class Persistence:
         self.bot_state = BotStateRepository(database=self.database)
         self.direct_messages = DirectMessageRepository(database=self.database)
         self.web_users = WebUserRepository(database=self.database)
+        self.webhooks = WebhookRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,

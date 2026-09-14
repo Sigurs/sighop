@@ -37,6 +37,13 @@
         <a href="/rooms/{{ room.id }}/post">post…</a>
         ·
         <a href="/rooms/{{ room.id }}">history</a>
+        {% set advert_id = advert_ids.get(room.id|string) %}
+        {% if advert_id %}
+        ·
+        <a href="/admin/advert/{{ advert_id }}/zero-hop">advert zero-hop…</a>
+        ·
+        <a href="/admin/advert/{{ advert_id }}/flood">advert flood…</a>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}

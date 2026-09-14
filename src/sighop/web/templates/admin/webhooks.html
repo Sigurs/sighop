@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+{% import "_collection.html" as collection %}
+
+{% block title %}webhooks · sighop{% endblock %}
+
+{% block content %}
+<h1>webhooks</h1>
+
+{% if no_database %}
+<p class="unavailable"><strong>No webhooks.</strong> {{ no_database_note }}</p>
+{% else %}
+
+{% if refusal %}
+<p class="unavailable">
+  <strong>Refused.</strong> {{ refusal.reason }}
+</p>
+{% endif %}
+
+{% if test_result %}
+<p class="{{ 'note' if test_result.delivered else 'unavailable' }}">
+  <strong>Test {{ test_result.trigger }} to {{ test_result.name }}:</strong>
+  {{ 'delivered' if test_result.delivered else 'failed' }}, {{ test_result.detail }}.
+  One attempt, marked as a test, not retried.
+</p>
+{% endif %}
+
+{% if counters %}
+<table class="counters">
+  <tbody>
+    <tr><td>delivered this run</td><td class="mono">{{ counters.delivered }}</td></tr>
+    <tr><td>failed this run</td><td class="mono">{{ counters.failed }}</td></tr>
+    <tr><td>dropped this run</td><td class="mono">{{ counters.dropped }}</td></tr>
+    <tr><td>pending</td><td class="mono">{{ counters.pending }}</td></tr>
+  </tbody>
+</table>
+{% else %}
+<p class="note">This run sends no webhooks (a replay, or no usable SIGHOP_SECRET_KEY).</p>
+{% endif %}
+
+{{ collection.state(webhooks, "webhooks") }}
+{% if webhooks.readable and webhooks.items %}
+{% for hook in webhooks %}
+<h2>{{ hook.name }}</h2>
+<table class="counters">
+  <tbody>
+    <tr><td>target</td><td class="mono">{{ hook.url_host }}</td></tr>
+    <tr><td>format</td><td class="mono">{{ hook.format }}</td></tr>
+    <tr><td>triggers</td><td class="mono">{{ hook.triggers|join(', ') }}</td></tr>
+    <tr><td>hop limit</td>
+        <td class="mono">{{ 'none' if hook.max_hops is none else hook.max_hops }}</td></tr>
+    <tr><td>enabled</td><td class="mono">{{ 'yes' if hook.enabled else 'no' }}</td></tr>
+    <tr><td>last delivered</td>
+        <td class="mono">{{ hook.last_delivered_at.isoformat() if hook.last_delivered_at else 'never' }}</td></tr>
+    <tr><td>last failed</td>
+        <td class="mono">{{ hook.last_failed_at.isoformat() if hook.last_failed_at else 'never' }}{% if hook.last_failure %} ({{ hook.last_failure }}){% endif %}</td></tr>
+  </tbody>
+</table>
+{% if hook.plaintext_http %}
+<p class="unavailable">This webhook uses plain http: its URL and every payload cross the network unencrypted.</p>
+{% endif %}
+
+{% set mine = refusal and refusal.value('webhook_id') == hook.id|string %}
+
+<form method="post" action="/admin/webhooks/{{ hook.id }}/enabled">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input type="hidden" name="enabled" value="{{ 'false' if hook.enabled else 'true' }}">
+  <button type="submit">{{ 'disable' if hook.enabled else 'enable' }}</button>
+</form>
+
+<h3>settings</h3>
+<form method="post" action="/admin/webhooks/{{ hook.id }}/settings">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>format
+      <select name="format">
+        {% for kind in formats %}
+        <option value="{{ kind }}" {{ 'selected' if kind == hook.format }}>{{ kind }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>triggers
+    {% for trigger in triggers %}
+    <label><input type="checkbox" name="triggers" value="{{ trigger }}"
+                  {{ 'checked' if trigger in hook.triggers }}> {{ trigger }}</label>
+    {% endfor %}
+  </p>
+  <p>
+    <label>hop limit
+      <input class="mono" type="number" min="0" name="max_hops"
+             value="{{ '' if hook.max_hops is none else hook.max_hops }}">
+    </label>
+    <span class="note">empty for no limit</span>
+  </p>
+  <button type="submit">save settings</button>
+  {% if mine and refusal.concerns('settings') %}<span class="note">{{ refusal.reason }}</span>{% endif %}
+</form>
+
+<h3>replace URL</h3>
+<form method="post" action="/admin/webhooks/{{ hook.id }}/url">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input class="mono" type="password" name="url" autocomplete="off" required
+         placeholder="new URL — the stored one is never shown">
+  <button type="submit">replace URL</button>
+  {% if mine and refusal.concerns('url') %}<span class="note">{{ refusal.reason }}</span>{% endif %}
+</form>
+
+<h3>test</h3>
+<form method="post" action="/admin/webhooks/{{ hook.id }}/test">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <select name="trigger">
+    {% for trigger in triggers %}
+    <option value="{{ trigger }}">{{ trigger }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">send a sample event</button>
+  {% if mine and refusal.concerns('test') %}<span class="note">{{ refusal.reason }}</span>{% endif %}
+</form>
+
+<p><a href="/admin/webhooks/{{ hook.id }}/remove">remove…</a></p>
+{% endfor %}
+{% endif %}
+
+<h2>add a webhook</h2>
+{% set adding = refusal if refusal and not refusal.value('webhook_id') else none %}
+<form method="post" action="/admin/webhooks/create">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>name
+      <input class="mono" type="text" name="name" required
+             value="{{ adding.value('name') if adding else '' }}">
+    </label>
+  </p>
+  <p>
+    {# Never pre-filled, including after a refusal: the URL is a credential. #}
+    <label>URL
+      <input class="mono" type="password" name="url" autocomplete="off" required>
+    </label>
+  </p>
+  <p>
+    <label>format
+      <select name="format">
+        {% set wanted = adding.value('format') if adding else '' %}
+        {% for kind in formats %}
+        <option value="{{ kind }}" {{ 'selected' if kind == wanted }}>{{ kind }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>triggers
+    {% set chosen = (adding.value('triggers') if adding else '').split(',') %}
+    {% for trigger in triggers %}
+    <label><input type="checkbox" name="triggers" value="{{ trigger }}"
+                  {{ 'checked' if trigger in chosen }}> {{ trigger }}</label>
+    {% endfor %}
+  </p>
+  <p>
+    <label>hop limit
+      <input class="mono" type="number" min="0" name="max_hops"
+             value="{{ adding.value('max_hops') if adding else '' }}">
+    </label>
+    <span class="note">empty for no limit</span>
+  </p>
+  <button type="submit">add webhook</button>
+</form>
+<p class="note">
+  A new webhook is enabled. A node whose contact table is empty announces every
+  repeater and companion it hears as new, so a first run can send a burst within
+  a day; a hop limit narrows it. After it is stored the URL is shown only as its
+  scheme and host, here and on the command line.
+</p>
+{% endif %}
+{% endblock %}

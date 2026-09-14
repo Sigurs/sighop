@@ -6,10 +6,14 @@ no rendering of an account carries its hash.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from sighop.db.engine import Database, Failed, Succeeded
 from sighop.db.persistence import Persistence
@@ -129,6 +133,133 @@ async def test_count_enabled_counts_only_enabled_accounts(database: Database) ->
     _value(await users.add("dev-two", password_hash=HASH))
     _value(await users.add("dev-three", password_hash=HASH, enabled=False))
     assert _value(await users.count_enabled()) == 2
+
+
+@pytest.mark.database
+async def test_count_counts_every_account_enabled_or_not(database: Database) -> None:
+    users = WebUserRepository(database=database)
+    assert _value(await users.count()) == 0
+    _value(await users.add("dev-one", password_hash=HASH))
+    _value(await users.add("dev-two", password_hash=HASH, enabled=False))
+    assert _value(await users.count()) == 2
+
+
+# --- web-first-run-setup 1.2/1.3 `add_first` (design D6) ---------------------
+
+
+@dataclass
+class _GatedDatabase:
+    """A `Database` whose unit of work pauses, lock held, before it commits.
+
+    Only `operation` is gated; anything else the repository runs first (`add`
+    reads before it writes) passes straight through. The work runs inside the
+    real transaction; `holding` is set once it has returned (its locks taken,
+    its row flushed) and the commit waits for `release`. That is the window a
+    concurrent writer has to be seen waiting in.
+    """
+
+    inner: Database
+    operation: str
+    holding: asyncio.Event = field(default_factory=asyncio.Event)
+    release: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def run[T](
+        self, operation: str, work: Callable[[AsyncSession], Awaitable[T]]
+    ) -> Succeeded[T] | Failed:
+        if operation != self.operation:
+            return await self.inner.run(operation, work)
+
+        async def gated(session: AsyncSession) -> T:
+            result = await work(session)
+            await session.flush()
+            self.holding.set()
+            await self.release.wait()
+            return result
+
+        return await self.inner.run(operation, gated)
+
+
+async def _still_waiting(task: asyncio.Task[object], seconds: float = 0.5) -> bool:
+    done, _ = await asyncio.wait({task}, timeout=seconds)
+    return not done
+
+
+@pytest.mark.database
+async def test_add_first_inserts_an_enabled_account_into_an_empty_table(
+    database: Database,
+) -> None:
+    users = WebUserRepository(database=database)
+    record = _value(await users.add_first("Dev-Operator", password_hash=HASH))
+    assert record is not None
+    assert record.username == "dev-operator" and record.enabled
+    stored = _value(await users.get("dev-operator"))
+    assert stored is not None and stored.id == record.id and stored.password_hash == HASH
+
+
+@pytest.mark.database
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_add_first_inserts_nothing_beside_any_existing_account(
+    database: Database, enabled: bool
+) -> None:
+    users = WebUserRepository(database=database)
+    _value(await users.add("dev-existing", password_hash=HASH, enabled=enabled))
+    assert _value(await users.add_first("dev-setup", password_hash=OTHER_HASH)) is None
+    assert [r.username for r in _value(await users.list())] == ["dev-existing"]
+
+
+@pytest.mark.database
+async def test_two_concurrent_add_first_calls_leave_exactly_one_row(database: Database) -> None:
+    gated = _GatedDatabase(inner=database, operation="add_first_web_user")
+    first = asyncio.create_task(
+        WebUserRepository(database=gated).add_first("dev-first", password_hash=HASH)  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(gated.holding.wait(), 5)
+    second = asyncio.create_task(
+        WebUserRepository(database=database).add_first("dev-second", password_hash=HASH)
+    )
+    assert await _still_waiting(second), "the second setup waits on the first's table lock"
+    gated.release.set()
+    first_record = _value(await first)
+    assert first_record is not None and first_record.username == "dev-first"
+    assert _value(await second) is None
+    users = WebUserRepository(database=database)
+    assert [r.username for r in _value(await users.list())] == ["dev-first"]
+
+
+@pytest.mark.database
+async def test_a_plain_add_waits_for_a_setup_holding_its_lock(database: Database) -> None:
+    gated = _GatedDatabase(inner=database, operation="add_first_web_user")
+    setup = asyncio.create_task(
+        WebUserRepository(database=gated).add_first("dev-setup", password_hash=HASH)  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(gated.holding.wait(), 5)
+    terminal = asyncio.create_task(
+        WebUserRepository(database=database).add("dev-terminal", password_hash=OTHER_HASH)
+    )
+    assert await _still_waiting(terminal), "the insert waits for setup to commit"
+    gated.release.set()
+    assert _value(await setup) is not None
+    _value(await terminal)
+    listed = _value(await WebUserRepository(database=database).list())
+    assert [r.username for r in listed] == ["dev-setup", "dev-terminal"]
+
+
+@pytest.mark.database
+async def test_a_setup_waits_for_a_plain_add_holding_its_insert(database: Database) -> None:
+    gated = _GatedDatabase(inner=database, operation="add_web_user")
+    terminal = asyncio.create_task(
+        WebUserRepository(database=gated).add("dev-terminal", password_hash=OTHER_HASH)  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(gated.holding.wait(), 5)
+    setup = asyncio.create_task(
+        WebUserRepository(database=database).add_first("dev-setup", password_hash=HASH)
+    )
+    assert await _still_waiting(setup), "the table lock waits for the uncommitted insert"
+    gated.release.set()
+    _value(await terminal)
+    assert _value(await setup) is None
+    listed = _value(await WebUserRepository(database=database).list())
+    assert [r.username for r in listed] == ["dev-terminal"]
 
 
 @pytest.mark.database

@@ -40,6 +40,7 @@ from sighop.net.room import RoomServer
 from sighop.net.tx import TxScheduler
 from sighop.radio.modem import RadioParams
 from sighop.radio.probe import ProbeResult
+from sighop.webhooks.dispatcher import WebhookDispatcher
 
 
 @runtime_checkable
@@ -79,6 +80,11 @@ class LiveState(Protocol):
     @property
     def bots(self) -> BotHost:
         """The bot workers, their modes and their counters."""
+
+    @property
+    def webhooks(self) -> WebhookDispatcher | None:
+        """The webhook dispatcher and its counters, or `None` when this run
+        sends no webhooks (no database, no usable secret, or a replay)."""
 
     @property
     def radio(self) -> RadioParams | None:

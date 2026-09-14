@@ -21,15 +21,17 @@ script same-origin with the panel.
 `web_request` event can carry `actor` and every refusal is seen by the same code.
 The order is: host → session from the `sighop_session` cookie → public-path
 check → provenance → handler. The public set is short and fixed —
-`GET`/`POST /login` and `/static/` — and anything not named in it requires a
+`GET`/`POST /login`, `GET`/`POST /setup` and `/static/` — and anything not named in it requires a
 session, so a route added later is protected without anyone remembering to
 protect it. Matching is by path, because routing happens inside the application
 and the guard runs before it; `tests/test_web_auth_routes.py` walks the route
 table to check the consequence rather than trusting it.
 
 The provenance token is the session's own once there is one (design D6). The
-sign-in form, which by definition has no session yet, carries the process's
-token — all a pre-session request can be bound to.
+sign-in and first-run setup forms, which by definition have no session yet,
+carry the process's token — all a pre-session request can be bound to. While
+setup is pending, a refused page request goes to the setup form rather than the
+sign-in form (web-first-run-setup design D7).
 
 The guard is plain ASGI middleware rather than Starlette's
 `BaseHTTPMiddleware`, for one concrete reason: a token submitted in a form is in
@@ -81,9 +83,18 @@ UNAUTHORIZED_STATUS = 401
 SEE_OTHER_STATUS = 303
 
 LOGIN_PATH = "/login"
+SETUP_PATH = "/setup"
 STATIC_PREFIX = "/static/"
-PUBLIC_ROUTES = frozenset({("GET", LOGIN_PATH), ("POST", LOGIN_PATH)})
-"""The whole public surface, with `/static/`. Nothing else is reachable without a
+PUBLIC_ROUTES = frozenset(
+    {
+        ("GET", LOGIN_PATH),
+        ("POST", LOGIN_PATH),
+        ("GET", SETUP_PATH),
+        ("POST", SETUP_PATH),
+    }
+)
+"""The whole public surface, with `/static/`: the sign-in form and the first-run
+setup form, each with its submission. Nothing else is reachable without a
 session, and nothing can be added here by a route declaring itself public: it is
 added here, in review, or it is not public (design D5)."""
 
@@ -163,7 +174,11 @@ class RequestGuard:
 
         if session is None and not is_public(method, path):
             if method in SAFE_METHODS:
-                await _redirect_to_login(send, scope)
+                if self.auth.setup_pending:
+                    # `next` is not carried: setup always lands on the overview.
+                    await _redirect(send, SETUP_PATH)
+                else:
+                    await _redirect_to_login(send, scope)
                 self._emit(
                     scope, method, path, SEE_OTHER_STATUS, "unauthenticated", started, actor
                 )
@@ -384,6 +399,10 @@ async def _redirect_to_login(send: Send, scope: Scope) -> None:
     query = cast("bytes", scope.get("query_string") or b"").decode("latin-1")
     wanted = path + (f"?{query}" if query else "")
     location = f"{LOGIN_PATH}?next={quote(wanted, safe='')}" if wanted != "/" else LOGIN_PATH
+    await _redirect(send, location)
+
+
+async def _redirect(send: Send, location: str) -> None:
     await send(
         {
             "type": "http.response.start",

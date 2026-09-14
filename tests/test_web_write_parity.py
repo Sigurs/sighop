@@ -1741,8 +1741,17 @@ async def _populated(database: Database):
         entity_name=bot_host.name,
     )
     assert isinstance(bot, Succeeded)
+    webhook = await persistence.webhooks.create(
+        name="swept-hook",
+        url="https://hooks.example.org/swept/token",
+        format="json",
+        triggers=["new_repeater"],
+        secret=SECRET,
+    )
+    assert isinstance(webhook, Succeeded)
     state = stub_state(persistence=persistence, stub_names=("swept-run-identity",))
     return persistence, state, {
+        "webhook_id": str(webhook.value.id),
         "entity_id": str(identity_record.id),
         "room_id": str(room.value.id),
         "bot_id": str(bot.value.id),
@@ -1751,6 +1760,8 @@ async def _populated(database: Database):
         # rather than only what this change added.
         "entity_key": state.adverts.stubs[0].identity.public_key.hex(),
         "peer_key": identity_record.public_key.hex(),
+        # web-advert-now's confirmation views: the flood one, the costlier.
+        "kind": "flood",
     }
 
 
@@ -1768,9 +1779,9 @@ def _every_page(app: FastAPI, ids: dict[str, str]) -> list[tuple[str, str]]:
 
     found: list[tuple[str, str]] = []
     for route in registered_routes(app):
-        if not isinstance(route, APIRoute) or route.path == "/login":
-            # The sign-in form is the one public page and renders no platform
-            # state at all (milestone 9 design D5).
+        if not isinstance(route, APIRoute) or route.path in ("/login", "/setup"):
+            # The sign-in and setup forms are the public pages and render no
+            # platform state at all (milestone 9 design D5).
             continue
         path = route.path
         for name, value in ids.items():
@@ -1971,3 +1982,76 @@ async def test_the_enlarged_interface_changes_no_replay_count() -> None:
         "paths": state.pipeline.paths.destination_count,
     } == {key: without[key] for key in ("delivered", "duplicates", "contacts", "paths")}
     assert without["delivered"] > 0, "the comparison would be vacuous"
+
+
+# --- webhook-notifications 8.1: a webhook added in either surface -----------
+
+
+@pytest.mark.database
+async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through `WebhookRepository.create` in both surfaces, so one stored shape."""
+    import asyncio
+    import io
+    import sys
+
+    from sighop.cli import main
+    from sighop.config import DATABASE_SCHEMA_VARIABLE, SECRET_KEY_VARIABLE
+    from sighop.db.sealing import open_value
+
+    persistence = Persistence(database=database)
+    config = database.config
+    assert config.schema is not None
+    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, config.schema)
+    monkeypatch.setenv(SECRET_KEY_VARIABLE, base64.b64encode(SECRET).decode())
+    url = "https://discord.com/api/webhooks/1/token"
+
+    def cli() -> int:
+        original_in, original_err = sys.stdin, sys.stderr
+        sys.stdin, sys.stderr = io.StringIO(f"{url}\n"), io.StringIO()
+        try:
+            return main(
+                ["webhook", "add", "cli-hook", "--format", "discord", "--trigger", "new_repeater",
+                 "--trigger", "new_companion", "--max-hops", "3", "--database-url", config.url],
+                out=io.StringIO(),
+            )
+        finally:
+            sys.stdin, sys.stderr = original_in, original_err
+
+    assert await asyncio.to_thread(cli) == 0
+
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    async with _live(app) as client:
+        response = await client.post(
+            "/admin/webhooks/create",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "name": "browser-hook",
+                "url": url,
+                "format": "discord",
+                "triggers": ["new_repeater", "new_companion"],
+                "max_hops": "3",
+            },
+        )
+    assert response.status_code == 303
+
+    from sqlalchemy import select
+
+    from sighop.db.models import Webhook as WebhookRow
+
+    async with database.sessions() as session:
+        rows = {row.name: row for row in (await session.execute(select(WebhookRow))).scalars()}
+
+    def shape(row: WebhookRow) -> dict[str, object]:
+        return {
+            "url": open_value(bytes(row.sealed_url), SECRET),
+            "url_host": row.url_host,
+            "format": row.format,
+            "triggers": list(row.triggers),
+            "max_hops": row.max_hops,
+            "enabled": row.enabled,
+            "last": (row.last_delivered_at, row.last_failed_at, row.last_failure),
+        }
+
+    assert shape(rows["cli-hook"]) == shape(rows["browser-hook"])

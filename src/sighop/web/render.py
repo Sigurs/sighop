@@ -600,6 +600,22 @@ def render_transmit_change(enabled: bool, *, actor: str) -> str:
     return f"web: transmission {state} (by account {actor!r} from the web interface)"
 
 
+def render_advert_request(
+    kind: str, entity_name: str, *, actor: str, next_flood_at: dt.datetime | None
+) -> str:
+    """One line for the terminal: which advert, for whom, who asked, and the schedule.
+
+    The next scheduled flood is on the line for both kinds, because it is what
+    tells a zero-hop request (unchanged) from a flood request (moved) at a glance.
+    """
+    advert = "flood" if kind == "flood" else "zero-hop"
+    when = "none" if next_flood_at is None else next_flood_at.isoformat()
+    return (
+        f"web: {advert} advert requested for {entity_name!r} "
+        f"(by account {actor!r} from the web interface); next scheduled flood {when}"
+    )
+
+
 def render_ceiling_change(previous: float, ceiling: float, *, actor: str) -> str:
     """One line for the terminal: the old and new ceiling, and who changed it."""
     from sighop.net.tx import DEFAULT_CEILING_FRACTION

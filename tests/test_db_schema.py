@@ -25,6 +25,7 @@ ROOM_TABLES = ("room", "room_member", "message")
 BOT_TABLES = ("bot", "bot_state")
 DM_TABLES = ("direct_message",)
 WEB_TABLES = ("web_user",)
+WEBHOOK_TABLES = ("webhook",)
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -52,12 +53,13 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0005"
+    assert migrations.expected_revision() == "0006"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
     assert migrations.knows_revision("0003")
     assert migrations.knows_revision("0004")
     assert migrations.knows_revision("0005")
+    assert migrations.knows_revision("0006")
     assert not migrations.knows_revision("beef")
 
 
@@ -104,6 +106,7 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
         assert set(BOT_TABLES) <= present
         assert set(DM_TABLES) <= present
         assert set(WEB_TABLES) <= present
+        assert set(WEBHOOK_TABLES) <= present
 
         # Every timestamp column carries a time zone (design D7): the dev server's
         # own TimeZone is Europe/Helsinki, so a naive column would record local

@@ -96,3 +96,45 @@ def open_seed(sealed: bytes, secret: bytes, *, entity: str = "the entity") -> by
             f"{SEED_SIZE}-byte seed; the row is corrupt"
         )
     return seed
+
+
+VALUE_SEAL_VERSION = 2
+"""Version 2: `bytes([2]) + SecretBox(key).encrypt(value)` for a variable-length
+value such as a webhook URL (webhook-notifications design D6). The distinct byte
+is what keeps a seed from ever opening as a URL, or a URL as a seed: each opener
+refuses the other's version as a format error before any decryption."""
+
+MINIMUM_SEALED_VALUE_SIZE = 1 + SecretBox.NONCE_SIZE + SecretBox.MACBYTES
+
+
+def seal_value(value: bytes, secret: bytes) -> bytes:
+    """Seal a variable-length secret value under a 32-byte secret."""
+    if len(secret) != SECRET_KEY_SIZE:
+        raise SealError(f"the encryption secret is {SECRET_KEY_SIZE} bytes, got {len(secret)}")
+    return bytes([VALUE_SEAL_VERSION]) + bytes(SecretBox(secret).encrypt(value))
+
+
+def open_value(sealed: bytes, secret: bytes, *, what: str = "the value") -> bytes:
+    """Open a sealed value, or say which of the two things went wrong."""
+    if len(secret) != SECRET_KEY_SIZE:
+        raise SealError(f"the encryption secret is {SECRET_KEY_SIZE} bytes, got {len(secret)}")
+    if len(sealed) < MINIMUM_SEALED_VALUE_SIZE:
+        raise SealFormatError(
+            f"{what}: the stored value is {len(sealed)} bytes, too short to be a "
+            f"sealed value (at least {MINIMUM_SEALED_VALUE_SIZE}); the row is corrupt"
+        )
+    version = sealed[0]
+    if version != VALUE_SEAL_VERSION:
+        raise SealFormatError(
+            f"{what}: the stored value declares seal version {version}, and this "
+            f"code reads sealed values as version {VALUE_SEAL_VERSION}; the row is "
+            "corrupt, holds a different kind of secret, or was written by a later build"
+        )
+    try:
+        return bytes(SecretBox(secret).decrypt(sealed[1:]))
+    except CryptoError as exc:
+        raise SealAuthenticationError(
+            f"{what}: the stored value did not authenticate under SIGHOP_SECRET_KEY "
+            "— either the secret is not the one it was sealed under, or the row has "
+            "been altered. Nothing was decrypted"
+        ) from exc

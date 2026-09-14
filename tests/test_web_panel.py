@@ -64,10 +64,10 @@ def _client(app: FastAPI) -> TestClient:
 def _pages(app: FastAPI) -> list[str]:
     """Every page behind sign-in, routers included — see `registered_routes`.
 
-    The sign-in form is the one public page and deliberately renders no
-    platform state at all, meter included (milestone 9 design D5).
+    The sign-in and first-run setup forms are the public pages and deliberately
+    render no platform state at all, meter included (milestone 9 design D5).
     """
-    return [path for path in safe_pages(app) if path != "/login"]
+    return [path for path in safe_pages(app) if path not in ("/login", "/setup")]
 
 
 # --- 9.1 The meter is on every page -----------------------------------------
@@ -104,6 +104,10 @@ def test_every_page_extends_the_base_template() -> None:
             continue
         if template.name == "login.html":
             assert "Deliberately standalone" in source
+            assert "platform state" in source
+            continue
+        if template.name == "setup.html":
+            assert "Standalone like login.html" in source
             assert "platform state" in source
             continue
         assert '{% extends "base.html" %}' in source, f"{template.name} has no shell"

@@ -1,0 +1,28 @@
+## 1. Tests first
+
+- [x] 1.1 In `tests/test_deployment_files.py`, change `test_the_deployment_is_two_services` to expect `["sighop"]` only (rename to `..._is_one_service`) and verify it fails against the current `compose.yaml`
+- [x] 1.2 Replace `test_the_database_is_internal_only_with_a_volume_secret_and_healthcheck` with a test asserting the uncommented compose text contains no `postgres`, `pgdata`, `internal: true`, `depends_on`, `volumes:` top-level key or `POSTGRES_PASSWORD`, and that `compose.dev.yaml` does not exist; verify it fails now
+- [x] 1.3 Update `test_the_sighop_service_reaches_the_modem_by_stable_path_with_a_numeric_group`: ports line `"${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}:8080"`, allowed hosts `localhost:${SIGHOP_WEB_PORT:-8080}`, `127.0.0.1:${SIGHOP_WEB_PORT:-8080}` and `${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}`, drop the `condition: service_healthy` assertion; verify it fails now
+- [x] 1.4 Update `test_secrets_come_from_the_gitignored_env_file_and_are_never_values`: require `DATABASE_URL: "${DATABASE_URL:?` and `SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?` in the sighop block, keep the password-in-URL and literal-secret checks (with `DATABASE_URL` added to the literal-value check); verify it fails now
+
+## 2. Compose file
+
+- [x] 2.1 Rewrite `compose.yaml` per design D1–D6: remove the `postgres` service, `volumes:` and `networks:` top-level keys, sighop's `depends_on` and `networks`; set `DATABASE_URL` by `${DATABASE_URL:?…}`; ports and `--web-allowed-host` args per D4; keep every hardening key, `run --migrate`, image default and log rotation byte-for-byte. Verify `uv run pytest tests/test_deployment_files.py` passes
+- [x] 2.2 Rewrite the `compose.yaml` header comment: one file for every host, the `./.env` keys (required and optional), steps build → `.env` → `docker compose up -d` → `/setup`; no mention of postgres or an override. Verify by reading it against `.env.example`
+- [x] 2.3 Delete `compose.dev.yaml` and verify `git status` shows it gone and the 1.2 test passes
+- [x] 2.4 With a scratch env file holding placeholder values (in the scratchpad, never `./.env`), run `docker compose --env-file <scratch> config` and verify: one service, no networks/volumes beyond defaults, ports `127.0.0.1:8080:8080`, the three allowed-host args resolve to `localhost:8080`, `127.0.0.1:8080`, `localhost:8080`
+- [x] 2.5 Repeat 2.4 with `SIGHOP_WEB_BIND=0.0.0.0`, `SIGHOP_WEB_PORT=9090`, `SIGHOP_WEB_ALLOWED_HOST=sighop.example` and verify ports `0.0.0.0:9090:8080` and allowed hosts `localhost:9090`, `127.0.0.1:9090`, `sighop.example`
+- [x] 2.6 Repeat 2.4 with `DATABASE_URL` removed, then with `SIGHOP_SECRET_KEY` removed, and verify `docker compose config` exits non-zero naming each variable
+
+## 3. Documentation
+
+- [x] 3.1 Rewrite the compose section of `.env.example`: drop `POSTGRES_PASSWORD` and the `compose.dev.yaml`/`COMPOSE_FILE` section; list `UID`, `GID`, `DIALOUT_GID`, `SIGHOP_MODEM`, `DATABASE_URL`, `SIGHOP_SECRET_KEY` as required in `./.env`, and `SIGHOP_IMAGE`, `SIGHOP_WEB_BIND`, `SIGHOP_WEB_PORT`, `SIGHOP_WEB_ALLOWED_HOST`, `COMPOSE_PROJECT_NAME` as optional; note single-quoting a `$` password, IPv6 brackets, the plain-HTTP warning for a non-loopback bind, and that `.env.dev` and `./.env` repeat the two secrets on a dev host. Verify it contains no real value (`grep -E '=(.+)' .env.example` shows only placeholders)
+- [x] 3.2 Update `DESIGN.md` §10: replace "Two services, and migration on start", "The database" and "Secrets come from `.env`" bullets with the single-service/external-database account (this change's name, D1–D5), update the published-port text to the env-configured form, and keep the milestone-9 history accurate as history. Verify `grep -n "postgres:17\|POSTGRES_PASSWORD\|internal: *true" DESIGN.md` only hits the "original intent" paragraph or explicitly historical text
+- [x] 3.3 Update `DESIGN.md` §11 layout line for `compose.yaml` to `sighop (run --migrate), external DATABASE_URL` and verify by reading the tree block
+
+## 4. Verification
+
+- [x] 4.1 Run `uv run pytest` (full suite) and `./build.sh` lint/types gates as the project normally does; verify green
+- [x] 4.2 Run `openspec validate compose-external-database --strict` and verify it passes
+- [x] 4.3 Live check on the dev host — **ask the operator first**, since it stops the running stack and holds the modem: `docker compose -p sighop-dev down`, update `./.env` per design Migration Plan steps 1–2, `docker compose up -d`, then verify `docker compose ps` shows one container, logs show the startup event against the dev database with no migration or the expected one, and `http://localhost:8080` serves sign-in. Record outcome in tasks.md
+  - Outcome 2026-09-13 (operator approved): `sighop-dev` stack stopped; `./.env` backed up to the session scratchpad, `COMPOSE_FILE` and `POSTGRES_PASSWORD` removed, `DATABASE_URL` added and `SIGHOP_SECRET_KEY` replaced with the `.env.dev` values (the old `./.env` key belonged to the deleted bundled database). Image `sighop:local` (0.1.0-1cd7cd9c632e-dirty). `docker compose up -d` started one running container, `sighop-sighop-1`; `database_migrated` from 0005 to 0005, `applied: false`; persistence on against `apps_sighop-dev@172.20.4.20:30432`; modem ready; `allowed_hosts` exactly `127.0.0.1:8080`, `localhost:8080`; `GET /` 303 to `/login`, `GET /login` 200, `Host: evil.example:8080` 421. No unseal failures; `entities=0` because the dev identities are disabled, as found in `web-advert-now`. Left alone: the stopped `sighop-postgres-1` container and the `sighop_pgdata` volume from the milestone-9 stack.

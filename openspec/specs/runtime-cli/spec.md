@@ -387,8 +387,11 @@ address to loopback, and SHALL report at startup whether the interface is being 
 it is, the address and port it is listening on and how many enabled accounts can sign in. A run
 not asked for the interface SHALL report nothing about it. A run asked for the interface SHALL
 fail at startup, before any traffic is processed and before any port is listened on, when no
-database is configured or when the database holds no enabled account, naming the command that
-resolves it.
+database is configured, or when the database holds accounts and none of them is enabled, naming
+the commands that resolve it. When the database holds no account at all, the run SHALL instead
+serve the interface in first-run setup, and its startup output SHALL state that setup is pending,
+give the address of the setup form and give the one-time setup code; the startup event SHALL
+record that setup is pending and SHALL NOT carry the code.
 
 #### Scenario: A run with the interface enabled
 - **WHEN** the run command is given the web option with a database holding at least one enabled account
@@ -410,9 +413,17 @@ resolves it.
 - **WHEN** the run command is given the web option and no database is configured
 - **THEN** startup fails stating that the web interface's accounts are stored in the database, and nothing is received or transmitted
 
+#### Scenario: The interface with no account at all
+- **WHEN** the run command is given the web option and the database holds no account
+- **THEN** the interface is served, startup output states that first-run setup is pending with the setup form's address and the setup code, the startup event records setup as pending without the code, and the run otherwise starts as any run does
+
 #### Scenario: The interface with no account to sign in with
-- **WHEN** the run command is given the web option and the database holds no enabled account
-- **THEN** startup fails naming the command that creates an account, and no port is listened on
+- **WHEN** the run command is given the web option and the database holds accounts none of which is enabled
+- **THEN** startup fails naming the command that enables an account and the command that adds one, and no port is listened on
+
+#### Scenario: A non-loopback address during setup
+- **WHEN** first-run setup is served on a non-loopback address
+- **THEN** the plain-HTTP warning is stated exactly as for any other run, alongside the setup code
 
 ### Requirement: Direct message activity from the interface is rendered as run output
 The system SHALL render a message sent from the web interface, and its outcome, in the run's output
@@ -433,6 +444,8 @@ The system SHALL provide commands to add an account, list accounts, set an accou
 disable an account, enable it again and remove it. Each SHALL require a configured database, SHALL
 state its consequence for sessions already signed in, and SHALL refuse a change that would leave
 the database with no enabled account only when the operator has not explicitly acknowledged it.
+A change that leaves the database with no account at all SHALL state that the next run serving the
+interface will offer first-run setup.
 
 #### Scenario: Adding an account
 - **WHEN** an account is added with a username
@@ -443,14 +456,75 @@ the database with no enabled account only when the operator has not explicitly a
 - **THEN** the command states that sessions signed in with the old password end within a minute on every run using this database
 
 #### Scenario: Disabling the last enabled account
-- **WHEN** the only enabled account is disabled or removed without the explicit acknowledgement option
+- **WHEN** the only enabled account is disabled, or removed while other disabled accounts remain, without the explicit acknowledgement option
 - **THEN** the command refuses, stating that no run could then start its web interface
+
+#### Scenario: Removing the only account
+- **WHEN** the only account is removed without the explicit acknowledgement option
+- **THEN** the command refuses, stating that the next run serving the interface would offer first-run setup to whoever holds its setup code
+
+#### Scenario: Removing the only account with acknowledgement
+- **WHEN** the only account is removed with the explicit acknowledgement option
+- **THEN** it is removed and the command states that the next run serving the interface will offer first-run setup
 
 #### Scenario: Listing accounts
 - **WHEN** accounts are listed
 - **THEN** each account's username, enabled state, creation time and password-set time are shown, and no hash is shown
 
+#### Scenario: Listing with no accounts
+- **WHEN** accounts are listed and none exists
+- **THEN** the command states that a run serving the interface will offer first-run setup, and names the command that adds an account from the terminal
+
 #### Scenario: Without a database
 - **WHEN** any account command is run with no database configured
 - **THEN** it fails stating that accounts are stored in the database
+
+### Requirement: A webhook command surface manages webhooks
+The system SHALL provide commands to add a webhook, list webhooks, show one, enable and disable one,
+change its triggers, format and maximum hop count, replace its URL, remove it, and send it a sample
+event. A URL SHALL be read from standard input and SHALL NOT be accepted as a command-line argument,
+because arguments are visible in process listings and shell history. Every refusal SHALL be the one
+the stored-configuration rules make, with its reason.
+
+#### Scenario: Adding a webhook
+- **WHEN** a webhook is added with a name, a format and triggers, and its URL on standard input
+- **THEN** the output states it is enabled, its format, its triggers, its hop limit, and its target as scheme and host only
+
+#### Scenario: A URL given as an argument
+- **WHEN** an operator tries to pass the URL as a command-line argument
+- **THEN** no such argument exists, and the help states that the URL is read from standard input
+
+#### Scenario: Showing a webhook
+- **WHEN** a webhook is shown
+- **THEN** the output names its format, triggers, hop limit, enablement, target host, and its last successful and last failed delivery with the failure reason
+
+#### Scenario: Testing a webhook
+- **WHEN** a webhook is tested with a named trigger
+- **THEN** one sample event is sent and the output states whether it was delivered, with the HTTP status or the failure reason
+
+#### Scenario: Removing a webhook
+- **WHEN** a webhook is removed
+- **THEN** it is deleted, and a running process stops delivering to it for events raised afterwards
+
+#### Scenario: No database configured
+- **WHEN** any webhook command is run with no database configured
+- **THEN** the command refuses and states that webhooks require durable storage
+
+### Requirement: A run reports the webhooks it will deliver to
+The system SHALL report at startup, before any traffic is handled, how many webhooks are enabled and
+which triggers they subscribe to; SHALL state plainly when no webhooks will be sent because no
+database is configured or because the run is a replay; and SHALL include webhook delivery counters
+— delivered, failed and dropped — in the periodic status line whenever webhooks are active.
+
+#### Scenario: A run with webhooks configured
+- **WHEN** the runtime starts with enabled webhooks in the database
+- **THEN** the startup output states the count of enabled webhooks and the triggers they cover
+
+#### Scenario: A replay run
+- **WHEN** a replay run starts with webhooks in the database
+- **THEN** the startup output states that no webhooks are sent during a replay
+
+#### Scenario: Periodic status
+- **WHEN** the periodic status line is emitted during a run with webhooks active
+- **THEN** it includes the delivered, failed and dropped webhook counts
 

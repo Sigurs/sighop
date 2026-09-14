@@ -344,6 +344,7 @@ def render_status(
     packet_log_discarded: int = 0,
     routes_discarded: int = 0,
     awaiting_backfill: int = 0,
+    webhooks: str | None = None,
 ) -> str:
     """The periodic status line. Duty cycle first — it is the limit that binds.
 
@@ -373,6 +374,10 @@ def render_status(
     )
     if active_overrides:
         line += f" overrides={active_overrides}"
+    if webhooks is not None:
+        # Only when webhooks are active: delivered/failed/dropped always
+        # rendered together, zeros included, once there is a dispatcher at all.
+        line += f" {webhooks}"
     return line
 
 
@@ -824,6 +829,22 @@ def render_room_event(event: RoomEvent) -> str:
 #
 # `bots/` never imports this module: every function here takes a typed event or
 # plain values, exactly as the room renderers do (milestone 6 design D17).
+
+WEBHOOKS_OFF_NO_DATABASE = (
+    "webhooks: none — webhooks are stored configuration, and that requires durable storage"
+)
+WEBHOOKS_OFF_REPLAY = (
+    "webhooks: none — replay; a replayed reception carries an earlier session's "
+    "timestamps and would announce an old sighting as new"
+)
+WEBHOOKS_OFF_NO_SECRET = (
+    "webhooks: none — SIGHOP_SECRET_KEY is not usable, and webhook URLs are sealed under it"
+)
+
+
+def render_webhook_startup(summary: str) -> str:
+    return f"webhooks: {summary}"
+
 
 BOTS_OFF = (
     "bots: none — a bot's decisions depend on state restored before any traffic, "

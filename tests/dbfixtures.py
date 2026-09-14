@@ -168,7 +168,7 @@ async def _truncate(handle: Database) -> None:
         await session.execute(
             text(
                 "TRUNCATE entity, contact, path, packet_log, room, room_member, "
-                "message, bot, bot_state, direct_message, web_user RESTART IDENTITY CASCADE"
+                "message, bot, bot_state, direct_message, web_user, webhook RESTART IDENTITY CASCADE"
             )
         )
         await session.commit()

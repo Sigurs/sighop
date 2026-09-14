@@ -38,12 +38,14 @@ from sighop.web.auth import (
     SESSION_COOKIE,
     AccountStore,
     Authenticator,
+    FirstRunSetup,
     LoginThrottle,
     Session,
     SessionStore,
 )
 from sighop.web.guard import TOKEN_HEADER
 from sighop.web.state import PanelState
+from sighop.webhooks.dispatcher import WebhookDispatcher
 
 if TYPE_CHECKING:  # pragma: no cover
     import httpx2
@@ -70,6 +72,7 @@ class StubState:
     radio: RadioParams | None = None
     probe_result: ProbeResult | None = None
     persistence: Persistence | None = None
+    webhooks: WebhookDispatcher | None = None
 
 
 def stub_state(
@@ -267,6 +270,27 @@ class MemoryAccounts:
             )
         return Succeeded(value=sum(1 for record in self.accounts.values() if record.enabled))
 
+    async def count(self) -> Outcome[int]:
+        if self.degraded:
+            return Failed(
+                operation="count_web_users",
+                error=DatabaseUnavailableError("database unavailable"),
+            )
+        return Succeeded(value=len(self.accounts))
+
+    async def add_first(
+        self, username: str, *, password_hash: str
+    ) -> Outcome[WebUserRecord | None]:
+        """`WebUserRepository.add_first` without the lock: one loop, no race."""
+        if self.degraded:
+            return Failed(
+                operation="add_first_web_user",
+                error=DatabaseUnavailableError("database unavailable"),
+            )
+        if self.accounts:
+            return Succeeded(value=None)
+        return Succeeded(value=self.add(username, "", password_hash=password_hash))
+
 
 OPERATOR = "dev-operator"
 OPERATOR_PASSWORD = "an-operator-password"
@@ -277,10 +301,15 @@ def authenticator(
     *,
     clock: ManualClock | None = None,
     logger: object | None = None,
+    setup: FirstRunSetup | None = None,
 ) -> Authenticator:
-    """A production `Authenticator` over an in-memory store and a free hasher."""
+    """A production `Authenticator` over an in-memory store and a free hasher.
+
+    An empty store is seeded with the operator, unless `setup` is given:
+    first-run setup is only ever offered over a store with no account at all.
+    """
     store = accounts if accounts is not None else MemoryAccounts()
-    if not store.accounts:
+    if not store.accounts and setup is None:
         store.add(OPERATOR, OPERATOR_PASSWORD)
     ticking = clock or ManualClock()
     return Authenticator(
@@ -289,6 +318,7 @@ def authenticator(
         throttle=LoginThrottle(clock=ticking),
         hasher=CountingHasher(),
         logger=logger,  # type: ignore[arg-type]
+        setup=setup,
     )
 
 

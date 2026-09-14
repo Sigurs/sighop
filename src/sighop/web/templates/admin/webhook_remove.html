@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}remove webhook · sighop{% endblock %}
+
+{% block content %}
+{% if webhook is none %}
+<h1>remove webhook</h1>
+<p class="unavailable"><strong>No such webhook.</strong></p>
+{% else %}
+<h1>remove webhook: {{ webhook.name }}</h1>
+<div class="guarded">
+  <p class="unavailable">
+    <strong>This deletes the webhook and its sealed URL.</strong> The URL cannot
+    be read back from sighop; adding it again means copying it from wherever it
+    was issued. A running process stops delivering to it from the next event.
+  </p>
+  <p class="note">target <span class="mono">{{ webhook.url_host }}</span></p>
+  <form method="post" action="/admin/webhooks/{{ webhook.id }}/remove">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="confirm" value="yes">
+    <button type="submit">confirm: remove {{ webhook.name }}</button>
+  </form>
+  <p><a href="/admin/webhooks">cancel, and change nothing</a></p>
+</div>
+{% endif %}
+{% endblock %}

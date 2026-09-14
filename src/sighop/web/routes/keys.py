@@ -130,6 +130,7 @@ async def identities(
         stored=collection_for(stored, degraded="identities cannot be read"),
         bindings=_bindings(rooms, bots),
         loaded=list(page.state.adverts.stubs),
+        advert_now=page.state.adverts.clock.now(),
         node_types=CREATABLE_NODE_TYPES,
         refusal=refusal,
         can_seal=page.sealing_secret is not None,

@@ -42,6 +42,7 @@ from sighop.db.repositories import (
     RoomExistsError,
     RoomRecord,
     UsernameError,
+    WebhookRecord,
     WebUserExistsError,
     advert_config_for,
     normalise_username,
@@ -92,9 +93,17 @@ from sighop.web.app import (
     WebStartupError,
     validate_allowed_hosts,
 )
-from sighop.web.auth import Authenticator
+from sighop.web.auth import Authenticator, FirstRunSetup
 from sighop.web.chat import ConversationLog
 from sighop.web.feed import FeedHub
+from sighop.webhooks.config import (
+    FIRST_RUN_BURST,
+    PLAINTEXT_HTTP_WARNING,
+    WebhookConfigError,
+    WebhookFormat,
+)
+from sighop.webhooks.dispatcher import send_sample
+from sighop.webhooks.triggers import Trigger
 
 RADIO_PRESETS = {"eu868-narrow": EU868_NARROW}
 
@@ -668,6 +677,117 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         _add_database_url_argument(bot_parser)
 
+    webhook = subparsers.add_parser(
+        "webhook",
+        help=(
+            "add, inspect, change, test and remove the webhooks told about new "
+            "repeaters and companions (needs a database)"
+        ),
+    )
+    webhook_actions = webhook.add_subparsers(dest="webhook_command", required=True)
+    trigger_names = ", ".join(trigger.value for trigger in Trigger)
+
+    webhook_add = webhook_actions.add_parser(
+        "add",
+        help=(
+            "add an enabled webhook. " + URL_IS_READ_FROM_STDIN
+        ),
+        description=URL_IS_READ_FROM_STDIN,
+    )
+    webhook_add.add_argument("name", help="a name for the webhook, unique, no whitespace")
+    webhook_add.add_argument(
+        "--format",
+        required=True,
+        choices=[kind.value for kind in WebhookFormat],
+        help="json: sighop's documented event; discord: a Discord webhook message",
+    )
+    webhook_add.add_argument(
+        "--trigger",
+        action="append",
+        required=True,
+        dest="triggers",
+        metavar="TRIGGER",
+        help=f"an event to send; repeat for several ({trigger_names})",
+    )
+    webhook_add.add_argument(
+        "--max-hops",
+        type=int,
+        default=None,
+        help="send only for receptions of at most this many hops (default: no limit)",
+    )
+
+    webhook_actions.add_parser("list", help="list the webhooks, targets as scheme and host")
+
+    webhook_show = webhook_actions.add_parser(
+        "show", help="show one webhook, with its last successful and failed delivery"
+    )
+    webhook_show.add_argument("name", help="the webhook's name")
+    webhook_enable = webhook_actions.add_parser("enable", help="deliver to a webhook again")
+    webhook_enable.add_argument("name", help="the webhook's name")
+    webhook_disable = webhook_actions.add_parser(
+        "disable", help="stop delivering to a webhook; it stays configured"
+    )
+    webhook_disable.add_argument("name", help="the webhook's name")
+
+    webhook_set = webhook_actions.add_parser(
+        "set", help="change a webhook's format, triggers or hop limit"
+    )
+    webhook_set.add_argument("name", help="the webhook's name")
+    webhook_set.add_argument(
+        "--format", choices=[kind.value for kind in WebhookFormat], default=None
+    )
+    webhook_set.add_argument(
+        "--trigger",
+        action="append",
+        dest="triggers",
+        metavar="TRIGGER",
+        default=None,
+        help=f"replace the triggers; repeat for several ({trigger_names})",
+    )
+    hops = webhook_set.add_mutually_exclusive_group()
+    hops.add_argument("--max-hops", type=int, default=None, help="set the hop limit")
+    hops.add_argument(
+        "--no-max-hops", action="store_true", help="remove the hop limit"
+    )
+
+    webhook_set_url = webhook_actions.add_parser(
+        "set-url",
+        help="replace a webhook's URL. " + URL_IS_READ_FROM_STDIN,
+        description=URL_IS_READ_FROM_STDIN,
+    )
+    webhook_set_url.add_argument("name", help="the webhook's name")
+
+    webhook_remove = webhook_actions.add_parser("remove", help="delete a webhook")
+    webhook_remove.add_argument("name", help="the webhook's name")
+
+    webhook_test = webhook_actions.add_parser(
+        "test",
+        help=(
+            "send one sample event, marked as a test, and report the HTTP outcome. "
+            "Works on a disabled webhook and ignores its hop limit; never retried"
+        ),
+    )
+    webhook_test.add_argument("name", help="the webhook's name")
+    webhook_test.add_argument(
+        "--trigger",
+        required=True,
+        choices=[trigger.value for trigger in Trigger],
+        help="which event to send a sample of",
+    )
+
+    for webhook_parser in (
+        webhook_add,
+        webhook_actions.choices["list"],
+        webhook_show,
+        webhook_enable,
+        webhook_disable,
+        webhook_set,
+        webhook_set_url,
+        webhook_remove,
+        webhook_test,
+    ):
+        _add_database_url_argument(webhook_parser)
+
     web = subparsers.add_parser(
         "web", help="manage what the web interface needs from a terminal (accounts)"
     )
@@ -842,9 +962,10 @@ async def _run_monitor_replay(path: Path, out: IO[str] | None = None) -> int:
 
 
 def _run_config(
-    args: argparse.Namespace, stored: Sequence[LoadedEntity] = ()
+    args: argparse.Namespace, stored: Sequence[LoadedEntity] = (), *, replay: bool = False
 ) -> RuntimeConfig:
     return RuntimeConfig(
+        replay=replay,
         transmit_enabled=args.enable_transmit,
         status_interval=args.status_interval,
         dedup_ttl_seconds=args.dedup_ttl,
@@ -2244,6 +2365,17 @@ NO_ACCOUNT_LEFT = (
     "database with no enabled account. Pass --allow-no-accounts to do it anyway"
 )
 
+NEXT_RUN_OFFERS_SETUP = (
+    "the next `run --web` would then offer first-run setup, creating an account "
+    "for whoever holds the one-time setup code printed in its output. Pass "
+    "--allow-no-accounts to do it anyway"
+)
+
+SETUP_WILL_BE_OFFERED = (
+    "no account is left: the next `run --web` will offer first-run setup, with a "
+    "one-time setup code printed in its output"
+)
+
 
 def _web_user_command(args: argparse.Namespace, out: IO[str]) -> int:
     if getattr(args, "refused_arguments", None) or getattr(args, "password_flag", False):
@@ -2329,8 +2461,9 @@ def _web_user_list(database: DatabaseConfig, out: IO[str]) -> int:
         return 2
     if not outcome.value:
         print(
-            "no accounts: `run --web` cannot start until one is added with "
-            "`sighop web user add <username>`",
+            "no accounts: `run --web` will offer first-run setup in the browser, with "
+            "a one-time setup code printed in its output; or add one from the "
+            "terminal with `sighop web user add <username>`",
             file=out,
         )
         return 0
@@ -2368,18 +2501,30 @@ def _web_user_passwd(args: argparse.Namespace, database: DatabaseConfig, out: IO
     return 0
 
 
-async def _leaves_no_account(persistence: Persistence, name: str) -> Any:
-    """Whether disabling or removing `name` would leave nothing enabled.
+LAST_ENABLED = "last_enabled"
+LAST_ACCOUNT = "last_account"
 
-    Returns a `Failed`, None for "no such account", or the answer.
+
+async def _leaves_no_account(persistence: Persistence, name: str, *, removing: bool) -> Any:
+    """What disabling or removing `name` would leave behind.
+
+    Returns a `Failed`, None for "no such account", `LAST_ACCOUNT` when removing
+    the only account at all (the next run would offer first-run setup),
+    `LAST_ENABLED` when nothing enabled would remain, or False.
     """
     account = await persistence.web_users.get(name)
     if isinstance(account, Failed) or account.value is None:
         return account if isinstance(account, Failed) else None
+    if removing:
+        total = await persistence.web_users.count()
+        if isinstance(total, Failed):
+            return total
+        if total.value <= 1:
+            return LAST_ACCOUNT
     enabled = await persistence.web_users.count_enabled()
     if isinstance(enabled, Failed):
         return enabled
-    return account.value.enabled and enabled.value <= 1
+    return LAST_ENABLED if account.value.enabled and enabled.value <= 1 else False
 
 
 def _web_user_enablement(
@@ -2389,15 +2534,13 @@ def _web_user_enablement(
 
     async def work(persistence: Persistence) -> Any:
         if not enabled and not args.allow_no_accounts:
-            last = await _leaves_no_account(persistence, name)
-            if last is None or isinstance(last, Failed):
+            last = await _leaves_no_account(persistence, name, removing=False)
+            if last is not False:
                 return last
-            if last:
-                return "last"
         return await persistence.web_users.set_enabled(name, enabled)
 
     outcome = asyncio.run(_with_rooms(database, work))
-    if outcome == "last":
+    if outcome == LAST_ENABLED:
         print(f"{name!r} is the only enabled account; disabling it is refused: {NO_ACCOUNT_LEFT}",
               file=sys.stderr)
         return 2
@@ -2419,25 +2562,34 @@ def _web_user_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO
 
     async def work(persistence: Persistence) -> Any:
         if not args.allow_no_accounts:
-            last = await _leaves_no_account(persistence, name)
-            if last is None or isinstance(last, Failed):
+            last = await _leaves_no_account(persistence, name, removing=True)
+            if last is not False:
                 return last
-            if last:
-                return "last"
-        return await persistence.web_users.remove(name)
+        removed = await persistence.web_users.remove(name)
+        if isinstance(removed, Failed) or not removed.value:
+            return removed
+        left = await persistence.web_users.count()
+        return removed, isinstance(left, Succeeded) and left.value == 0
 
     outcome = asyncio.run(_with_rooms(database, work))
-    if outcome == "last":
+    if outcome == LAST_ACCOUNT:
+        print(f"{name!r} is the only account; removing it is refused: {NEXT_RUN_OFFERS_SETUP}",
+              file=sys.stderr)
+        return 2
+    if outcome == LAST_ENABLED:
         print(f"{name!r} is the only enabled account; removing it is refused: {NO_ACCOUNT_LEFT}",
               file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
         print(str(outcome.error), file=sys.stderr)
         return 2
-    if outcome is None or not outcome.value:
+    if outcome is None or not isinstance(outcome, tuple):
         print(f"no account named {name!r}", file=sys.stderr)
         return 2
+    _, none_left = outcome
     print(f"account {name!r} is removed; {SESSIONS_END_WITHIN_A_MINUTE}", file=out)
+    if none_left:
+        print(SETUP_WILL_BE_OFFERED, file=out)
     return 0
 
 
@@ -2453,8 +2605,11 @@ async def _attach_web(
 
     Milestone 9 puts three refusals in front of the bind, each before any socket
     exists: an allowed host name that is a wildcard or a URL, a run with no
-    database (the accounts live there), and a database with no enabled account
-    (nobody could sign in). The account count is read here and reported.
+    database (the accounts live there), and a database whose accounts are all
+    disabled (nobody could sign in, and an operator locked it deliberately). A
+    database with no account at all is served in first-run setup instead, with
+    a one-time code generated here (web-first-run-setup design D1). The account
+    counts are read here and reported.
 
     A run that was not asked for the interface returns here having listened on
     nothing and said nothing — the whole of "opt-in and off by default".
@@ -2465,12 +2620,18 @@ async def _attach_web(
     persistence = runtime.persistence
     if persistence is None:
         raise WebStartupError(NO_DATABASE_FOR_WEB)
+    total = await persistence.web_users.count()
+    if isinstance(total, Failed):
+        raise total.error
     enabled = await persistence.web_users.count_enabled()
     if isinstance(enabled, Failed):
         raise enabled.error
-    if enabled.value < 1:
+    setup: FirstRunSetup | None = None
+    if total.value == 0:
+        setup = FirstRunSetup()
+    elif enabled.value < 1:
         raise WebStartupError(NO_ENABLED_ACCOUNT)
-    auth = Authenticator(accounts=persistence.web_users)
+    auth = Authenticator(accounts=persistence.web_users, setup=setup)
     # One hub for the process, fed by the pipeline's observer and the run's TX
     # resolution callback, and fanning out to a bounded queue per browser
     # (design D4). The runtime is handed two plain callables and never learns
@@ -2508,6 +2669,24 @@ async def _attach_web(
         print(line, file=stream)
     runtime.services = (*runtime.services, interface.service())
     return interface
+
+
+def _webhook_secret(
+    args: argparse.Namespace, persistence: Persistence | None
+) -> bytes | None:
+    """`SIGHOP_SECRET_KEY` for opening webhook URLs, or `None` when unusable.
+
+    Not demanded: a run with a database and no secret still runs, and its
+    startup line says webhooks are off because the URLs cannot be opened.
+    """
+    if persistence is None:
+        return None
+    try:
+        return Config.from_environment(
+            database_url=getattr(args, "database_url", None)
+        ).secret_key_bytes()
+    except ConfigError:
+        return None
 
 
 def _web_sealing_secret(
@@ -2556,6 +2735,7 @@ async def _run_live(args: argparse.Namespace, out: IO[str] | None = None) -> int
             source=events,
             startup=lambda: _live_startup(modem, runtime),
             config=_run_config(args, stored),
+            webhook_secret=_webhook_secret(args, persistence),
             sender=modem,
             out=out,
             capture_writer=writer,
@@ -2595,7 +2775,7 @@ async def _run_replay(args: argparse.Namespace, out: IO[str] | None = None) -> i
     """The same pipeline over recorded frames — no device, no transmission."""
     replay = CaptureReplay.open(args.replay)
     persistence, stored = await open_persistence(args, replay=True)
-    config = _run_config(args, stored)
+    config = _run_config(args, stored, replay=True)
     radio = _replay_radio(replay.provenance) or RADIO_PRESETS[args.radio_preset]
 
     runtime = Runtime(
@@ -2643,6 +2823,296 @@ def _replay_radio(provenance: dict | None) -> RadioParams | None:
         return None
 
 
+# --- sighop webhook -----------------------------------------------------------
+
+URL_IS_READ_FROM_STDIN = (
+    "The URL is read from standard input, never from an argument: arguments are "
+    "visible in process listings and shell history, and a webhook URL is the "
+    "credential that lets anyone post to it"
+)
+
+WEBHOOKS_NEED_A_DATABASE = (
+    "no database is configured: webhooks are stored configuration and require "
+    "durable storage, so this command needs one. Set DATABASE_URL or pass "
+    "--database-url"
+)
+
+CHANGES_REACH_A_RUNNING_PROCESS = (
+    "a running process applies this from the next event, without a restart"
+)
+
+
+def _webhook_command(args: argparse.Namespace, out: IO[str]) -> int:
+    try:
+        config = Config.from_environment(database_url=getattr(args, "database_url", None))
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if config.database is None:
+        print(WEBHOOKS_NEED_A_DATABASE, file=sys.stderr)
+        return 2
+    try:
+        match args.webhook_command:
+            case "add":
+                return _webhook_add(args, config, out)
+            case "list":
+                return _webhook_list(config.database, out)
+            case "show":
+                return _webhook_show(args, config.database, out)
+            case "enable" | "disable":
+                return _webhook_enablement(args, config.database, out)
+            case "set":
+                return _webhook_set(args, config.database, out)
+            case "set-url":
+                return _webhook_set_url(args, config, out)
+            case "remove":
+                return _webhook_remove(args, config.database, out)
+            case _:
+                return _webhook_test(args, config, out)
+    except (WebhookConfigError, ConfigError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _read_webhook_url() -> str:
+    """One line from standard input, or an unechoed prompt at a terminal."""
+    if sys.stdin.isatty():
+        import getpass
+
+        return getpass.getpass("webhook URL: ").strip()
+    return sys.stdin.readline().strip()
+
+
+def _when(value: Any) -> str:
+    return "never" if value is None else value.isoformat()
+
+
+def _render_webhook(record: WebhookRecord, out: IO[str]) -> None:
+    """One webhook. The target is scheme and host: the URL is never read back."""
+    print(f"webhook    {record.name}", file=out)
+    print(f"target     {record.url_host}", file=out)
+    print(f"format     {record.format}", file=out)
+    print(f"triggers   {', '.join(record.triggers)}", file=out)
+    print(f"max_hops   {'none' if record.max_hops is None else record.max_hops}", file=out)
+    print(f"enabled    {'yes' if record.enabled else 'no'}", file=out)
+    print(f"last_ok    {_when(record.last_delivered_at)}", file=out)
+    failure = _when(record.last_failed_at)
+    if record.last_failure:
+        failure = f"{failure} ({record.last_failure})"
+    print(f"last_fail  {failure}", file=out)
+
+
+async def _find_webhook(persistence: Persistence, name: str) -> Any:
+    found = await persistence.webhooks.get_by_name(name)
+    if isinstance(found, Failed):
+        return found
+    return found.value
+
+
+def _webhook_outcome(outcome: Any, name: str) -> int | None:
+    """Print a database failure or a missing webhook; `None` means carry on."""
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no webhook named {name!r}", file=sys.stderr)
+        return 2
+    return None
+
+
+def _webhook_add(args: argparse.Namespace, config: Config, out: IO[str]) -> int:
+    assert config.database is not None
+    secret = config.secret_key_bytes()
+    url = _read_webhook_url()
+
+    async def work(persistence: Persistence) -> Any:
+        return await persistence.webhooks.create(
+            name=args.name,
+            url=url,
+            format=args.format,
+            triggers=args.triggers,
+            max_hops=args.max_hops,
+            secret=secret,
+        )
+
+    outcome = asyncio.run(_with_rooms(config.database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record = outcome.value
+    _render_webhook(record, out)
+    print(
+        f"webhook {record.name!r} is added and enabled; {CHANGES_REACH_A_RUNNING_PROCESS}",
+        file=out,
+    )
+    if record.plaintext_http:
+        print(PLAINTEXT_HTTP_WARNING, file=out)
+    print(FIRST_RUN_BURST, file=out)
+    return 0
+
+
+def _webhook_list(database: DatabaseConfig, out: IO[str]) -> int:
+    outcome = asyncio.run(_with_rooms(database, lambda p: p.webhooks.list_all()))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if not outcome.value:
+        print("no webhooks are configured", file=out)
+        return 0
+    for record in outcome.value:
+        print(
+            f"{record.name}  target={record.url_host}  format={record.format}  "
+            f"triggers={','.join(record.triggers)}  "
+            f"max_hops={'none' if record.max_hops is None else record.max_hops}  "
+            f"{'enabled' if record.enabled else 'disabled'}",
+            file=out,
+        )
+    return 0
+
+
+def _webhook_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    outcome = asyncio.run(_with_rooms(database, lambda p: _find_webhook(p, args.name)))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    _render_webhook(outcome, out)
+    return 0
+
+
+def _webhook_enablement(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    enabled = args.webhook_command == "enable"
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        changed = await persistence.webhooks.set_enabled(record.id, enabled)
+        return changed if isinstance(changed, Failed) else record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    state = "enabled" if enabled else "disabled: it stays configured and receives nothing"
+    print(f"webhook {outcome.name!r} is {state}; {CHANGES_REACH_A_RUNNING_PROCESS}", file=out)
+    return 0
+
+
+def _webhook_set(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    changes: dict[str, Any] = {}
+    if args.format is not None:
+        changes["format"] = args.format
+    if args.triggers is not None:
+        changes["triggers"] = args.triggers
+    if args.no_max_hops:
+        changes["max_hops"] = None
+    elif args.max_hops is not None:
+        changes["max_hops"] = args.max_hops
+    if not changes:
+        print(
+            "nothing to change: give --format, --trigger, --max-hops or --no-max-hops",
+            file=sys.stderr,
+        )
+        return 2
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        changed = await persistence.webhooks.update(record.id, **changes)
+        if isinstance(changed, Failed):
+            return changed
+        return await _find_webhook(persistence, args.name)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    _render_webhook(outcome, out)
+    print(f"webhook {outcome.name!r} is changed; {CHANGES_REACH_A_RUNNING_PROCESS}", file=out)
+    return 0
+
+
+def _webhook_set_url(args: argparse.Namespace, config: Config, out: IO[str]) -> int:
+    assert config.database is not None
+    secret = config.secret_key_bytes()
+    url = _read_webhook_url()
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        host = await persistence.webhooks.set_url(record.id, url, secret=secret)
+        if isinstance(host, Failed):
+            return host
+        return await _find_webhook(persistence, args.name)
+
+    outcome = asyncio.run(_with_rooms(config.database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    print(
+        f"webhook {outcome.name!r} now targets {outcome.url_host}; "
+        f"{CHANGES_REACH_A_RUNNING_PROCESS}",
+        file=out,
+    )
+    if outcome.plaintext_http:
+        print(PLAINTEXT_HTTP_WARNING, file=out)
+    return 0
+
+
+def _webhook_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        removed = await persistence.webhooks.remove(record.id)
+        return removed if isinstance(removed, Failed) else record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    print(
+        f"webhook {outcome.name!r} is removed; a running process stops delivering "
+        "to it from the next event",
+        file=out,
+    )
+    return 0
+
+
+def _webhook_test(args: argparse.Namespace, config: Config, out: IO[str]) -> int:
+    assert config.database is not None
+    secret = config.secret_key_bytes()
+    trigger = Trigger(args.trigger)
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        opened = await persistence.webhooks.open_url(record.id, secret)
+        if isinstance(opened, Failed) or opened.value is None:
+            return opened if isinstance(opened, Failed) else None
+        return opened.value, await send_sample(opened.value, trigger)
+
+    outcome = asyncio.run(_with_rooms(config.database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    opened, result = outcome
+    target = f"{opened.record.name!r} ({opened.record.url_host})"
+    if result.delivered:
+        print(
+            f"test {trigger.value} sent to {target}: delivered, {result.summary}", file=out
+        )
+        return 0
+    detail = result.summary
+    if result.status is not None and result.reason:
+        detail = f"{detail}, {result.reason}"
+    print(f"test {trigger.value} sent to {target}: failed, {detail}", file=out)
+    return 1
+
+
 def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -2675,6 +3145,10 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     if args.command == "web":
         configure_logging(stream=sys.stderr)
         return _web_user_command(args, stream)
+
+    if args.command == "webhook":
+        configure_logging(stream=sys.stderr)
+        return _webhook_command(args, stream)
 
     if args.command == "db":
         configure_logging(stream=sys.stderr)

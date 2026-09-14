@@ -197,7 +197,7 @@ async def test_0005_upgrade_downgrade_upgrade_leaves_no_leftover_objects(
         await migrations.upgrade_async(config)
         handle = Database(config=config)
         try:
-            assert await handle.read_applied_revision() == "0005"
+            assert await handle.read_applied_revision() == migrations.expected_revision()
         finally:
             await handle.dispose()
     finally:
@@ -240,7 +240,7 @@ async def test_a_database_at_0004_is_refused_naming_both_revisions_and_the_comma
             await handle.open()
         message = str(excinfo.value)
         assert "0004" in message
-        assert "0005" in message
+        assert migrations.expected_revision() in message
         assert migrations.UPGRADE_COMMAND in message
     finally:
         await handle.dispose()

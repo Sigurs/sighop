@@ -190,3 +190,44 @@ async def test_the_reception_the_listener_gets_is_the_one_that_arrived(hop_count
     )
 
     assert listener.seen[0][1].hop_count == hop_count
+
+
+# --- webhook-notifications 1.1: several listeners ---------------------------
+
+
+async def test_two_listeners_each_receive_a_created_observation_once() -> None:
+    first, second = Recorder(), Recorder()
+    store = ContactStore(on_observation=first)
+    store.add_observation_listener(second)
+
+    await store.handle(advert_record(verified_advert(generate_identity(), name="new")))
+
+    assert [observation.created for observation, _ in first.seen] == [True]
+    assert [observation.created for observation, _ in second.seen] == [True]
+    assert first.seen[0][0] is second.seen[0][0], "both got the same observation"
+
+
+async def test_a_raising_first_listener_does_not_starve_the_second() -> None:
+    def raising(observation: ContactObservation, record: RxRecord) -> None:
+        raise RuntimeError("bot host fell over")
+
+    second = Recorder()
+    store = ContactStore()
+    store.add_observation_listener(raising)
+    store.add_observation_listener(second)
+
+    await store.handle(advert_record(verified_advert(generate_identity())))
+
+    assert len(second.seen) == 1
+    assert store.listener_failures == 1
+
+
+async def test_listeners_run_in_registration_order() -> None:
+    order: list[str] = []
+    store = ContactStore()
+    store.add_observation_listener(lambda observation, record: order.append("a"))
+    store.add_observation_listener(lambda observation, record: order.append("b"))
+
+    await store.handle(advert_record(verified_advert(generate_identity())))
+
+    assert order == ["a", "b"]

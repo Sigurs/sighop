@@ -17,10 +17,11 @@ out of the platform.
 
 from __future__ import annotations
 
+import math
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.db.engine import Failed, Outcome, Succeeded
@@ -34,11 +35,14 @@ from sighop.db.repositories import (
     RoomExistsError,
     RoomRecord,
 )
+from sighop.net.dm import LocalEntity
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.protocol.payloads import NodeType
 from sighop.web.deps import Panel, panel
 from sighop.web.guarded import (
     ACTION_DESCRIPTIONS,
+    ADVERT_FLOOD,
+    ADVERT_ZERO_HOP,
     ENABLE_TRANSMIT,
     RAISE_CEILING,
     REVEAL_KEY,
@@ -50,6 +54,7 @@ from sighop.web.render import (
     Refusal,
     collection_for,
     refused,
+    render_advert_request,
     render_ceiling_change,
     render_transmit_change,
 )
@@ -90,10 +95,29 @@ async def rooms(
         rooms=collection_for(listed, degraded="rooms cannot be read"),
         counts=counts,
         served={str(server.room.id) for server in page.state.rooms},
+        advert_ids={
+            str(server.room.id): entity_id
+            for server in page.state.rooms
+            if (entity_id := _advert_id(page, server.entity)) is not None
+        },
         hosts=await _room_server_identities(page),
         refusal=refusal,
         status_code=status_code,
     )
+
+
+def _advert_id(page: Panel, entity: LocalEntity | None) -> str | None:
+    """The loaded identity a served room or running bot speaks as, by public key.
+
+    By key rather than by name, as `routes/rooms.py` matches, so the advert
+    links go to the identity that is actually on the air (design D6).
+    """
+    if entity is None:
+        return None
+    for stub in page.state.adverts.stubs:
+        if stub.identity.public_key == entity.identity.public_key:
+            return stub.entity_id
+    return None
 
 
 async def _room_server_identities(page: Panel) -> list[EntityRecord]:
@@ -361,6 +385,11 @@ async def bots(
         bots=collection_for(listed, degraded="bots cannot be read"),
         bot_state=state,
         running={worker.name for worker in page.state.bots.workers},
+        advert_ids={
+            str(worker.record.id): entity_id
+            for worker in page.state.bots.workers
+            if (entity_id := _advert_id(page, worker.entity)) is not None
+        },
         drivers=bot_drivers.driver_names(),
         identities=await _bot_identities(page),
         refusal=refusal,
@@ -976,6 +1005,146 @@ def _loaded(page: Panel, entity_id: str):  # type: ignore[no-untyped-def]
     return None
 
 
+# --- Adverting now (web-advert-now) -----------------------------------------
+
+ADVERT_KINDS = {"zero-hop": ADVERT_ZERO_HOP, "flood": ADVERT_FLOOD}
+"""The path segment each advert action is addressed by."""
+
+NOT_HELD = "this run does not hold that identity, so there is nothing to advert as"
+
+GATE_CLOSED = (
+    "transmission is disabled for this run. A submitted advert would be charged "
+    "against the airtime budget and suppressed at the modem — for a flood, also "
+    "moving the next scheduled one a day out — with nothing on the air"
+)
+
+NO_RADIO = (
+    "airtime cannot be computed until the board has answered with its radio "
+    "parameters, and the scheduler would drop the advert"
+)
+
+
+def _advert_title(kind: str) -> str:
+    return f"advert {kind} now"
+
+
+@router.get("/advert/{entity_id}/{kind}", response_class=HTMLResponse)
+async def advert_form(
+    entity_id: str, kind: str, request: Request, page: PanelDep
+) -> HTMLResponse:
+    """The confirmation in front of an advert, with its cost and the schedule.
+
+    The gate and the gap are shown so a refusal can be seen coming; the POST
+    decides from live state again, never from what this page showed (design D4).
+    """
+    action = ADVERT_KINDS.get(kind)
+    if action is None:
+        raise HTTPException(status_code=404)
+    stub = _loaded(page, entity_id)
+    adverts = page.state.adverts
+    return page.page(
+        request,
+        "admin/advert.html",
+        kind=kind,
+        title=_advert_title(kind),
+        stub=stub,
+        not_held=NOT_HELD,
+        description=ACTION_DESCRIPTIONS[action],
+        post_to=f"/admin/advert/{entity_id}/{kind}",
+        nonce=None if stub is None else page.nonces.mint(action, entity_id),
+        transmit_enabled=page.state.scheduler.transmit_enabled,
+        radio_known=page.state.radio is not None,
+        gap_remaining=adverts.flood_gap_remaining(adverts.clock.now()),
+        status_code=200 if stub is not None else 404,
+    )
+
+
+@router.post("/advert/{entity_id}/{kind}", response_model=None)
+async def advert(
+    entity_id: str,
+    kind: str,
+    request: Request,
+    page: PanelDep,
+    nonce: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """Submit one advert through the transmit scheduler, or refuse and submit nothing.
+
+    Confirmation-only: a nonce and no password (design D3). Every refusal is
+    decided here, in a fixed order so each is audited exactly once, and none of
+    them defers — an operator who pressed "advert now" is told whether an
+    advert was submitted (design D1).
+    """
+    action = ADVERT_KINDS.get(kind)
+    if action is None:
+        raise HTTPException(status_code=404)
+    title = _advert_title(kind)
+    actor = page.actor(request)
+    unverified = page.unverified(request, action=action, target=entity_id, title=title)
+    if unverified is not None:
+        return unverified
+
+    def refuse(reason: str, status_code: int, **fields: object) -> HTMLResponse:
+        audit(
+            page.logger,
+            action=action,
+            target=entity_id,
+            outcome="refused",
+            actor=actor,
+            reason=reason,
+            **fields,
+        )
+        return page.page(
+            request,
+            "admin/refused.html",
+            title=title,
+            refusal=None if status_code == 403 else reason,
+            status_code=status_code,
+        )
+
+    stub = _loaded(page, entity_id)
+    if stub is None:
+        return refuse(NOT_HELD, 404)
+    named = {"entity_name": stub.name, "node_hash": stub.node_hash}
+    if not page.nonces.spend(nonce, action, entity_id):
+        return refuse("no confirmation was minted for this action", 403, **named)
+    if not page.state.scheduler.transmit_enabled:
+        return refuse(GATE_CLOSED, 409, **named)
+    if page.state.radio is None:
+        return refuse(NO_RADIO, 409, **named)
+    adverts = page.state.adverts
+    if action == ADVERT_FLOOD:
+        gap = adverts.flood_gap_remaining(adverts.clock.now())
+        if gap > 0:
+            seconds = math.ceil(gap)
+            return refuse(
+                "a flood advert from this run went out less than the "
+                f"{adverts.min_entity_gap_seconds:g} s inter-entity gap ago; another "
+                f"flood is accepted in {seconds} s",
+                409,
+                gap_remaining_seconds=seconds,
+                **named,
+            )
+
+    if action == ADVERT_FLOOD:
+        adverts.request_flood(stub)
+    else:
+        adverts.request_zero_hop(stub)
+    next_flood_at = stub.next_flood_at
+    audit(
+        page.logger,
+        action=action,
+        target=entity_id,
+        outcome="success",
+        actor=actor,
+        next_flood_at=None if next_flood_at is None else next_flood_at.isoformat(),
+        **named,
+    )
+    page.say(
+        render_advert_request(kind, stub.name, actor=actor, next_flood_at=next_flood_at)
+    )
+    return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+
+
 @router.get("/transmit", response_class=HTMLResponse)
 async def transmit_form(request: Request, page: PanelDep) -> HTMLResponse:
     return page.page(
@@ -1130,3 +1299,281 @@ async def raise_ceiling(
     )
     page.say(render_ceiling_change(previous, wanted, actor=actor))
     return RedirectResponse("/", status_code=SEE_OTHER)
+
+
+# --- Webhooks (webhook-notifications, `web-admin`) ---------------------------
+#
+# Every write is `WebhookRepository`'s own call, which is where the command line
+# validates too: a URL, a trigger or a hop limit this refuses is one
+# `sighop webhook` refuses in the same words. A submitted URL is never put back
+# into a page — not after it is stored, and not in a form re-shown after a
+# refusal — because the URL is the credential that lets anyone post to it.
+
+WEBHOOKS_NEED_DURABLE_STORAGE = (
+    "Webhooks are stored configuration and require durable storage. This run has "
+    "no database, so none can be configured or sent."
+)
+
+WEBHOOK_URL_NEEDS_THE_SECRET = (
+    "SIGHOP_SECRET_KEY is not available to this panel, and webhook URLs are "
+    "sealed under it; nothing was changed"
+)
+
+
+@router.get("/webhooks", response_class=HTMLResponse)
+async def webhooks(
+    request: Request,
+    page: PanelDep,
+    *,
+    refusal: Refusal | None = None,
+    test_result: dict[str, object] | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """Every webhook with its target as scheme and host, and its last outcomes."""
+    from sighop.db.repositories import WebhookRecord
+    from sighop.webhooks.config import WebhookFormat
+    from sighop.webhooks.triggers import Trigger
+
+    listed: Outcome[list[WebhookRecord]] | None = None
+    if page.persistence is not None:
+        listed = await page.persistence.webhooks.list_all()
+    dispatcher = page.state.webhooks
+    return page.page(
+        request,
+        "admin/webhooks.html",
+        webhooks=collection_for(listed, degraded="webhooks cannot be read"),
+        no_database=page.persistence is None,
+        no_database_note=WEBHOOKS_NEED_DURABLE_STORAGE,
+        counters=None if dispatcher is None else dispatcher.as_json(),
+        triggers=[trigger.value for trigger in Trigger],
+        formats=[kind.value for kind in WebhookFormat],
+        refusal=refusal,
+        test_result=test_result,
+        status_code=status_code,
+    )
+
+
+async def _refuse_webhook(
+    request: Request, page: Panel, reason: str, *, field: str = "", **submitted: str
+) -> HTMLResponse:
+    return await webhooks(
+        request, page, refusal=refused(reason, field=field, **submitted), status_code=400
+    )
+
+
+async def _webhook(page: Panel, webhook_id: str):  # type: ignore[no-untyped-def]
+    if page.persistence is None:
+        return None
+    try:
+        wanted = uuid.UUID(webhook_id)
+    except ValueError:
+        return None
+    found = await page.persistence.webhooks.get_by_id(wanted)
+    return found.value if isinstance(found, Succeeded) else None
+
+
+@router.post("/webhooks/create", response_model=None)
+async def create_webhook(
+    request: Request,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+    url: Annotated[str, Form()] = "",
+    format: Annotated[str, Form()] = "",
+    triggers: Annotated[list[str] | None, Form()] = None,
+    max_hops: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop webhook add`'s own call. The URL is not carried back on refusal."""
+    from sighop.webhooks.config import WebhookConfigError
+
+    submitted = {
+        "name": name,
+        "format": format,
+        "triggers": ",".join(triggers or ()),
+        "max_hops": max_hops,
+    }
+    if page.persistence is None:
+        return await _refuse_webhook(request, page, WEBHOOKS_NEED_DURABLE_STORAGE, **submitted)
+    if page.sealing_secret is None:
+        return await _refuse_webhook(request, page, WEBHOOK_URL_NEEDS_THE_SECRET, **submitted)
+    try:
+        created = await page.persistence.webhooks.create(
+            name=name,
+            url=url,
+            format=format,
+            triggers=triggers or (),
+            max_hops=max_hops,
+            secret=page.sealing_secret,
+        )
+    except WebhookConfigError as exc:
+        return await _refuse_webhook(request, page, str(exc), **submitted)
+    if isinstance(created, Failed):
+        return await _refuse_webhook(request, page, str(created.error), **submitted)
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
+@router.post("/webhooks/{webhook_id}/enabled")
+async def set_webhook_enabled(
+    webhook_id: str, enabled: Annotated[str, Form()], page: PanelDep
+) -> RedirectResponse:
+    record = await _webhook(page, webhook_id)
+    if record is not None and page.persistence is not None:
+        await page.persistence.webhooks.set_enabled(record.id, enabled == "true")
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
+@router.post("/webhooks/{webhook_id}/settings", response_model=None)
+async def set_webhook_settings(
+    request: Request,
+    webhook_id: str,
+    page: PanelDep,
+    format: Annotated[str, Form()] = "",
+    triggers: Annotated[list[str] | None, Form()] = None,
+    max_hops: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop webhook set`'s own call: format, triggers and hop limit together.
+
+    An empty hop limit removes the limit, as `--no-max-hops` does.
+    """
+    from sighop.webhooks.config import WebhookConfigError
+
+    record = await _webhook(page, webhook_id)
+    if record is None or page.persistence is None:
+        return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+    try:
+        changed = await page.persistence.webhooks.update(
+            record.id, triggers=triggers or (), format=format, max_hops=max_hops
+        )
+    except WebhookConfigError as exc:
+        return await _refuse_webhook(
+            request,
+            page,
+            f"{record.name}: {exc}. The stored webhook is unchanged.",
+            field="settings",
+            webhook_id=webhook_id,
+        )
+    if isinstance(changed, Failed):
+        return await _refuse_webhook(
+            request, page, str(changed.error), field="settings", webhook_id=webhook_id
+        )
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
+@router.post("/webhooks/{webhook_id}/url", response_model=None)
+async def set_webhook_url(
+    request: Request,
+    webhook_id: str,
+    page: PanelDep,
+    url: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop webhook set-url`'s own call. What was typed is never shown back."""
+    from sighop.webhooks.config import WebhookConfigError
+
+    record = await _webhook(page, webhook_id)
+    if record is None or page.persistence is None:
+        return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+    if page.sealing_secret is None:
+        return await _refuse_webhook(
+            request, page, WEBHOOK_URL_NEEDS_THE_SECRET, field="url", webhook_id=webhook_id
+        )
+    try:
+        changed = await page.persistence.webhooks.set_url(
+            record.id, url, secret=page.sealing_secret
+        )
+    except WebhookConfigError as exc:
+        return await _refuse_webhook(
+            request,
+            page,
+            f"{record.name}: {exc}. The stored URL is unchanged.",
+            field="url",
+            webhook_id=webhook_id,
+        )
+    if isinstance(changed, Failed):
+        return await _refuse_webhook(
+            request, page, str(changed.error), field="url", webhook_id=webhook_id
+        )
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
+@router.get("/webhooks/{webhook_id}/remove", response_class=HTMLResponse)
+async def remove_webhook_form(
+    webhook_id: str, request: Request, page: PanelDep
+) -> HTMLResponse:
+    """What removing deletes, before it deletes it."""
+    record = await _webhook(page, webhook_id)
+    return page.page(
+        request,
+        "admin/webhook_remove.html",
+        webhook=record,
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/webhooks/{webhook_id}/remove", response_model=None)
+async def remove_webhook(
+    webhook_id: str,
+    request: Request,
+    page: PanelDep,
+    confirm: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop webhook remove`'s own call, only with the explicit confirmation."""
+    record = await _webhook(page, webhook_id)
+    if record is None or page.persistence is None or confirm != "yes":
+        return await remove_webhook_form(webhook_id, request, page)
+    await page.persistence.webhooks.remove(record.id)
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
+@router.post("/webhooks/{webhook_id}/test", response_class=HTMLResponse)
+async def send_webhook_sample(
+    webhook_id: str,
+    request: Request,
+    page: PanelDep,
+    trigger: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """`sighop webhook test`'s own call: one sample, no retry, outcome shown.
+
+    CSRF-protected like every write, and not a guarded action: it neither
+    transmits on air nor reveals a secret (design D8).
+    """
+    from sighop.webhooks.dispatcher import send_sample
+    from sighop.webhooks.triggers import Trigger
+
+    record = await _webhook(page, webhook_id)
+    if record is None or page.persistence is None:
+        return await webhooks(request, page, status_code=404)
+    try:
+        chosen = Trigger(trigger)
+    except ValueError:
+        return await _refuse_webhook(
+            request,
+            page,
+            f"unknown trigger {trigger!r}; the triggers are "
+            + ", ".join(item.value for item in Trigger),
+            field="test",
+            webhook_id=webhook_id,
+        )
+    if page.sealing_secret is None:
+        return await _refuse_webhook(
+            request, page, WEBHOOK_URL_NEEDS_THE_SECRET, field="test", webhook_id=webhook_id
+        )
+    opened = await page.persistence.webhooks.open_url(record.id, page.sealing_secret)
+    if isinstance(opened, Failed) or opened.value is None:
+        reason = str(opened.error) if isinstance(opened, Failed) else "no such webhook"
+        return await _refuse_webhook(
+            request, page, reason, field="test", webhook_id=webhook_id
+        )
+    result = await send_sample(opened.value, chosen, logger=page.logger)
+    detail = result.summary
+    if result.status is not None and result.reason and not result.delivered:
+        detail = f"{detail}, {result.reason}"
+    return await webhooks(
+        request,
+        page,
+        test_result={
+            "webhook_id": webhook_id,
+            "name": record.name,
+            "trigger": chosen.value,
+            "delivered": result.delivered,
+            "detail": detail,
+        },
+    )

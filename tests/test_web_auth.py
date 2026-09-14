@@ -7,6 +7,7 @@ Argon2id path is `tests/test_web_login.py`'s.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
 import pytest
@@ -18,9 +19,16 @@ from sighop.web.auth import (
     MAX_DELAY_SECONDS,
     MAX_SESSIONS,
     REVALIDATE_SECONDS,
+    SETUP_BAD_CODE,
+    SETUP_CLOSED,
+    SETUP_CODE_ALPHABET,
+    SETUP_CODE_LENGTH,
+    SETUP_PASSWORD_EMPTY,
+    SETUP_PASSWORD_MISMATCH,
     THROTTLE_KEYS,
     UNVERIFIED,
     Authenticator,
+    FirstRunSetup,
     LoginThrottle,
     SessionStore,
     delay_for,
@@ -36,6 +44,7 @@ from tests.webfixtures import (
     MemoryAccounts,
     as_account_store,
     authenticator,
+    fake_hash,
 )
 
 CLIENT = "192.0.2.10"
@@ -454,3 +463,231 @@ async def test_session_end_events_name_each_reason() -> None:
 )
 def test_next_is_only_ever_a_same_origin_path(given: str | None, expected: str) -> None:
     assert safe_next(given) == expected
+
+
+# --- First-run setup (web-first-run-setup tasks 2.1, 2.3, 2.4) ---------------
+
+NEW_USER = "dev-first"
+NEW_PASSWORD = "a-first-password"
+
+
+def test_the_setup_code_is_twenty_crockford_characters_shown_grouped() -> None:
+    codes = {FirstRunSetup().code for _ in range(200)}
+    assert len(codes) == 200, "each setup gets its own code"
+    for code in codes:
+        assert len(code) == SETUP_CODE_LENGTH == 20
+        assert set(code) <= set(SETUP_CODE_ALPHABET)
+        assert not set(code) & set("ILOU")
+    assert len(SETUP_CODE_ALPHABET) == 32
+    setup = FirstRunSetup(code="7KQ2MX9D4RP0TZH3VW8N")
+    assert setup.display == "7KQ2M-X9D4R-P0TZH-3VW8N"
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "7KQ2MX9D4RP0TZH3VW8N",
+        "7KQ2M-X9D4R-P0TZH-3VW8N",
+        "7kq2m-x9d4r-p0tzh-3vw8n",
+        "  7KQ2M X9D4R\tP0TZH 3VW8N \n",
+    ],
+)
+def test_the_setup_code_is_accepted_however_it_was_typed(typed: str) -> None:
+    assert FirstRunSetup(code="7KQ2MX9D4RP0TZH3VW8N").check(typed)
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        None,
+        "",
+        "7KQ2MX9D4RP0TZH3VW8M",
+        "7KQ2MX9D4RP0TZH3VW8",
+        "7KQ2MX9D4RP0TZH3VW8NN",
+        "7KQ2MX9D4RP0TZH3VW8Ñ",
+    ],
+)
+def test_a_wrong_setup_code_is_refused(typed: str | None) -> None:
+    assert not FirstRunSetup(code="7KQ2MX9D4RP0TZH3VW8N").check(typed)
+
+
+def test_a_closed_setup_refuses_its_own_code_and_repr_never_shows_it() -> None:
+    setup = FirstRunSetup()
+    assert setup.pending and setup.check(setup.code)
+    for rendering in (repr(setup), str(setup), f"{setup!r}"):
+        assert setup.code not in rendering
+        assert setup.display not in rendering
+    setup.close()
+    assert not setup.pending
+    assert not setup.check(setup.code)
+
+
+def _setup_auth(
+    accounts: MemoryAccounts | None = None,
+) -> tuple[Authenticator, FirstRunSetup, RecordingLogger, CountingHasher]:
+    logger = RecordingLogger()
+    setup = FirstRunSetup()
+    auth = authenticator(accounts or MemoryAccounts(), logger=logger, setup=setup)
+    hasher = auth.hasher
+    assert isinstance(hasher, CountingHasher)
+    return auth, setup, logger, hasher
+
+
+def _no_secret_in_events(logger: RecordingLogger, *secrets_: str) -> None:
+    for name, fields in logger.events:
+        for secret in secrets_:
+            assert secret not in name
+            assert all(secret not in str(value) for value in fields.values()), (name, fields)
+
+
+async def test_setup_with_the_right_code_creates_the_account_and_signs_in() -> None:
+    accounts = MemoryAccounts()
+    auth, setup, logger, hasher = _setup_auth(accounts)
+    result = await auth.complete_setup(
+        setup.display.lower(), "Dev-First", NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert result.succeeded and result.token is not None
+    assert result.reason == "success" and result.username == NEW_USER
+    assert hasher.hashes == 1
+    stored = accounts.accounts[NEW_USER]
+    assert stored.enabled and stored.password_hash == fake_hash(NEW_PASSWORD)
+    session = await auth.resolve(result.token)
+    assert session is not None and session.username == NEW_USER
+    assert not setup.pending and not auth.setup_pending
+    events = logger.named("web_setup")
+    assert events == [
+        {"outcome": "success", "reason": "success", "username": NEW_USER, "client": CLIENT}
+    ]
+    _no_secret_in_events(logger, setup.code, setup.display, NEW_PASSWORD)
+
+
+async def test_setup_rotates_a_presented_session() -> None:
+    auth, setup, _, _ = _setup_auth()
+    stale, _ = auth.sessions.issue("someone-old", password_set_at=EPOCH)
+    result = await auth.complete_setup(
+        setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT, presented=stale
+    )
+    assert result.succeeded
+    assert auth.sessions.resolve(stale) is None
+
+
+@pytest.mark.parametrize("code", [None, "", "0000000000000000000A"])
+async def test_a_wrong_code_hashes_nothing_and_says_one_fixed_thing(code: str | None) -> None:
+    accounts = MemoryAccounts()
+    auth, setup, logger, hasher = _setup_auth(accounts)
+    result = await auth.complete_setup(
+        code, "a-guessed-name", "secret-guess", "different-guess", client=CLIENT
+    )
+    assert not result.succeeded
+    assert result.reason == "bad_code"
+    assert result.message == SETUP_BAD_CODE
+    assert "a-guessed-name" not in result.message
+    assert hasher.hashes == 0 and hasher.verifications == 0
+    assert not accounts.accounts
+    assert setup.pending, "a wrong code does not close setup"
+    [event] = logger.named("web_setup")
+    assert set(event) == {"outcome", "reason", "username", "client"}
+    assert event["reason"] == "bad_code"
+    _no_secret_in_events(logger, setup.code, "secret-guess", "different-guess")
+
+
+@pytest.mark.parametrize(
+    ("username", "password", "again", "reason", "message"),
+    [
+        ("two words", NEW_PASSWORD, NEW_PASSWORD, "bad_username", "whitespace"),
+        ("", NEW_PASSWORD, NEW_PASSWORD, "bad_username", "empty"),
+        (NEW_USER, "", "", "password_empty", SETUP_PASSWORD_EMPTY),
+        (NEW_USER, NEW_PASSWORD, NEW_PASSWORD + "x", "password_mismatch", SETUP_PASSWORD_MISMATCH),
+    ],
+)
+async def test_a_refusal_after_the_code_names_what_is_wrong_and_leaves_the_code_usable(
+    username: str, password: str, again: str, reason: str, message: str
+) -> None:
+    accounts = MemoryAccounts()
+    auth, setup, logger, hasher = _setup_auth(accounts)
+    refused = await auth.complete_setup(setup.code, username, password, again, client=CLIENT)
+    assert refused.reason == reason and not refused.succeeded
+    assert message in refused.message
+    assert hasher.hashes == 0
+    assert not accounts.accounts and setup.pending
+    accepted = await auth.complete_setup(
+        setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert accepted.succeeded
+    assert [e["reason"] for e in logger.named("web_setup")] == [reason, "success"]
+    _no_secret_in_events(logger, setup.code, NEW_PASSWORD)
+
+
+async def test_an_account_that_appeared_meanwhile_closes_setup() -> None:
+    accounts = MemoryAccounts()
+    auth, setup, logger, hasher = _setup_auth(accounts)
+    accounts.add("dev-terminal", "from-the-terminal")
+    result = await auth.complete_setup(
+        setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert result.reason == "setup_closed" and not result.succeeded
+    assert result.message == SETUP_CLOSED
+    assert set(accounts.accounts) == {"dev-terminal"}
+    assert not setup.pending
+    again = await auth.complete_setup(
+        setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert again.reason == "setup_closed"
+    assert hasher.hashes == 1, "the closed setup refuses before hashing again"
+    assert [e["reason"] for e in logger.named("web_setup")] == ["setup_closed", "setup_closed"]
+
+
+async def test_a_completed_setup_refuses_its_old_code() -> None:
+    accounts = MemoryAccounts()
+    auth, setup, _, _ = _setup_auth(accounts)
+    assert (
+        await auth.complete_setup(setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT)
+    ).succeeded
+    second = await auth.complete_setup(
+        setup.code, "dev-second", NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert second.reason == "setup_closed"
+    assert set(accounts.accounts) == {NEW_USER}
+
+
+async def test_an_authenticator_without_setup_refuses_every_submission() -> None:
+    logger = RecordingLogger()
+    auth = authenticator(logger=logger)
+    result = await auth.complete_setup("anything", NEW_USER, "p", "p", client=CLIENT)
+    assert result.reason == "setup_closed"
+    assert not auth.setup_pending
+
+
+async def test_a_degraded_store_refuses_setup_and_keeps_the_code() -> None:
+    accounts = MemoryAccounts()
+    auth, setup, _, _ = _setup_auth(accounts)
+    accounts.degraded = True
+    result = await auth.complete_setup(
+        setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT
+    )
+    assert result.reason == "database_unavailable" and not result.succeeded
+    assert setup.pending
+    accounts.degraded = False
+    assert (
+        await auth.complete_setup(setup.code, NEW_USER, NEW_PASSWORD, NEW_PASSWORD, client=CLIENT)
+    ).succeeded
+
+
+async def test_concurrent_submissions_hash_once_and_create_one_account() -> None:
+    accounts = MemoryAccounts()
+    auth, setup, _, hasher = _setup_auth(accounts)
+    results = await asyncio.gather(
+        auth.complete_setup(setup.code, "dev-one", NEW_PASSWORD, NEW_PASSWORD, client=CLIENT),
+        auth.complete_setup(setup.code, "dev-two", NEW_PASSWORD, NEW_PASSWORD, client=CLIENT),
+    )
+    assert sorted(r.reason for r in results) == ["setup_closed", "success"]
+    assert len(accounts.accounts) == 1
+    assert hasher.hashes == 1
+
+
+async def test_signing_in_while_setup_is_pending_fails_as_an_unknown_user() -> None:
+    auth, setup, logger, _ = _setup_auth()
+    result = await auth.sign_in(NEW_USER, NEW_PASSWORD, client=CLIENT)
+    assert not result.succeeded and result.reason == "unknown_user"
+    assert logger.named("web_login")[-1]["reason"] == "unknown_user"
+    assert setup.pending

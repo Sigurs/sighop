@@ -1,17 +1,27 @@
-# sighop with its database (DESIGN.md §10).
+# sighop against an external database (DESIGN.md §10).
+#
+# One file for every host, development and production alike: everything that
+# differs between hosts comes from that host's ./.env (gitignored), see
+# .env.example.
 #
 #   1. ./build.sh                      — builds the image, also tagged sighop:local
-#   2. ./.env (gitignored), see .env.example:
+#                                        (or set SIGHOP_IMAGE to a published tag)
+#   2. ./.env, required:
 #        UID=$(id -u)
 #        GID=$(id -g)
 #        DIALOUT_GID=$(stat -c %g /dev/serial/by-id/usb-...)
 #        SIGHOP_MODEM=/dev/serial/by-id/usb-...
-#        POSTGRES_PASSWORD=$(openssl rand -hex 24)
+#        DATABASE_URL=...              — the postgresql+asyncpg URL, see .env.example
 #        SIGHOP_SECRET_KEY=...         — `uv run sighop keys secret` prints the line
+#      optional:
+#        SIGHOP_IMAGE=...              — default sighop:local
+#        SIGHOP_WEB_BIND=...           — host address the panel is published on, default 127.0.0.1
+#        SIGHOP_WEB_PORT=...           — host port, default 8080
+#        SIGHOP_WEB_ALLOWED_HOST=...   — one more host name the panel answers to
 #   3. docker compose up -d            — sighop migrates the database on start
-#   4. docker compose run --rm -it sighop web user add <name>
-#
-# Until an account exists, sighop refuses to serve the panel and restarts.
+#   4. open http://localhost:8080/setup and enter the setup code printed by
+#      `docker compose logs sighop` — first-run setup creates the first account.
+#      Or, from a terminal: docker compose run --rm -it sighop web user add <name>
 
 services:
   sighop:
@@ -35,6 +45,9 @@ services:
     init: true
     stop_grace_period: 20s
     restart: unless-stopped
+    # The allowed host names carry the published port, which is what a browser
+    # sends. Compose cannot drop an argument whose variable is unset, so the last
+    # one defaults to a name already listed and sighop ignores the duplicate.
     command:
       - run
       - --migrate
@@ -46,54 +59,18 @@ services:
       - --web-port
       - "8080"
       - --web-allowed-host
-      - localhost:8080
+      - localhost:${SIGHOP_WEB_PORT:-8080}
       - --web-allowed-host
-      - 127.0.0.1:8080
+      - 127.0.0.1:${SIGHOP_WEB_PORT:-8080}
+      - --web-allowed-host
+      - ${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}
     ports:
-      - "127.0.0.1:${SIGHOP_WEB_PORT:-8080}:8080"
+      - "${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}:8080"
     environment:
-      # POSTGRES_PASSWORD must be URL-safe (hex is).
-      DATABASE_URL: "postgresql+asyncpg://sighop:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sighop"
+      DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL to the database's postgresql+asyncpg URL}"
       SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?set SIGHOP_SECRET_KEY, e.g. from sighop keys secret}"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - db
-      - web
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
-
-  postgres:
-    image: postgres:17-trixie@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675
-    environment:
-      POSTGRES_USER: sighop
-      POSTGRES_DB: sighop
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "sighop", "-d", "sighop"]
-      interval: 5s
-      timeout: 5s
-      retries: 12
-    stop_grace_period: 30s
-    restart: unless-stopped
-    networks:
-      - db
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-networks:
-  db:
-    internal: true   # no route out, no published port
-  web: {}            # route for the published panel port
-
-volumes:
-  pgdata: {}

@@ -32,7 +32,16 @@
   <button type="submit">{{ 'disable' if bot.enabled else 'enable' }}</button>
 </form>
 
-<p><a href="/admin/bots/{{ bot.id }}/mode">change mode…</a></p>
+<p>
+  <a href="/admin/bots/{{ bot.id }}/mode">change mode…</a>
+  {% set advert_id = advert_ids.get(bot.id|string) %}
+  {% if advert_id %}
+  ·
+  <a href="/admin/advert/{{ advert_id }}/zero-hop">advert zero-hop…</a>
+  ·
+  <a href="/admin/advert/{{ advert_id }}/flood">advert flood…</a>
+  {% endif %}
+</p>
 
 <h3>configuration</h3>
 {# One key at a time, as `sighop bot set` takes it: a refusal names the key it

@@ -235,6 +235,11 @@ table {
   font-size: 0.82rem;
 }
 
+/* A wide table scrolls inside its own box rather than widening the page. */
+.table-wrap {
+  overflow-x: auto;
+}
+
 th {
   text-align: left;
   font-weight: 600;

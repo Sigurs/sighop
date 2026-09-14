@@ -463,3 +463,159 @@ async def test_a_one_shot_zero_hop_advert_verifies_like_any_other() -> None:
     assert isinstance(verified, VerifiedAdvert)
     assert verified.appdata.name is not None
     assert verified.appdata.name.text == "skogen"
+
+
+# --- The inter-entity gap, readable (web-advert-now) ------------------------
+
+
+def test_the_gap_remaining_is_zero_before_any_flood() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock, min_entity_gap_seconds=600.0)
+    sched.add_stub("skogen")
+
+    assert sched.flood_gap_remaining(clock.now()) == 0.0
+
+
+async def test_the_gap_remaining_counts_down_from_a_scheduled_flood() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock, min_entity_gap_seconds=600.0)
+    stub = sched.add_stub("skogen")
+    stub.next_flood_at = clock.now()
+    sched.tick()
+
+    clock.advance(250)
+
+    assert sched.flood_gap_remaining(clock.now()) == 350.0
+    clock.advance(400)
+    assert sched.flood_gap_remaining(clock.now()) == 0.0
+
+
+async def test_the_gap_remaining_counts_a_requested_flood() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock, min_entity_gap_seconds=600.0)
+    stub = sched.add_stub("skogen")
+    sched.request_flood(stub)
+
+    clock.advance(100)
+
+    assert sched.flood_gap_remaining(clock.now()) == 500.0
+
+
+async def test_a_zero_hop_request_alone_leaves_the_gap_at_zero() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock, min_entity_gap_seconds=600.0)
+    stub = sched.add_stub("skogen")
+    sched.request_zero_hop(stub)
+
+    assert sched.flood_gap_remaining(clock.now()) == 0.0
+
+
+# --- A single flood advert on explicit request ------------------------------
+
+
+async def test_a_requested_flood_is_one_class_three_submission_with_a_deadline() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    stub = sched.add_stub("skogen")
+
+    sched.request_flood(stub)
+
+    (submission,) = sink.submissions
+    packet = decode_packet(submission.packet)
+    assert not isinstance(packet, DecodeFailure)
+    assert packet.route_type is RouteType.FLOOD
+    assert submission.priority is PriorityClass.ADVERT
+    assert submission.origin == "advert_flood_requested"
+    assert clock.now() < submission.deadline <= clock.now() + dt.timedelta(seconds=300)
+    assert stub.adverts_sent == 1
+    assert stub.last_flood_at == clock.now()
+
+
+async def test_a_requested_flood_moves_the_schedule_one_jittered_interval_out() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock, seed=11)
+    stub = sched.add_stub("skogen")
+    stub.next_flood_at = clock.now() + dt.timedelta(hours=3)
+
+    clock.advance(60)
+    sched.request_flood(stub)
+
+    # The same draws the scheduler made: the stagger, then the jitter.
+    replay = random.Random(11)
+    replay.uniform(0.0, DAY)
+    expected = DAY + replay.uniform(-0.25 * DAY, 0.25 * DAY)
+    assert stub.next_flood_at == clock.now() + dt.timedelta(seconds=expected)
+    assert stub.next_flood_at > clock.now() + dt.timedelta(hours=3), (
+        "the scheduled flood was left in place behind the requested one"
+    )
+
+
+async def test_another_entity_due_inside_the_gap_of_a_requested_flood_is_deferred() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    logger = RecordingLogger()
+    sched = scheduler(clock, sink=sink, logger=logger, min_entity_gap_seconds=600.0)
+    first = sched.add_stub("a")
+    second = sched.add_stub("b")
+    sched.request_flood(first)
+
+    clock.advance(120)
+    second.next_flood_at = clock.now()
+    sched.tick()
+
+    assert len(sink.submissions) == 1
+    assert logger.of("advert_deferred_for_entity_gap")[0]["entity_name"] == "b"
+    assert second.next_flood_at == clock.now() + dt.timedelta(seconds=480)
+
+
+class DroppingSink(CollectingSink):
+    """A bus whose every submission expires on its deadline."""
+
+    def __call__(self, submission: Submission) -> TxHandle:
+        self.submissions.append(submission)
+        handle = TxHandle(submission)
+        handle.resolve(
+            TxOutcome(
+                result=TxResult.DROPPED,
+                packet_id="stub",
+                airtime_ms=0.0,
+                queue_wait_ms=0.0,
+                attempts=0,
+            )
+        )
+        return handle
+
+
+async def test_a_dropped_requested_flood_is_not_resubmitted_before_its_schedule() -> None:
+    clock = ManualClock()
+    sink = DroppingSink()
+    sched = scheduler(clock, sink=sink, min_entity_gap_seconds=0.0)
+    stub = sched.add_stub("skogen")
+    sched.request_flood(stub)
+    assert stub.next_flood_at is not None
+    booked = stub.next_flood_at
+
+    for _ in range(12):
+        clock.advance(3600)
+        if clock.now() >= booked:
+            break
+        sched.tick()
+
+    assert len(sink.submissions) == 1
+
+
+async def test_a_requested_flood_changes_no_override_and_no_interval() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    plain = sched.add_stub("plain")
+    overridden = sched.add_stub("fast")
+    override = sched.set_override(overridden, 2 * HOUR, expires_in=HOUR)
+
+    sched.request_flood(plain)
+    sched.request_flood(overridden)
+
+    assert plain.override is None
+    assert plain.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS
+    assert overridden.override is override
+    assert overridden.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS

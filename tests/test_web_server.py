@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import re
 import signal
 import socket
 
@@ -39,9 +40,10 @@ from sighop.web.app import (
     create_app,
     validate_allowed_hosts,
 )
+from sighop.web.auth import FirstRunSetup
 from tests.protocol.corpus import CAPTURES_DIR
 from tests.test_web_state import RecordingLogger, _empty_source, _startup
-from tests.webfixtures import authenticator, signed_client, stub_state
+from tests.webfixtures import MemoryAccounts, authenticator, signed_client, stub_state
 
 CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
 
@@ -217,7 +219,9 @@ def test_a_run_without_the_flag_listens_on_nothing_and_says_nothing(
 
     assert code == 0
     printed = capsys.readouterr().out
-    assert "web" not in printed.lower(), printed
+    # The startup line about webhooks (outbound HTTP, not the interface) is the
+    # one legitimate occurrence of the letters.
+    assert "web" not in printed.lower().replace("webhook", ""), printed
 
 
 def test_a_run_with_the_flag_and_no_database_refuses_before_binding(
@@ -267,13 +271,15 @@ def run_database(database_config: DatabaseConfig, monkeypatch) -> str:
 
 
 @pytest.mark.database
-def test_a_run_with_no_enabled_account_refuses_before_binding(
-    database: Database, run_database: str, capsys, monkeypatch
+def test_a_run_whose_accounts_are_all_disabled_refuses_before_binding(
+    database: Database, database_config: DatabaseConfig, run_database: str, capsys, monkeypatch
 ) -> None:
-    """9.1: nobody could sign in, so nothing is served — and nothing is bound."""
+    """9.1, web-first-run-setup D1 row two: nobody could sign in, and setup must
+    not undo a deliberate lockout — so nothing is served and nothing is bound."""
+    _add_account(database_config, enabled=False)
 
     def _refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a run with no account took a listening socket")
+        raise AssertionError("a run with only disabled accounts took a listening socket")
 
     monkeypatch.setattr("sighop.cli.WebInterface.bind", _refuse)
     code = main(_database_run_argv(run_database, "--web-port", "0"))
@@ -281,11 +287,33 @@ def test_a_run_with_no_enabled_account_refuses_before_binding(
     assert code == 2
     captured = capsys.readouterr()
     assert NO_ENABLED_ACCOUNT in captured.err
-    assert "sighop web user add" in captured.err
+    assert "sighop web user enable <username>" in captured.err
+    assert "sighop web user add <username>" in captured.err
+    assert "SETUP" not in captured.out
     assert "frames=" not in captured.out
 
 
-def _add_account(config: DatabaseConfig) -> None:
+@pytest.mark.database
+def test_a_run_with_no_account_at_all_serves_first_run_setup(
+    database: Database, run_database: str, capsys
+) -> None:
+    """web-first-run-setup D1 row one: served, with the code in the output only."""
+    code = main(_database_run_argv(run_database, "--web-port", "0"))
+
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "FIRST-RUN SETUP PENDING: no account exists" in printed, printed
+    found = re.search(
+        r"open (http://127\.0\.0\.1:\d+)/setup and enter setup code "
+        r"([0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5})",
+        printed,
+    )
+    assert found is not None, printed
+    assert "reachable from this host only" in printed
+    assert "sign-in required" not in printed
+
+
+def _add_account(config: DatabaseConfig, *, enabled: bool = True) -> None:
     """One enabled account, written on a loop of its own.
 
     The run under test installs signal handlers, which only the main thread may
@@ -297,7 +325,7 @@ def _add_account(config: DatabaseConfig) -> None:
         await handle.open()
         try:
             added = await WebUserRepository(database=handle).add(
-                "dev-operator", password_hash="$argon2id$test$unused"
+                "dev-operator", password_hash="$argon2id$test$unused", enabled=enabled
             )
             assert isinstance(added, Succeeded)
         finally:
@@ -310,7 +338,10 @@ def _add_account(config: DatabaseConfig) -> None:
 def test_a_run_with_the_flag_reports_where_it_is_listening(
     database: Database, database_config: DatabaseConfig, run_database: str, capsys
 ) -> None:
-    """7.3 / 7.4 / 9.3: the address, the port and the account count."""
+    """7.3 / 7.4 / 9.3: the address, the port and the account count.
+
+    web-first-run-setup D1 row three: accounts enabled, so no setup at all.
+    """
     _add_account(database_config)
     code = main(_database_run_argv(run_database, "--web-port", "0"))
 
@@ -318,6 +349,7 @@ def test_a_run_with_the_flag_reports_where_it_is_listening(
     printed = capsys.readouterr().out
     assert "web: http://127.0.0.1:" in printed, printed
     assert "sign-in required; 1 enabled account(s)" in printed
+    assert "SETUP" not in printed and "setup code" not in printed
 
 
 @pytest.mark.database
@@ -372,6 +404,7 @@ def test_a_non_loopback_bind_says_plain_http_and_unencrypted_credentials() -> No
         assert listening[0]["authenticated"] is True
         assert listening[0]["encrypted"] is False
         assert listening[0]["accounts_enabled"] == 1
+        assert listening[0]["setup_pending"] is False
         assert listening[0]["web_port"] == interface.port
         assert "unencrypted" in str(listening[0]["detail"])
     finally:
@@ -430,9 +463,10 @@ def test_localhost_and_the_ipv6_loopback_are_loopback() -> None:
 
 
 def _bind(state: object, **kwargs: object) -> WebInterface:
+    auth = kwargs.pop("auth", None) or authenticator()
     return WebInterface.bind(
         state,  # type: ignore[arg-type]
-        auth=authenticator(),
+        auth=auth,  # type: ignore[arg-type]
         accounts_enabled=kwargs.pop("accounts_enabled", 1),  # type: ignore[arg-type]
         **kwargs,  # type: ignore[arg-type]
     )
@@ -608,3 +642,86 @@ def test_bind_refuses_zero_enabled_accounts_before_taking_the_socket() -> None:
     with pytest.raises(WebStartupError) as excinfo:
         _bind(stub_state(), host="127.0.0.1", port=0, accounts_enabled=0)
     assert "sighop web user add" in str(excinfo.value)
+    assert "sighop web user enable" in str(excinfo.value)
+
+
+# --- web-first-run-setup 4.2 / 4.4 Setup at startup -------------------------
+
+
+def _setup_bound(host: str, logger: RecordingLogger | None = None) -> WebInterface:
+    return _bind(
+        stub_state(),
+        host=host,
+        port=0,
+        logger=logger or RecordingLogger(),
+        accounts_enabled=0,
+        auth=authenticator(MemoryAccounts(), setup=FirstRunSetup()),
+    )
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0"])
+def test_a_setup_bind_prints_the_code_before_the_exposure_line(host: str) -> None:
+    logger = RecordingLogger()
+    interface = _setup_bound(host, logger)
+    try:
+        setup = interface.auth.setup
+        assert setup is not None
+        lines = interface.startup_lines()
+        assert lines[0] == f"web: {interface.url} — FIRST-RUN SETUP PENDING: no account exists"
+        assert lines[1] == (
+            f"     open {interface.url}/setup and enter setup code {setup.display}"
+        )
+        if host == "127.0.0.1":
+            assert lines[2] == "     reachable from this host only"
+        else:
+            assert "REACHABLE FROM THE NETWORK" in lines[2]
+            assert PLAIN_HTTP_WARNING in lines[2]
+
+        interface.report()
+        [listening] = logger.named("web_interface_listening")
+        assert listening["setup_pending"] is True
+        assert listening["accounts_enabled"] == 0
+        for secret in (setup.code, setup.display):
+            assert all(secret not in str(value) for value in listening.values())
+            assert all(secret not in str(f) for _, f in logger.events)
+    finally:
+        interface.close()
+
+
+def test_bind_refuses_zero_accounts_when_setup_is_closed() -> None:
+    setup = FirstRunSetup()
+    setup.close()
+    with pytest.raises(WebStartupError):
+        _bind(
+            stub_state(),
+            host="127.0.0.1",
+            port=0,
+            accounts_enabled=0,
+            auth=authenticator(MemoryAccounts(), setup=setup),
+        )
+
+
+async def test_a_restart_prints_a_new_code_and_refuses_the_old_one() -> None:
+    accounts = MemoryAccounts()
+    first = _setup_bound("127.0.0.1")
+    first.close()
+    second = _bind(
+        stub_state(),
+        host="127.0.0.1",
+        port=0,
+        logger=RecordingLogger(),
+        accounts_enabled=0,
+        auth=authenticator(accounts, setup=FirstRunSetup()),
+    )
+    try:
+        old, new = first.auth.setup, second.auth.setup
+        assert old is not None and new is not None
+        assert old.code != new.code
+        assert old.display not in "\n".join(second.startup_lines())
+        refused = await second.auth.complete_setup(
+            old.display, "dev-first", "a-password", "a-password", client="192.0.2.10"
+        )
+        assert refused.reason == "bad_code"
+        assert not accounts.accounts
+    finally:
+        second.close()

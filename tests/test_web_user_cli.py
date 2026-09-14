@@ -14,9 +14,11 @@ import pytest
 
 from sighop.cli import (
     ACCOUNTS_NEED_A_DATABASE,
+    NEXT_RUN_OFFERS_SETUP,
     NO_ACCOUNT_LEFT,
     PASSWORD_IS_NEVER_AN_ARGUMENT,
     SESSIONS_END_WITHIN_A_MINUTE,
+    SETUP_WILL_BE_OFFERED,
     build_parser,
     main,
 )
@@ -139,7 +141,8 @@ async def test_list_shows_the_columns_and_never_a_hash(database: Database, url: 
 async def test_list_with_no_accounts_says_what_that_means(database: Database, url: str) -> None:
     code, out, _ = await _cli(["web", "user", "list", "--database-url", url])
     assert code == 0
-    assert "sighop web user add" in out
+    assert "`run --web` will offer first-run setup" in out
+    assert "sighop web user add <username>" in out
 
 
 @pytest.mark.database
@@ -211,20 +214,57 @@ async def test_an_unknown_account_is_named(verb: str, database: Database, url: s
 async def test_the_last_enabled_account_is_not_given_up_without_acknowledgement(
     verb: str, database: Database, url: str
 ) -> None:
+    """Disabling the only account, or removing the only enabled one while a
+    disabled one remains: no run could start its interface."""
     await _add(url)
+    if verb == "remove":
+        await _add(url, "dev-disabled")
+        await _cli(
+            ["web", "user", "disable", "dev-disabled", "--allow-no-accounts", "--database-url", url]
+        )
     code, _, err = await _cli(["web", "user", verb, "dev-operator", "--database-url", url])
     assert code == 2
     assert NO_ACCOUNT_LEFT in err
     assert "no run could then start its web interface" in err
+    assert "first-run setup" not in err
     count = await WebUserRepository(database=database).count_enabled()
     assert isinstance(count, Succeeded) and count.value == 1, "nothing was changed"
 
-    code, _, err = await _cli(
+    code, out, err = await _cli(
         ["web", "user", verb, "dev-operator", "--allow-no-accounts", "--database-url", url]
     )
     assert code == 0, err
+    assert SETUP_WILL_BE_OFFERED not in out, "an account remains, so no setup is offered"
     count = await WebUserRepository(database=database).count_enabled()
     assert isinstance(count, Succeeded) and count.value == 0
+
+
+@pytest.mark.database
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_removing_the_only_account_states_that_setup_would_be_offered(
+    enabled: bool, database: Database, url: str
+) -> None:
+    await _add(url)
+    if not enabled:
+        await _cli(
+            ["web", "user", "disable", "dev-operator", "--allow-no-accounts", "--database-url", url]
+        )
+    code, out, err = await _cli(["web", "user", "remove", "dev-operator", "--database-url", url])
+    assert code == 2
+    assert NEXT_RUN_OFFERS_SETUP in err
+    assert "whoever holds the one-time setup code" in err
+    assert NO_ACCOUNT_LEFT not in err
+    total = await WebUserRepository(database=database).count()
+    assert isinstance(total, Succeeded) and total.value == 1, "nothing was changed"
+
+    code, out, err = await _cli(
+        ["web", "user", "remove", "dev-operator", "--allow-no-accounts", "--database-url", url]
+    )
+    assert code == 0, err
+    assert "account 'dev-operator' is removed" in out
+    assert SETUP_WILL_BE_OFFERED in out
+    total = await WebUserRepository(database=database).count()
+    assert isinstance(total, Succeeded) and total.value == 0
 
 
 @pytest.mark.database

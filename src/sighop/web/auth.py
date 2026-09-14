@@ -35,8 +35,10 @@ parameter anywhere in `web/` that turns authentication off.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
+import hmac
 import secrets
 import time
 from collections import OrderedDict
@@ -115,6 +117,88 @@ class AccountStore(Protocol):
     async def get(self, username: str) -> Outcome[Account | None]: ...
 
     async def count_enabled(self) -> Outcome[int]: ...
+
+    async def count(self) -> Outcome[int]: ...
+
+    async def add_first(
+        self, username: str, *, password_hash: str
+    ) -> Outcome[Account | None]:
+        """The store's one write: an account only into an empty store, else None.
+
+        First-run setup's (web-first-run-setup design D2). Narrowly named so
+        that nothing in `web/` can add an account beside an existing one.
+        """
+        ...
+
+
+# --- First-run setup (web-first-run-setup design D3) ------------------------
+
+SETUP_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+"""Crockford's base32: no I, L, O or U, so a code read off a terminal is not
+mistyped as a different valid one. 32 symbols, 5 bits each."""
+
+SETUP_CODE_LENGTH = 20
+"""100 bits. Enough that online guessing is not a threat at any rate the
+process can serve, which is why wrong codes are not throttled (design D5)."""
+
+SETUP_BAD_CODE = "That setup code is not the one this run printed."
+"""The one sentence every wrong or missing code gets, whatever else was sent."""
+
+SETUP_CLOSED = "First-run setup has already been completed. Sign in instead."
+SETUP_PASSWORD_EMPTY = (
+    "A password cannot be empty: it is the only thing between the network and the "
+    "transmit gate."
+)
+SETUP_PASSWORD_MISMATCH = "The two passwords differ."
+SETUP_UNAVAILABLE = (
+    "The account could not be stored because the database is unavailable. The "
+    "setup code still works."
+)
+
+
+def _normalise_code(value: str) -> str:
+    return "".join(value.split()).replace("-", "").upper()
+
+
+@dataclass(slots=True)
+class FirstRunSetup:
+    """The one-time code that lets a browser create the first account.
+
+    Generated at startup, shown only in the run's own output, and retired by
+    `close()` or by the process ending. `repr` omits it: a traceback is a
+    rendering path, and the code must not reach an event (design D4).
+    """
+
+    code: str = field(
+        default_factory=lambda: "".join(
+            secrets.choice(SETUP_CODE_ALPHABET) for _ in range(SETUP_CODE_LENGTH)
+        ),
+        repr=False,
+    )
+    pending: bool = True
+
+    def __repr__(self) -> str:
+        return f"FirstRunSetup(pending={self.pending})"
+
+    @property
+    def display(self) -> str:
+        """`XXXXX-XXXXX-XXXXX-XXXXX`, for reading off a terminal."""
+        return "-".join(self.code[i : i + 5] for i in range(0, len(self.code), 5))
+
+    def check(self, submitted: str | None) -> bool:
+        """Whether `submitted` is this code, compared in constant time.
+
+        Case, `-` and whitespace are ignored. A closed setup accepts nothing.
+        """
+        if not self.pending or submitted is None:
+            return False
+        given = _normalise_code(submitted)
+        if not given.isascii():
+            return False
+        return hmac.compare_digest(given.encode("ascii"), self.code.encode("ascii"))
+
+    def close(self) -> None:
+        self.pending = False
 
 
 # --- Sessions ---------------------------------------------------------------
@@ -323,6 +407,40 @@ class SignIn:
 
 
 @dataclass(frozen=True, slots=True)
+class SetupAttempt:
+    """What a first-run setup submission came to. `token` is set only on success.
+
+    `reason` is `success`, `setup_closed`, `bad_code`, `bad_username`,
+    `password_empty`, `password_mismatch` or `database_unavailable`.
+    """
+
+    outcome: str
+    reason: str
+    username: str
+    detail: str = ""
+    """The username rule broken, for `bad_username`. Never the code or password."""
+
+    token: str | None = field(default=None, repr=False)
+    session: Session | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.token is not None
+
+    @property
+    def message(self) -> str:
+        """What the form says. `bad_code`'s is fixed and names no field."""
+        return {
+            "setup_closed": SETUP_CLOSED,
+            "bad_code": SETUP_BAD_CODE,
+            "bad_username": f"That username is refused: {self.detail}.",
+            "password_empty": SETUP_PASSWORD_EMPTY,
+            "password_mismatch": SETUP_PASSWORD_MISMATCH,
+            "database_unavailable": SETUP_UNAVAILABLE,
+        }.get(self.reason, "")
+
+
+@dataclass(frozen=True, slots=True)
 class Reauthentication:
     """Whether a guarded action's password re-entry admits it."""
 
@@ -354,7 +472,12 @@ class Authenticator:
     request with no session yet can be bound to (design D6)."""
 
     revalidate_seconds: float = REVALIDATE_SECONDS
+    setup: FirstRunSetup | None = None
+    """Present only when the run started against a database with no account at
+    all (web-first-run-setup design D1). Decided at startup, never per request."""
+
     _dummy_hash: str | None = field(default=None, repr=False)
+    _setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="web")
@@ -497,6 +620,114 @@ class Authenticator:
 
     def sign_out(self, session: Session) -> None:
         self.sessions.end(session, reason="logout")
+
+    # --- First-run setup ----------------------------------------------------
+
+    @property
+    def setup_pending(self) -> bool:
+        return self.setup is not None and self.setup.pending
+
+    async def complete_setup(
+        self,
+        code: str | None,
+        username: str,
+        password: str,
+        password_again: str,
+        *,
+        client: str,
+        presented: str | None = None,
+    ) -> SetupAttempt:
+        """The first-run setup decision (web-first-run-setup design D5).
+
+        The code first, and a wrong one hashes nothing and is told one fixed
+        sentence. Then the username and the two entries, whose refusals leave
+        the code usable. Then one hash, and `add_first`, which is the real
+        guarantee that nothing is created beside an existing account; the lock
+        here only makes a double-clicked submit hash once.
+
+        Not throttled: at 100 bits a guess costs a compare and wins nothing,
+        and in compose a per-client delay would be a global one anyone could
+        trigger (design D5).
+        """
+        # As sign-in records it: bounded and case-folded, never validated first.
+        given = username[:64].casefold()
+        async with self._setup_lock:
+            setup = self.setup
+            if setup is None or not setup.pending:
+                return self._setup_event(
+                    SetupAttempt(outcome="refused", reason="setup_closed", username=given),
+                    client=client,
+                )
+            if not setup.check(code):
+                return self._setup_event(
+                    SetupAttempt(outcome="refused", reason="bad_code", username=given),
+                    client=client,
+                )
+            try:
+                name = normalise_username(username)
+            except UsernameError as exc:
+                return self._setup_event(
+                    SetupAttempt(
+                        outcome="refused",
+                        reason="bad_username",
+                        username=given,
+                        detail=str(exc),
+                    ),
+                    client=client,
+                )
+            if not password:
+                return self._setup_event(
+                    SetupAttempt(outcome="refused", reason="password_empty", username=name),
+                    client=client,
+                )
+            if not hmac.compare_digest(password.encode("utf-8"), password_again.encode("utf-8")):
+                return self._setup_event(
+                    SetupAttempt(outcome="refused", reason="password_mismatch", username=name),
+                    client=client,
+                )
+            hashed = await self.hasher.hash(password)
+            added = await self.accounts.add_first(name, password_hash=hashed)
+            if isinstance(added, Failed):
+                return self._setup_event(
+                    SetupAttempt(
+                        outcome="refused", reason="database_unavailable", username=name
+                    ),
+                    client=client,
+                )
+            setup.close()
+            account = added.value
+            if account is None:
+                return self._setup_event(
+                    SetupAttempt(outcome="refused", reason="setup_closed", username=name),
+                    client=client,
+                )
+            token, session = self.sessions.issue(
+                account.username,
+                password_set_at=account.password_set_at,
+                replacing=presented,
+            )
+            return self._setup_event(
+                SetupAttempt(
+                    outcome="success",
+                    reason="success",
+                    username=account.username,
+                    token=token,
+                    session=session,
+                ),
+                client=client,
+            )
+
+    def _setup_event(self, result: SetupAttempt, *, client: str) -> SetupAttempt:
+        assert self.logger is not None
+        emit = self.logger.info if result.succeeded else self.logger.error
+        emit(
+            "web_setup",
+            outcome=result.outcome,
+            reason=result.reason,
+            username=result.username,
+            client=client,
+        )
+        return result
 
     # --- Re-authenticating a guarded action --------------------------------
 

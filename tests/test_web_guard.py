@@ -23,9 +23,11 @@ from fastapi.testclient import TestClient
 from starlette.routing import Route
 
 from sighop.web.app import allowed_hosts, create_app
+from sighop.web.auth import FirstRunSetup
 from sighop.web.guard import REBINDING_STATUS, TOKEN_FIELD, TOKEN_HEADER
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
+    MemoryAccounts,
     StubState,
     authenticator,
     csrf,
@@ -428,3 +430,56 @@ def test_a_missing_page_is_a_refusal_not_a_failure(method: str) -> None:
     events = logger.named("web_request")
     assert len(events) == 1
     assert events[0]["outcome"] == "refused"
+
+
+# --- web-first-run-setup 3.1 Where a refused page request is sent ------------
+
+
+def test_a_refused_page_goes_to_sign_in_when_no_setup_is_pending() -> None:
+    app = create_app(stub_state(), auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
+    with TestClient(app, base_url="http://127.0.0.1:8080", follow_redirects=False) as client:
+        response = client.get("/contacts")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login?next=%2Fcontacts"
+
+
+def test_a_refused_page_goes_to_setup_while_setup_is_pending() -> None:
+    setup = FirstRunSetup()
+    logger = RecordingLogger()
+    auth = authenticator(MemoryAccounts(), setup=setup)
+    app = create_app(stub_state(), auth=auth, hosts=HOSTS, logger=logger)
+    with TestClient(app, base_url="http://127.0.0.1:8080", follow_redirects=False) as client:
+        for path in ("/", "/contacts", "/admin/identities?filter=x"):
+            response = client.get(path)
+            assert response.status_code == 303
+            assert response.headers["location"] == "/setup", path
+            assert response.content == b""
+        assert client.post("/admin/transmit").status_code == 401
+        setup.close()
+        response = client.get("/contacts")
+    assert response.headers["location"] == "/login?next=%2Fcontacts"
+    assert all(setup.code not in str(fields) for _, fields in logger.events)
+
+
+# --- webhook-notifications 8.1: the webhook writes are guarded too ----------
+
+
+def test_every_webhook_write_refuses_a_post_without_the_token() -> None:
+    """Enumerated over the route table, so a webhook write added later joins it."""
+    from fastapi.routing import APIRoute
+
+    state = stub_state()
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
+    writes = sorted(
+        route.path.replace("{webhook_id}", "00000000-0000-0000-0000-000000000000")
+        for route in registered_routes(app)
+        if isinstance(route, APIRoute)
+        and route.path.startswith("/admin/webhooks")
+        and "POST" in (route.methods or set())
+    )
+    assert len(writes) == 6, writes
+
+    with _client(app) as client:
+        for path in writes:
+            response = client.post(path, data={"url": "https://h/x", "confirm": "yes"})
+            assert response.status_code == 403, path

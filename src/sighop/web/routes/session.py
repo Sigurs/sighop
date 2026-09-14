@@ -1,9 +1,11 @@
 """Signing in and out (milestone 9 design D5, D6, D8, D9).
 
 The only routes in the application reachable without a session are the two
-here that serve and receive the sign-in form. `POST /logout` is not one of them:
-it needs the session it ends and that session's own token, and there is no
-`GET /logout`, because a link, a prefetch or a reload must never end a session.
+here that serve and receive the sign-in form, and first-run setup's pair in
+`routes/setup.py`, which signs its browser in with the same cookie.
+`POST /logout` is not one of them: it needs the session it ends and that
+session's own token, and there is no `GET /logout`, because a link, a prefetch
+or a reload must never end a session.
 
 **The cookie is `HttpOnly; SameSite=Strict; Path=/` and not `Secure`.** sighop
 serves plain HTTP by operator decision, and a `Secure` cookie set over HTTP on
@@ -23,13 +25,25 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.web.auth import LOGIN_FAILED, SESSION_COOKIE, safe_next
 from sighop.web.deps import Panel, panel
-from sighop.web.guard import SESSION_SCOPE_KEY, client_address
+from sighop.web.guard import SESSION_SCOPE_KEY, SETUP_PATH, client_address
 
 PanelDep = Annotated[Panel, Depends(panel)]
 
 SEE_OTHER = 303
 
 router = APIRouter()
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    """The one place the session cookie's attributes are decided (see above)."""
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        path="/",
+        httponly=True,
+        samesite="strict",
+        secure=False,
+    )
 
 
 def _form(
@@ -55,8 +69,12 @@ def _form(
     )
 
 
-@router.get("/login", response_class=HTMLResponse)
-async def login_form(request: Request, page: PanelDep, next: str = "/") -> HTMLResponse:
+@router.get("/login", response_model=None)
+async def login_form(request: Request, page: PanelDep, next: str = "/") -> Response:
+    if page.auth.setup_pending:
+        # Nobody could sign in yet: a bookmarked sign-in page goes to the form
+        # that can create the account (web-first-run-setup design D7).
+        return RedirectResponse(SETUP_PATH, status_code=SEE_OTHER)
     return _form(request, page, next_path=safe_next(next), failed=False)
 
 
@@ -84,14 +102,7 @@ async def login(
         return _form(request, page, next_path=destination, failed=True)
     request.scope[SESSION_SCOPE_KEY] = result.session
     response = RedirectResponse(destination, status_code=SEE_OTHER)
-    response.set_cookie(
-        SESSION_COOKIE,
-        result.token,
-        path="/",
-        httponly=True,
-        samesite="strict",
-        secure=False,
-    )
+    set_session_cookie(response, result.token)
     return response
 
 

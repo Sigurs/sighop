@@ -1,0 +1,55 @@
+{# Standalone like login.html: served without a session, so it extends nothing
+   that reads platform state. It never carries the setup code, and refills no
+   field from a submission. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>first-run setup · sighop</title>
+  <link rel="stylesheet" href="/static/panel.css">
+</head>
+<body>
+  <header class="panel-head">
+    <span class="brand">sighop</span>
+  </header>
+  <main class="panel login">
+    <h1>first-run setup</h1>
+    <p>No account exists yet. Create the first one to sign in to this interface.</p>
+    {% if message %}
+    <p class="unavailable" role="alert">{{ message }}</p>
+    {% endif %}
+    <form method="post" action="/setup" autocomplete="off">
+      <input type="hidden" name="_token" value="{{ login_token }}">
+      <label>
+        setup code
+        <input type="text" name="setup_code" autocomplete="off" autocapitalize="characters"
+               spellcheck="false" required autofocus>
+      </label>
+      <label>
+        username
+        <input type="text" name="username" autocomplete="username" autocapitalize="none"
+               spellcheck="false" required>
+      </label>
+      <label>
+        password
+        <input type="password" name="password" autocomplete="new-password" required>
+      </label>
+      <label>
+        password again
+        <input type="password" name="password_again" autocomplete="new-password" required>
+      </label>
+      <button type="submit">create account</button>
+    </form>
+    <p class="note">
+      The setup code is printed in this run's output when it starts
+      (<span class="mono">docker compose logs sighop</span> under compose), and a
+      restart prints a new one. An account can instead be added from a terminal
+      on the host with <span class="mono">sighop web user add &lt;username&gt;</span>.
+      This interface is served over plain HTTP: off this machine, reach it
+      through a tunnel.
+    </p>
+  </main>
+</body>
+</html>

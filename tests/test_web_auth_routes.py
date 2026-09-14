@@ -321,7 +321,7 @@ def test_the_sweep_catches_a_route_made_public_by_mistake(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """6.5: the sweep is not vacuous. A route the guard treats as public that is
-    not the sign-in form is exactly the mistake it exists to find."""
+    not the sign-in or setup form is exactly the mistake it exists to find."""
     monkeypatch.setattr(
         guard_module, "PUBLIC_ROUTES", PUBLIC_ROUTES | {("GET", "/contacts")}
     )
@@ -330,8 +330,13 @@ def test_the_sweep_catches_a_route_made_public_by_mistake(
     assert "GET /contacts" in _unprotected(app)
 
 
-def test_the_public_set_is_exactly_the_sign_in_form() -> None:
-    assert {("GET", "/login"), ("POST", "/login")} == PUBLIC_ROUTES
+def test_the_public_set_is_exactly_the_sign_in_and_setup_forms() -> None:
+    assert {
+        ("GET", "/login"),
+        ("POST", "/login"),
+        ("GET", "/setup"),
+        ("POST", "/setup"),
+    } == PUBLIC_ROUTES
 
 
 # --- 6.6 Static assets -------------------------------------------------------

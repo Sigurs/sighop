@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}{{ title }} · sighop{% endblock %}
+
+{% block content %}
+<h1>{{ title }}</h1>
+
+{% if stub is none %}
+<p class="unavailable">
+  <strong>Not available.</strong> {{ not_held }}. Only an identity loaded by
+  this run — listed on the <a href="/admin/identities">identities</a> page — can
+  be told to advert.
+</p>
+{% else %}
+{# Its own template rather than guarded.html: that one always asks for a
+   password, and an advert is confirmation-only (design D3). #}
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+
+  <table class="counters">
+    <tbody>
+      <tr><td>identity</td><td>{{ stub.name }}</td></tr>
+      <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td></tr>
+      <tr><td>public key</td><td class="mono">{{ stub.identity.public_key.hex() }}</td></tr>
+      <tr><td>next scheduled flood</td>
+          <td class="mono">{{ stub.next_flood_at.isoformat() if stub.next_flood_at else 'none' }}</td></tr>
+      <tr><td>last flood</td>
+          <td class="mono">{{ stub.last_flood_at.isoformat() if stub.last_flood_at else 'none this run' }}</td></tr>
+      <tr><td>transmit gate</td>
+          <td class="mono">{{ 'open' if transmit_enabled else 'closed' }}</td></tr>
+      <tr><td>radio readback</td>
+          <td class="mono">{{ 'yes' if radio_known else 'not yet' }}</td></tr>
+      {% if kind == 'flood' %}
+      <tr><td>inter-entity gap remaining</td>
+          <td class="mono">{{ '%d s'|format(gap_remaining|round(0, 'ceil')) if gap_remaining > 0 else 'none' }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+
+  {% if not transmit_enabled %}
+  <p class="unavailable">
+    <strong>This will be refused as things stand:</strong> transmission is
+    disabled for this run, and an advert is refused rather than suppressed.
+  </p>
+  {% elif not radio_known %}
+  <p class="unavailable">
+    <strong>This will be refused as things stand:</strong> the board has not
+    answered with its radio parameters yet.
+  </p>
+  {% elif kind == 'flood' and gap_remaining > 0 %}
+  <p class="unavailable">
+    <strong>This will be refused as things stand:</strong> another flood from
+    this run went out inside the inter-entity gap.
+  </p>
+  {% endif %}
+
+  <p class="note">
+    It is confirmed here rather than performed by a link, and it is recorded as
+    its own event naming your account whether it succeeds or is refused. The
+    gate, the board and the gap are checked again when you confirm. An accepted
+    advert is <em>submitted</em> to the transmit scheduler as class 3 traffic;
+    the packet feed shows whether it reached the air.
+  </p>
+
+  <form method="post" action="{{ post_to }}">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <button type="submit">confirm: {{ title }}</button>
+  </form>
+  <p><a href="/admin/identities">cancel, and send nothing</a></p>
+</div>
+{% endif %}
+{% endblock %}

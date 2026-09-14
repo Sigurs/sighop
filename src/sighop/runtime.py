@@ -35,6 +35,9 @@ from sighop.monitor.render import (
     BOTS_OFF,
     PERSISTENCE_OFF,
     ROOMS_OFF,
+    WEBHOOKS_OFF_NO_DATABASE,
+    WEBHOOKS_OFF_NO_SECRET,
+    WEBHOOKS_OFF_REPLAY,
     render_bot_event,
     render_bot_startup,
     render_bot_status,
@@ -48,6 +51,7 @@ from sighop.monitor.render import (
     render_run_startup,
     render_status,
     render_stubs,
+    render_webhook_startup,
 )
 from sighop.net.acks import AckDispatcher, AckRegistry
 from sighop.net.adverts import AdvertScheduler, EntityStub
@@ -86,6 +90,7 @@ from sighop.protocol.payloads import (
 from sighop.radio.capture import CaptureWriter
 from sighop.radio.modem import ModemEvent, RadioParams
 from sighop.radio.probe import Absent, ProbeResult
+from sighop.webhooks.dispatcher import WebhookDispatcher
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
 DEFAULT_ADVERT_TICK_SECONDS = 5.0
@@ -124,6 +129,11 @@ class RuntimeConfig:
     Registered *before* the keyfiles, so the §3 rule 3 collision check runs
     across both sources and a generated stub avoids every taken hash whichever
     store it came from (design D14)."""
+
+    replay: bool = False
+    """Whether the source is a recorded capture. A replay never sends webhooks,
+    whatever `replay_persists` says: an old sighting announced as new is false
+    (webhook-notifications design D9)."""
 
     replay_persists: bool = False
     """Whether a replayed capture writes (design D13). Off by default: replayed
@@ -191,6 +201,15 @@ class Runtime:
     not the node.
     """
 
+    webhook_secret: bytes | None = None
+    """`SIGHOP_SECRET_KEY`, which webhook URLs are sealed under. Without it a run
+    with a database delivers no webhooks and says so at startup."""
+
+    webhooks: WebhookDispatcher | None = None
+    """The webhook dispatcher. Built here when a database and the secret are
+    present and the run is not a replay; a test may hand one in. Always `None`
+    on a replay, whatever was handed in."""
+
     bus: NetworkBus = field(init=False)
     pipeline: IngressPipeline = field(init=False)
     scheduler: TxScheduler = field(init=False)
@@ -206,6 +225,7 @@ class Runtime:
     _unserved_rooms: list[str] = field(init=False, default_factory=list)
     bots: BotHost = field(init=False)
     _unrun_bots: list[str] = field(init=False, default_factory=list)
+    _webhook_line: str = field(init=False, default="")
     _tx_watcher: Callable[[Submission, TxOutcome, dt.datetime], None] | None = field(
         init=False, default=None
     )
@@ -296,7 +316,13 @@ class Runtime:
         # listener can be wired before the first frame is handled; it holds no
         # workers until `_load_bots` puts some in it.
         self.bots = BotHost(logger=self.logger)
-        self.contacts.set_observation_listener(self.bots.on_observation)
+        self.contacts.add_observation_listener(self.bots.on_observation)
+        # Webhooks after the bots, as a listener of their own: the store isolates
+        # listeners from each other, so a raising bot host cannot starve them
+        # (webhook-notifications design D1, D9).
+        self.webhooks = self._build_webhooks()
+        if self.webhooks is not None:
+            self.contacts.add_observation_listener(self.webhooks.on_observation)
         self.contacts.subscribe(self.bus)
         self.messenger.subscribe(self.bus)
         self.path_bodies.subscribe(self.bus)
@@ -311,6 +337,24 @@ class Runtime:
                 )
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
+
+    def _build_webhooks(self) -> WebhookDispatcher | None:
+        if self.config.replay:
+            self._webhook_line = WEBHOOKS_OFF_REPLAY
+            return None
+        if self.webhooks is not None:
+            return self.webhooks
+        if self.persistence is None:
+            self._webhook_line = WEBHOOKS_OFF_NO_DATABASE
+            return None
+        if self.webhook_secret is None:
+            self._webhook_line = WEBHOOKS_OFF_NO_SECRET
+            return None
+        return WebhookDispatcher(
+            repository=self.persistence.webhooks,
+            secret=self.webhook_secret,
+            logger=self.logger,
+        )
 
     def _adopt_entity(self, entity: LocalEntity) -> None:
         """Give a local identity to the advert scheduler, whatever it came from."""
@@ -397,6 +441,8 @@ class Runtime:
             asyncio.create_task(self._status_loop(), name="status-loop"),
             send,
         ]
+        if self.webhooks is not None:
+            tasks.append(asyncio.create_task(self.webhooks.run(), name="webhooks"))
         tasks.extend(
             asyncio.create_task(self._run_service(index, service), name=f"service-{index}")
             for index, service in enumerate(self.services)
@@ -466,6 +512,10 @@ class Runtime:
 
     async def _restore(self) -> None:
         """Load contacts, paths and rooms, then start the writers and probe."""
+        if self.webhooks is not None:
+            # Also primes the dispatcher's last good configuration, so a database
+            # that drops before the first event still has a list to deliver to.
+            self._webhook_line = render_webhook_startup(await self.webhooks.startup_summary())
         if self.persistence is None:
             return
         await self.persistence.restore(
@@ -913,6 +963,7 @@ class Runtime:
             packet_log_discarded=0 if writers is None else writers.packet_log_writer.discarded,
             routes_discarded=0 if writers is None else writers.path_writer.discarded,
             awaiting_backfill=self.contacts.awaiting_backfill,
+            webhooks=None if self.webhooks is None else self.webhooks.status_segment(),
         )
 
     async def _print_startup(self) -> None:
@@ -933,6 +984,7 @@ class Runtime:
             self._write(line)
         for line in self._bot_lines():
             self._write(line)
+        self._write(self._webhook_line)
         for entity in self.entities.entities:
             for warning in entity.warnings:
                 self._write(f"!! {warning}")
