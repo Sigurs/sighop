@@ -24,7 +24,9 @@ concurrency:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # arm64 only. build.sh builds for whatever host runs it, so the runner's
+    # architecture is the image's.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
