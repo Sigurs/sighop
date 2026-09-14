@@ -951,12 +951,21 @@ when something worth an operator's attention happens, without anyone watching th
   host; the store isolates listeners, so a raising bot host cannot starve webhooks.
 - **Formats.** `json` is sighop's documented event, `schema: 1`: `event`, `event_id` (fixed
   at the moment of the sighting, identical across retries and webhooks), `occurred_at`,
-  `test`, `node` (`public_key` hex, `node_hash` as two hex digits, `name`, `node_type` as a
+  `test`, `node` (`public_key` hex, `node_hash` as two hex digits — always the first key byte,
+  `hash` as the key's leading `hash_size` bytes in hex, `hash_size`, `name`, `node_type` as a
   lower-case name, `position` or null) and `reception` (`hop_count`, `snr_db`, `rssi_dbm`,
-  `received_at`, each null when unknown). Fields are added in a later schema version, never
-  removed or repurposed within one. `discord` is one embed; every advert-derived string is
-  markdown-escaped and `allowed_mentions` is empty, because advert names are written by
-  strangers.
+  `received_at`, each null when unknown, and `path`: a list of `{hash, name, matches}` hops in
+  travel order, empty for a zero-hop reception). Fields may be added within a schema version;
+  never removed or repurposed. `discord` is one embed showing the node hash at its heard size,
+  the full 64-hex public key as inline code, and the path (`heard directly` when empty, cut on
+  a hop boundary with `…` at Discord's 1024-character field limit); every advert-derived
+  string, including contact names in the path, is markdown-escaped and `allowed_mentions` is
+  empty, because advert names are written by strangers.
+- **Hash size and path.** The hash size is the advert packet's path hash size (1–3 bytes, from
+  its path length byte); a zero-hop advert declares 1 byte and is not inferred larger. Each hop
+  is resolved against the contact store once, when the event is raised, so every retry and
+  webhook names the same hops: the advertising node itself is excluded, one named match shows
+  its name, one unnamed match its key prefix, none `<unknown>` and several `<ambiguous>`.
 - **Best-effort delivery, off the reception path.** The listener builds an event and offers it
   to a bounded queue (64, drop-oldest, counted). One task reads the queue and starts a task
   per matching webhook; each POSTs with the standard library in a worker thread (no runtime

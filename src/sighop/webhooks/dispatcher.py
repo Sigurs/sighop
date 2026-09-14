@@ -32,7 +32,12 @@ from sighop.db.repositories import OpenedWebhook, WebhookRecord
 from sighop.logging import Logger, get_logger
 from sighop.net.contacts import ContactObservation
 from sighop.net.rx import RxRecord
-from sighop.webhooks.events import WebhookEvent, event_from_observation, sample_event
+from sighop.webhooks.events import (
+    HopLookup,
+    WebhookEvent,
+    event_from_observation,
+    sample_event,
+)
 from sighop.webhooks.render import CONTENT_TYPE, render
 from sighop.webhooks.transport import (
     DEFAULT_TIMEOUT_SECONDS,
@@ -107,8 +112,10 @@ class WebhookDispatcher:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         queue_capacity: int = QUEUE_CAPACITY,
         max_in_flight: int = MAX_IN_FLIGHT_DELIVERIES,
+        contacts: HopLookup | None = None,
     ) -> None:
         self._repository = repository
+        self._contacts = contacts
         self._secret = secret
         self._log = logger or get_logger(component="webhooks")
         self._clock = clock
@@ -140,7 +147,9 @@ class WebhookDispatcher:
             trigger = trigger_for(observation)
             if trigger is None:
                 return
-            event = event_from_observation(observation, record, trigger, self._clock())
+            event = event_from_observation(
+                observation, record, trigger, self._clock(), self._contacts
+            )
             self.events_raised += 1
             self._log.info("webhook_event_raised", outcome="success", **event.as_log_fields())
             self.offer(event)

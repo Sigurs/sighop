@@ -354,6 +354,7 @@ class Runtime:
             repository=self.persistence.webhooks,
             secret=self.webhook_secret,
             logger=self.logger,
+            contacts=self.contacts,
         )
 
     def _adopt_entity(self, entity: LocalEntity) -> None:

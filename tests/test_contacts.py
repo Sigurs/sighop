@@ -137,6 +137,34 @@ def test_an_unknown_node_hash_returns_an_empty_set() -> None:
     assert isinstance(result, frozenset)
 
 
+def _prefix_store() -> ContactStore:
+    store = ContactStore()
+    for key in ("a1b2c3" + "00" * 29, "a1b2ff" + "00" * 29, "a1ff00" + "00" * 29):
+        store.add_public_key(key)
+    return store
+
+
+@pytest.mark.parametrize(
+    ("prefix", "expected"),
+    [
+        ("a1", {"a1b2c3", "a1b2ff", "a1ff00"}),
+        ("a1b2", {"a1b2c3", "a1b2ff"}),
+        ("a1b2c3", {"a1b2c3"}),
+        ("a1b200", set()),
+        ("7f", set()),
+    ],
+)
+def test_a_key_prefix_selects_every_contact_it_begins(prefix: str, expected: set[str]) -> None:
+    result = _prefix_store().by_prefix(bytes.fromhex(prefix))
+
+    assert isinstance(result, frozenset)
+    assert {contact.public_key.hex()[:6] for contact in result} == expected
+
+
+def test_an_empty_prefix_selects_nobody() -> None:
+    assert _prefix_store().by_prefix(b"") == frozenset()
+
+
 def test_a_contact_stays_the_same_set_member_after_an_update() -> None:
     """`last_heard` moves on every advert; the set membership must not."""
     store = ContactStore()

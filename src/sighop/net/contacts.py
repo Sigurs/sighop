@@ -234,6 +234,20 @@ class ContactStore:
         """
         return frozenset(self._by_node_hash.get(node_hash, ()))
 
+    def by_prefix(self, prefix: bytes) -> frozenset[Contact]:
+        """Every contact whose key starts with these bytes — a set, always.
+
+        For multi-byte path hashes. An empty prefix matches nothing rather than
+        everyone: no hop hash is empty, and "every contact" is not a candidate set.
+        """
+        if not prefix:
+            return frozenset()
+        return frozenset(
+            contact
+            for contact in self.by_node_hash(prefix[0])
+            if contact.public_key.startswith(prefix)
+        )
+
     def contacts(self) -> tuple[Contact, ...]:
         return tuple(self._contacts.values())
 

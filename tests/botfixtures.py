@@ -196,6 +196,8 @@ def advert_record(
     snr_db: float | None = 6.0,
     packet_id: str = "packet-1",
     at: dt.datetime | None = None,
+    hash_size: int = 1,
+    path: bytes | None = None,
 ) -> RxRecord:
     """The reception that carried an advert, with a real packet behind it.
 
@@ -203,8 +205,14 @@ def advert_record(
     through to one and the hop count is exactly what the greeter's distance gate
     is built on — a fixture that supplied the number some other way would not be
     exercising the gate the runtime uses.
+
+    A given `path` sets the hop count itself, at `hash_size` bytes a hop.
     """
     when = at or dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
+    if path is None:
+        path = bytes(range(1, hop_count * hash_size + 1))
+    else:
+        hop_count = len(path) // hash_size
     packet = Packet(
         header=PacketHeader(
             route_type=RouteType.FLOOD,
@@ -213,8 +221,8 @@ def advert_record(
         ),
         transport_codes=None,
         hop_count=hop_count,
-        hash_size=1,
-        path=bytes(range(1, hop_count + 1)),
+        hash_size=hash_size,
+        path=path,
         payload=b"",
     )
     return RxRecord(

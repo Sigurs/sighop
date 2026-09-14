@@ -1,7 +1,7 @@
 """Events as request bodies (design D2). Pure functions, golden-tested.
 
-`json` is sighop's own documented event, schema version 1: fields are added in a
-later version, never removed or repurposed within this one. `discord` is a
+`json` is sighop's own documented event, schema version 1: fields may be added
+within a schema version, never removed or repurposed. `discord` is a
 Discord webhook message, and every advert-derived string in it was written by
 whoever sent the advert — so markdown is escaped and mentions are disabled.
 """
@@ -14,7 +14,7 @@ import re
 import unicodedata
 
 from sighop.webhooks.config import WebhookFormat
-from sighop.webhooks.events import WebhookEvent
+from sighop.webhooks.events import PathHop, WebhookEvent
 from sighop.webhooks.triggers import Trigger
 
 JSON_SCHEMA_VERSION = 1
@@ -24,8 +24,11 @@ DISCORD_COLOURS: dict[Trigger, int] = {
     Trigger.NEW_REPEATER: 0x3B82F6,
     Trigger.NEW_COMPANION: 0x22C55E,
 }
-KEY_PREFIX_LENGTH = 16
 UNNAMED = "unnamed node"
+HEARD_DIRECTLY = "heard directly"
+DISCORD_FIELD_LIMIT = 1024
+PATH_SEPARATOR = " → "
+ELLIPSIS = "…"
 
 _DISCORD_MARKDOWN = re.compile(r"([\\*_~`|>\[\]()#\-<:@])")
 
@@ -52,6 +55,8 @@ def render_json(event: WebhookEvent) -> bytes:
         "node": {
             "public_key": event.public_key.hex(),
             "node_hash": f"{event.node_hash:02x}",
+            "hash": event.sized_hash,
+            "hash_size": event.hash_size,
             "name": event.name,
             "node_type": event.node_type_name,
             "position": None
@@ -63,6 +68,10 @@ def render_json(event: WebhookEvent) -> bytes:
             "snr_db": event.snr_db,
             "rssi_dbm": event.rssi_dbm,
             "received_at": _instant(event.received_at),
+            "path": [
+                {"hash": hop.hash.hex(), "name": hop.name, "matches": hop.matches}
+                for hop in event.path
+            ],
         },
     }
     return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -77,14 +86,38 @@ def escape_discord(text: str) -> str:
     return _DISCORD_MARKDOWN.sub(r"\\\1", flattened)
 
 
+def _discord_hop(hop: PathHop) -> str:
+    """A hop's hash as inline code, then its label. Contact names are advert
+    content and escaped; our fixed labels and key prefixes are not."""
+    label = escape_discord(hop.name) if hop.matches == 1 and hop.name is not None else hop.label
+    return f"`{hop.hash.hex()}` {label}"
+
+
+def discord_path(path: tuple[PathHop, ...]) -> str:
+    """The path in travel order, cut on a hop boundary to fit a Discord field."""
+    if not path:
+        return HEARD_DIRECTLY
+    hops = [_discord_hop(hop) for hop in path]
+    whole = PATH_SEPARATOR.join(hops)
+    if len(whole) <= DISCORD_FIELD_LIMIT:
+        return whole
+    shown = ELLIPSIS
+    for count in range(1, len(hops)):
+        candidate = PATH_SEPARATOR.join([*hops[:count], ELLIPSIS])
+        if len(candidate) > DISCORD_FIELD_LIMIT:
+            break
+        shown = candidate
+    return shown
+
+
 def render_discord(event: WebhookEvent) -> bytes:
     marker = "[test] " if event.test else ""
-    key_prefix = event.public_key.hex()[:KEY_PREFIX_LENGTH]
-    node_hash = f"{event.node_hash:02x}"
+    public_key = event.public_key.hex()
+    node_hash = event.sized_hash
     if event.name is None:
         shown_name = UNNAMED
         description = (
-            f"An unnamed node, identified by node hash {node_hash} and key {key_prefix}…"
+            f"An unnamed node, identified by node hash {node_hash} and key {public_key}"
         )
     else:
         shown_name = escape_discord(event.name)
@@ -95,7 +128,6 @@ def render_discord(event: WebhookEvent) -> bytes:
         {"name": "Name", "value": shown_name, "inline": True},
         {"name": "Type", "value": event.node_type_name or "unknown", "inline": True},
         {"name": "Node hash", "value": node_hash, "inline": True},
-        {"name": "Public key", "value": f"{key_prefix}…", "inline": True},
         {
             "name": "Hops",
             "value": "unknown" if event.hop_count is None else str(event.hop_count),
@@ -106,6 +138,8 @@ def render_discord(event: WebhookEvent) -> bytes:
             "value": "unknown" if event.snr_db is None else f"{event.snr_db:.1f} dB",
             "inline": True,
         },
+        {"name": "Public key", "value": f"`{public_key}`", "inline": False},
+        {"name": "Path", "value": discord_path(event.path), "inline": False},
     ]
     body = {
         "username": DISCORD_USERNAME,

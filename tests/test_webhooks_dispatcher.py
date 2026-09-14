@@ -222,6 +222,46 @@ async def test_a_first_sighting_through_the_store_is_offered_without_any_io() ->
     assert body["node"]["public_key"] == identity.public_key.hex()
 
 
+async def test_the_delivered_path_names_a_known_repeater_hop() -> None:
+    from sighop.protocol.payloads import WireText
+
+    repository = FakeRepository(records=[_record("dev-a")])
+    transport = FakeTransport()
+    store = ContactStore()
+    repeater = generate_identity()
+    store.restore(
+        [
+            Contact(
+                public_key=repeater.public_key,
+                name=WireText.from_bytes(b"Hilltop"),
+                node_type=NodeType.REPEATER,
+                advert_verified=True,
+            )
+        ]
+    )
+    dispatcher = _dispatcher(repository, transport, contacts=store)
+    store.add_observation_listener(dispatcher.on_observation)
+
+    await store.handle(
+        advert_record(
+            verified_advert(generate_identity(), node_type=NodeType.CHAT),
+            hash_size=2,
+            path=repeater.public_key[:2],
+        )
+    )
+
+    runner = asyncio.create_task(dispatcher.run())
+    while dispatcher.delivered == 0:
+        await asyncio.sleep(0.001)
+    runner.cancel()
+    await asyncio.gather(runner, return_exceptions=True)
+    body = json.loads(transport.calls[0][1])
+    assert body["event"] == "new_companion"
+    assert body["reception"]["path"] == [
+        {"hash": repeater.public_key[:2].hex(), "name": "Hilltop", "matches": 1}
+    ]
+
+
 @pytest.mark.parametrize("node_type", [NodeType.ROOM_SERVER, NodeType.SENSOR])
 async def test_room_servers_and_sensors_raise_nothing(node_type: NodeType) -> None:
     dispatcher = _dispatcher(FakeRepository())
