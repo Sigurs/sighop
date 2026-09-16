@@ -53,13 +53,14 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0006"
+    assert migrations.expected_revision() == "0007"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
     assert migrations.knows_revision("0003")
     assert migrations.knows_revision("0004")
     assert migrations.knows_revision("0005")
     assert migrations.knows_revision("0006")
+    assert migrations.knows_revision("0007")
     assert not migrations.knows_revision("beef")
 
 

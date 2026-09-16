@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% import "_claimed.html" as claims %}
+
+{% block title %}{{ channel.name }} · channel · sighop{% endblock %}
+
+{% block content %}
+<h1>{{ channel.name }}
+  <span class="mono">[{{ '%02x' % channel.channel_hash }}]</span>
+  {% if channel.guessable %}<span class="guessable">guessable</span>{% endif %}
+</h1>
+
+<p class="note">{{ claims_note }}</p>
+{% if channel.guessable %}
+<p class="note">{{ guessable_note }}</p>
+{% endif %}
+
+{% if refusal %}
+<p class="unavailable"><strong>Not sent.</strong> {{ refusal }}</p>
+{% endif %}
+
+{% if identities %}
+<form method="post" action="/chat/channel/{{ channel.id }}" class="composer">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>post as
+      <select name="identity" required>
+        <option value="" {% if not chosen %}selected{% endif %}>choose an identity</option>
+        {% for entity in identities %}
+        <option value="{{ entity.identity.public_key.hex() }}"
+                {% if chosen == entity.identity.public_key.hex() %}selected{% endif %}>{{ entity.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>
+    <textarea name="text" rows="3" cols="72"
+              placeholder="up to {{ max_text_len }} bytes, the identity's name and ': ' included">{{ draft }}</textarea>
+  </p>
+  {% if channel.kind == 'public' %}
+  <p class="note"><strong>{{ public_note }}</strong></p>
+  {% endif %}
+  <p class="note">{{ post_note }}</p>
+  <button type="submit">post</button>
+</form>
+{% else %}
+<p class="empty">
+  <strong>No identity to post as.</strong> A channel post is sent as one of this
+  run's identities, and this run holds none — reading needs no identity, and
+  nothing can be composed until one is loaded.
+</p>
+{% endif %}
+
+{% include "chat/_channel_messages.html" %}
+
+<p><a href="/chat">all conversations and channels</a></p>
+{% endblock %}

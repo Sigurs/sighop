@@ -64,6 +64,7 @@ EXPORT_KEY = "export_private_key"
 POST_TO_ROOM = "post_to_room"
 ADVERT_ZERO_HOP = "advert_zero_hop"
 ADVERT_FLOOD = "advert_flood"
+REMOVE_CHANNEL = "remove_channel"
 
 REAUTHENTICATED_ACTIONS = frozenset({REVEAL_KEY, EXPORT_KEY, ENABLE_TRANSMIT, RAISE_CEILING})
 """The guarded actions whose confirmation carries the acting user's password."""
@@ -103,6 +104,10 @@ ACTION_DESCRIPTIONS = {
         "sends one flood advert for this identity now. It is repeated by every "
         "repeater in the mesh, on everyone's airtime, and it takes the place of "
         "the next scheduled flood, which moves a full interval out."
+    ),
+    REMOVE_CHANNEL: (
+        "removes this channel and deletes every message recorded in it. The "
+        "history cannot be recovered; a channel added again later starts empty."
     ),
 }
 

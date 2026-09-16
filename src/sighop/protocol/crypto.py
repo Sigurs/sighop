@@ -17,6 +17,7 @@ carries its own weakness flag.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 from dataclasses import dataclass, field
@@ -252,6 +253,15 @@ def channel_key_from_hashtag(hashtag: str) -> ChannelKey:
     name = hashtag if hashtag.startswith("#") else f"#{hashtag}"
     digest = hashlib.sha256(name.encode("utf-8")).digest()
     return ChannelKey(key=digest[:HASHTAG_KEY_SIZE], is_brute_forceable=True)
+
+
+PUBLIC_CHANNEL_KEY = ChannelKey(key=base64.b64decode("izOH6cXN6mrJ5e26oRXNcg=="))
+"""The stock MeshCore Public channel's pre-shared key; its channel hash is `0x11`.
+
+Not flagged brute-forceable, because nobody has to guess it: it ships in every
+stock client and is therefore exactly as private as a hashtag. It is a
+pre-shared key only in the sense of its shape.
+"""
 
 
 # --- Adverts ---------------------------------------------------------------

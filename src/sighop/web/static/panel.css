@@ -399,3 +399,34 @@ table.feed td {
   color: var(--alarm);
   font-style: italic;
 }
+
+/* --- Channel sender claims (channel-messaging D8) ---------------------------
+   Deliberately shares no class with `.identity`: a channel sender name is text
+   anyone holding the key can write, and nothing a verified identity looks like
+   may be inherited by it. Dashed and italic, marked with a glyph and a word. */
+
+.claimed-name {
+  white-space: nowrap;
+  font-style: italic;
+  border-bottom: 1px dashed var(--unverified);
+}
+
+.claimed-mark {
+  font-family: var(--mono);
+  color: var(--unverified);
+}
+
+.claimed-status {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--unverified);
+  font-style: normal;
+}
+
+.guessable {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-dim);
+}

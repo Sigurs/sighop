@@ -1,0 +1,46 @@
+{# One channel's messages, refreshed in place. A GET: opening, scrolling and
+   refreshing a channel transmit nothing. #}
+{% import "_claimed.html" as claims %}
+<div id="channel" hx-get="/chat/channel/{{ channel.id }}/messages"
+     hx-trigger="every 3s" hx-swap="outerHTML">
+{% if not history_readable %}
+<p class="unavailable">{{ history_unreadable }}</p>
+{% elif not recorded %}
+<p class="unavailable">{{ not_recorded }}</p>
+{% endif %}
+{% if messages %}
+<table class="conversation">
+  <thead>
+    <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
+  </thead>
+  <tbody>
+    {% for message in messages %}
+    <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
+      <td class="mono">
+        {{ message.handled_at.isoformat() }}
+        {% if message.wire_time %}<br><span class="note">sender's clock: {{ message.wire_time }}</span>{% endif %}
+      </td>
+      <td>
+        {%- if message.inbound -%}
+          {{ claims.claimed(message.claimed) }}
+        {%- else -%}
+          <span class="mono">{{ message.entity_name }}</span> <span class="note">(this station)</span>
+        {%- endif -%}
+      </td>
+      <td class="message-text">
+        {% if message.displayable %}
+          {{ message.text }}
+        {% else %}
+          <span class="undisplayable">not valid text</span>
+          <span class="mono">{{ message.raw }}</span>
+        {% endif %}
+      </td>
+      <td class="mono message-state">{{ message.state }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty"><strong>No messages yet.</strong> Nothing has been received or posted here in what this page can see.</p>
+{% endif %}
+</div>

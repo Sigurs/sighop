@@ -99,10 +99,27 @@ def test_the_startup_line_for_a_persistent_run_names_the_database_and_counts() -
         paths=7,
         conversations=3,
         direct_messages=41,
+        channel_messages=9,
     ) == (
         "persistence: on — postgresql+asyncpg://role:***@db.example:5432/sighop  "
         "schema=0001\nrestored: entities=1 contacts=12 paths=7  "
-        "held: conversations=3 messages=41"
+        "held: conversations=3 messages=41 channel_messages=9"
+    )
+
+
+def test_the_startup_line_names_posts_the_last_stop_left_unresolved() -> None:
+    """`awaiting` is rewritten to `unknown` at startup; that is not silent."""
+    line = render_persistence(
+        database="postgresql+asyncpg://role:***@db.example:5432/sighop",
+        schema_version="0007",
+        channel_messages=9,
+        channel_posts_unknown=2,
+    )
+    assert "channel_messages=9 (2 post(s) the last stop left unresolved)" in line
+    assert "unresolved" not in render_persistence(
+        database="postgresql+asyncpg://role:***@db.example:5432/sighop",
+        schema_version="0007",
+        channel_messages=9,
     )
 
 

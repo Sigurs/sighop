@@ -26,6 +26,21 @@ from sighop.bots.base import (
     BotWouldAct,
 )
 from sighop.net.adverts import EntityStub
+from sighop.net.channels import (
+    ChannelConfigReadFailed,
+    ChannelEvent,
+    ChannelMessageReceived,
+    ChannelOutcome,
+    ChannelPostRefused,
+    ChannelPostResolved,
+    ChannelPostSubmitted,
+    ChannelRepeatHeard,
+    ChannelSet,
+    ChannelSetChanged,
+    ChannelUndecryptable,
+    ChannelUnknown,
+    ChannelUnsupportedText,
+)
 from sighop.net.dedup import DedupStats
 from sighop.net.dm import (
     AckMatched,
@@ -169,22 +184,31 @@ def _render_advert(verification: AdvertVerification) -> str:
     )
 
 
+# Decoding holds no keys at all — direct-message keys live in `net/dm.py` and
+# channel keys in `net/channels.py`, and both report their own outcome on their
+# own line. A detail line that said "no key held" therefore printed a failure
+# about every message this station can read: the live exercise saw
+# `not decrypted (no key held)` immediately above the decrypted channel message
+# it belongs to. The line now states the stage it describes.
+_NOT_HERE = "not decrypted at decode (keys are tried by the layer that holds them)"
+
+
 def _render_payload(payload: ParsedPayload) -> str:
     match payload:
         case DirectEnvelope(dest_hash=dest, src_hash=src, mac=mac, ciphertext=ciphertext):
             return (
                 f"encrypted  dest=0x{dest:02x} src=0x{src:02x} mac={mac.hex()} "
-                f"ciphertext={len(ciphertext)}B  not decrypted (no key held)"
+                f"ciphertext={len(ciphertext)}B  {_NOT_HERE}"
             )
         case AnonRequestEnvelope(dest_hash=dest, mac=mac, ciphertext=ciphertext):
             return (
                 f"encrypted  dest=0x{dest:02x} sender_key={payload.sender_public_key.hex()[:16]} "
-                f"mac={mac.hex()} ciphertext={len(ciphertext)}B  not decrypted (no key held)"
+                f"mac={mac.hex()} ciphertext={len(ciphertext)}B  {_NOT_HERE}"
             )
         case GroupEnvelope(channel_hash=channel, mac=mac, ciphertext=ciphertext):
             return (
                 f"encrypted  channel=0x{channel:02x} mac={mac.hex()} "
-                f"ciphertext={len(ciphertext)}B  not decrypted (no key held)"
+                f"ciphertext={len(ciphertext)}B  {_NOT_HERE}"
             )
         case Acknowledgement(checksum=checksum, tail=tail):
             suffix = f" tail={tail.hex()}" if tail else ""
@@ -345,6 +369,7 @@ def render_status(
     routes_discarded: int = 0,
     awaiting_backfill: int = 0,
     webhooks: str | None = None,
+    channels: str | None = None,
 ) -> str:
     """The periodic status line. Duty cycle first — it is the limit that binds.
 
@@ -378,6 +403,8 @@ def render_status(
         # Only when webhooks are active: delivered/failed/dropped always
         # rendered together, zeros included, once there is a dispatcher at all.
         line += f" {webhooks}"
+    if channels is not None:
+        line += f" {channels}"
     return line
 
 
@@ -407,6 +434,8 @@ def render_persistence(
     paths: int = 0,
     conversations: int = 0,
     direct_messages: int = 0,
+    channel_messages: int = 0,
+    channel_posts_unknown: int = 0,
     writing: bool = True,
     not_writing_because: str = "",
 ) -> str:
@@ -435,10 +464,21 @@ def render_persistence(
     # store of them to fill. They are on this line anyway, because the question
     # a restart has to answer is "is what I said still there", and a run that
     # said nothing about it leaves "no messages" and "not looked yet" identical.
+    # Channel messages are on the line for the reason the conversations are: a
+    # restart's first question is whether what was said is still there, and the
+    # live exercise found the count in the `persistence_restored` event and
+    # nowhere an operator reads. Posts the last stop left mid-flight are named
+    # when there are any, because their outcome is now `unknown` on purpose.
+    unresolved = (
+        f" ({channel_posts_unknown} post(s) the last stop left unresolved)"
+        if channel_posts_unknown
+        else ""
+    )
     return (
         f"persistence: {state} — {database}  schema={schema_version or 'unknown'}\n"
         f"restored: entities={entities} contacts={contacts} paths={paths}  "
-        f"held: conversations={conversations} messages={direct_messages}"
+        f"held: conversations={conversations} messages={direct_messages} "
+        f"channel_messages={channel_messages}{unresolved}"
     )
 
 
@@ -537,6 +577,167 @@ def render_dm_event(event: DirectMessageEvent) -> str:
         case MessageUnparsable():
             return render_message_unparsable(event)
     raise AssertionError(f"unhandled direct message event {event!r}")  # pragma: no cover
+
+
+# --- Channels (change `channel-messaging`) ----------------------------------
+#
+# A channel sender name is plaintext anyone with the key can write. It is
+# rendered only as a claim — `CLAIMED_MARK`, the word "claimed" and the name
+# quoted — and never in the shape a verified advert or identity takes. A post
+# is ours, so its identity is named plainly; its outcome never claims delivery.
+#
+# No reception line carries the reception's packet id: it is minted per
+# reception, so a replay would render differently every time, and the frame line
+# above each one already places it. The id is in the logged event.
+
+CHANNELS_OFF = (
+    "channels: none — channels are stored configuration, and that requires durable "
+    "storage; group text is left undecrypted"
+)
+
+
+def render_channel_startup(channels: ChannelSet) -> str:
+    """The channels a run loaded, with hashes, and any it had to skip."""
+    if not channels.channels and not channels.skipped:
+        return "channels: none configured; group text is left undecrypted"
+    loaded = ", ".join(
+        f"{channel.name}[{channel.channel_hash:02x}]"
+        f"({channel.kind}{', guessable' if channel.guessable else ''})"
+        for channel in channels
+    )
+    line = f"channels: {loaded or 'none loaded'}"
+    for name in channels.skipped:
+        line += (
+            f"\n{FAILURE_MARK} channel {name!r} skipped: its pre-shared key does not open "
+            "under SIGHOP_SECRET_KEY"
+        )
+    return line
+
+
+def render_channel_status(
+    *, decrypted: int, unknown: int, undecryptable: int, transmitted: int, repeats: int
+) -> str:
+    """The status line's channel segment, zeros included."""
+    return (
+        f"ch_rx={decrypted} ch_unknown={unknown} ch_undecryptable={undecryptable} "
+        f"ch_tx={transmitted} ch_repeats={repeats}"
+    )
+
+
+def _actor(actor: str | None) -> str:
+    return "" if actor is None else f"  by account {actor!r}"
+
+
+def render_channel_message_received(event: ChannelMessageReceived) -> str:
+    sender = (
+        "no sender"
+        if event.unverified_sender_name is None
+        else f"claimed {event.unverified_sender_name!r}"
+    )
+    hops = "?" if event.hop_count is None else str(event.hop_count)
+    return (
+        f"{_INDENT}{CLAIMED_MARK} {event.channel_name} from {sender} (unverified)  "
+        f"h{hops}: {event.body!r}  ts={event.wire_timestamp}"
+    )
+
+
+def render_channel_unknown(event: ChannelUnknown) -> str:
+    return (
+        f"{_INDENT}group text on unknown channel 0x{event.channel_hash:02x}"
+    )
+
+
+def render_channel_undecryptable(event: ChannelUndecryptable) -> str:
+    return (
+        f"{_INDENT}group text on channel 0x{event.channel_hash:02x} not decrypted after "
+        f"{event.channels_tried} channel key(s)"
+    )
+
+
+def render_channel_unsupported(event: ChannelUnsupportedText) -> str:
+    return (
+        f"{_INDENT}{event.channel_name}: text type {event.txt_type} is not plain; "
+        "counted, not shown"
+    )
+
+
+def render_channel_post_submitted(event: ChannelPostSubmitted) -> str:
+    return (
+        f"{_INDENT}-> {event.channel_name} post as {event.entity_name}: {event.text!r}  "
+        f"flood class 2  {event.packet_bytes}B  ts={event.wire_timestamp}  "
+        f"post={event.post_id}{_actor(event.actor)}"
+    )
+
+
+def render_channel_post_refused(event: ChannelPostRefused) -> str:
+    channel = event.channel_name or f"channel {event.channel_id}"
+    return (
+        f"{_INDENT}{FAILURE_MARK} {channel} post as {event.entity_name} refused: "
+        f"{event.reason}{_actor(event.actor)}"
+    )
+
+
+def render_channel_post_resolved(event: ChannelPostResolved) -> str:
+    if event.outcome is ChannelOutcome.TRANSMITTED:
+        return (
+            f"{_INDENT}{event.channel_name} post as {event.entity_name} transmitted "
+            f"(no acknowledgement exists for channel messages)  "
+            f"air={event.airtime_ms:.0f}ms  post={event.post_id}  id={event.packet_id}"
+        )
+    return (
+        f"{_INDENT}{FAILURE_MARK} {event.channel_name} post as {event.entity_name} not "
+        f"transmitted: {event.reason}; not retried  post={event.post_id}"
+    )
+
+
+def render_channel_repeat_heard(event: ChannelRepeatHeard) -> str:
+    hops = "?" if event.hop_count is None else str(event.hop_count)
+    return (
+        f"{_INDENT}<- {event.channel_name} post repeated by a repeater (heard "
+        f"{event.repeats_heard}x{', duplicate' if event.duplicate else ''})  h{hops} "
+        f"snr={_render_snr(event.snr_db)}  post={event.post_id}"
+    )
+
+
+def render_channel_set_changed(event: ChannelSetChanged) -> str:
+    """A channel added or removed elsewhere, named in the run that adopted it."""
+    parts = [f"+{name}" for name in event.added] + [f"-{name}" for name in event.removed]
+    return (
+        f"channels changed: {', '.join(parts)}  "
+        f"({event.loaded} loaded; group text is trialled against all of them)"
+    )
+
+
+def render_channel_config_read_failed(event: ChannelConfigReadFailed) -> str:
+    return (
+        f"{FAILURE_MARK} channels could not be re-read ({event.error}); "
+        f"keeping the {event.channels_kept} already loaded"
+    )
+
+
+def render_channel_event(event: ChannelEvent) -> str:
+    match event:
+        case ChannelMessageReceived():
+            return render_channel_message_received(event)
+        case ChannelUnknown():
+            return render_channel_unknown(event)
+        case ChannelUndecryptable():
+            return render_channel_undecryptable(event)
+        case ChannelUnsupportedText():
+            return render_channel_unsupported(event)
+        case ChannelPostSubmitted():
+            return render_channel_post_submitted(event)
+        case ChannelPostRefused():
+            return render_channel_post_refused(event)
+        case ChannelPostResolved():
+            return render_channel_post_resolved(event)
+        case ChannelRepeatHeard():
+            return render_channel_repeat_heard(event)
+        case ChannelConfigReadFailed():
+            return render_channel_config_read_failed(event)
+        case ChannelSetChanged():
+            return render_channel_set_changed(event)
+    raise AssertionError(f"unhandled channel event {event!r}")  # pragma: no cover
 
 
 # --- Helpers ---------------------------------------------------------------

@@ -24,7 +24,8 @@ from sighop.db.engine import DatabaseUnavailableError, Failed, Outcome, Succeede
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import WebUserRecord, WebUserRepository, normalise_username
 from sighop.net.adverts import AdvertScheduler
-from sighop.net.bus import IngressPipeline, NetworkBus
+from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxHandle
+from sighop.net.channels import ChannelMessenger, ChannelSet
 from sighop.net.contacts import ContactStore
 from sighop.net.dedup import DedupCache
 from sighop.net.dm import DirectMessenger
@@ -73,6 +74,35 @@ class StubState:
     probe_result: ProbeResult | None = None
     persistence: Persistence | None = None
     webhooks: WebhookDispatcher | None = None
+    channels: ChannelMessenger = dataclasses.field(default_factory=lambda: idle_channels())
+    channel_reloads: int = 0
+    stored_channels: ChannelSet | None = None
+    """What `reload_channels` adopts; `None` keeps the current set, as a failed read does."""
+
+    channel_secret: bytes | None = None
+    """With `persistence`, `reload_channels` reads the real repository under this."""
+
+    async def reload_channels(self) -> bool:
+        self.channel_reloads += 1
+        if self.persistence is not None:
+            loaded = await self.persistence.channels.load_keys(self.channel_secret)
+            if not isinstance(loaded, Succeeded):
+                return False
+            self.channels.replace_channels(loaded.value)
+            return True
+        if self.stored_channels is None:
+            return False
+        self.channels.replace_channels(self.stored_channels)
+        return True
+
+
+def _no_scheduler(submission: Submission) -> TxHandle:
+    raise AssertionError("this stub's channel messenger has no scheduler")
+
+
+def idle_channels() -> ChannelMessenger:
+    """A channel messenger with no channels and nothing to transmit through."""
+    return ChannelMessenger(submit=_no_scheduler)
 
 
 def stub_state(
@@ -113,6 +143,11 @@ def stub_state(
         entities=adverts.stubs,
         radio=radio,
     )
+    channels = ChannelMessenger(
+        submit=bus.submit,
+        entities=adverts.stubs,
+        transmit_enabled=lambda: scheduler.transmit_enabled,
+    )
     return StubState(
         scheduler=scheduler,
         pipeline=pipeline,
@@ -123,6 +158,7 @@ def stub_state(
         radio=radio,
         probe_result=probe_result,
         persistence=persistence,
+        channels=channels,
     )
 
 

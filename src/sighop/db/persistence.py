@@ -14,6 +14,8 @@ where the asymmetry between them is visible in one place:
   (milestone 8 design D8): a lost route is relearned from the next reception and
   a lost conversation entry is not re-acquirable at all. It refuses rather than
   displacing, and what it refuses is counted and reported.
+* **channel messages** — the direct message policy, for the same reason: what
+  somebody said in a channel is content, not a sample (channel-messaging D7).
 
 Nothing here is on the reception path. `ContactStore` and `PathStore` call
 `offer`, which neither awaits nor raises; everything else happens in tasks the
@@ -39,6 +41,8 @@ from sighop.db.repositories import (
     DEFAULT_PACKET_LOG_MAX_ROWS,
     BotRepository,
     BotStateRepository,
+    ChannelMessageRepository,
+    ChannelRepository,
     ContactRepository,
     DirectMessageRepository,
     EntityRepository,
@@ -54,6 +58,7 @@ from sighop.db.repositories import (
 from sighop.db.writer import WriteBehind
 from sighop.logging import Logger, get_logger
 from sighop.net.bus import Submission, TxOutcome
+from sighop.net.channels import ChannelMessageRecord
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.dm import DirectMessageRecord
 from sighop.net.paths import LearnedPath, PathKey, PathStore
@@ -73,6 +78,11 @@ handful of messages a minute. Larger than the contact queue because it refuses
 in the same way and a refusal here costs a conversation entry — this is the
 size of the outage the queue can ride out without losing one."""
 
+CHANNEL_MESSAGE_QUEUE_CAPACITY = 512
+"""A busy Public channel is a message a minute or two; one offer per reception
+and up to two plus one per repeat heard per post. It refuses when full, like the
+direct message lane, so its size is the outage it rides out without loss."""
+
 
 @dataclass(frozen=True, slots=True)
 class RestoredCounts:
@@ -88,6 +98,9 @@ class RestoredCounts:
     table)."""
 
     direct_messages: int = 0
+    channel_messages: int = 0
+    channel_posts_unknown: int = 0
+    """Posts the previous run left awaiting, rewritten as unknown at startup."""
 
 
 @dataclass(slots=True)
@@ -146,10 +159,17 @@ class Persistence:
     # made from another process reaches a running one.
     webhooks: WebhookRepository = field(init=False)
 
+    # Channels are configuration read into memory at startup and on reload
+    # (channel-messaging D4); their history has a refusing lane like direct
+    # messages, because decryption is on the reception path.
+    channels: ChannelRepository = field(init=False)
+    channel_messages: ChannelMessageRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
     dm_writer: WriteBehind[DirectMessageRecord] = field(init=False)
+    channel_writer: WriteBehind[ChannelMessageRecord] = field(init=False)
 
     restored: RestoredCounts = field(default_factory=RestoredCounts)
     _contact_store: ContactStore | None = field(default=None, init=False)
@@ -173,6 +193,8 @@ class Persistence:
         self.direct_messages = DirectMessageRepository(database=self.database)
         self.web_users = WebUserRepository(database=self.database)
         self.webhooks = WebhookRepository(database=self.database)
+        self.channels = ChannelRepository(database=self.database)
+        self.channel_messages = ChannelMessageRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,
@@ -209,6 +231,15 @@ class Persistence:
             drop_oldest=False,
             logger=self.logger,
         )
+        self.channel_writer = WriteBehind(
+            "channel_messages",
+            self._flush_channel_messages,
+            capacity=CHANNEL_MESSAGE_QUEUE_CAPACITY,
+            batch_size=32,
+            # Refuses rather than displacing: channel history is content.
+            drop_oldest=False,
+            logger=self.logger,
+        )
         self.database.on_recovery(self.backfill_contacts)
 
     # --- Sinks the stores hold ---------------------------------------------
@@ -227,6 +258,13 @@ class Persistence:
         conversation into the history that this run did not have (design D13).
         """
         return self.dm_writer if self.writes_enabled else None
+
+    def channel_sink(self) -> WriteBehind[ChannelMessageRecord] | None:
+        """Where `ChannelMessenger` offers what it posted and received.
+
+        `None` on a replay run, like every other sink (channel-messaging D10).
+        """
+        return self.channel_writer if self.writes_enabled else None
 
     # --- Lifecycle ---------------------------------------------------------
 
@@ -279,12 +317,25 @@ class Persistence:
         if isinstance(stored, Succeeded):
             messages = stored.value
 
+        channel_messages = 0
+        held_channel = await self.channel_messages.count()
+        if isinstance(held_channel, Succeeded):
+            channel_messages = held_channel.value
+        unknown = 0
+        if self.writes_enabled:
+            # A post the last run recorded as awaiting never told us how it ended.
+            rewritten = await self.channel_messages.mark_awaiting_unknown()
+            if isinstance(rewritten, Succeeded):
+                unknown = rewritten.value
+
         self.restored = RestoredCounts(
             entities=entities,
             contacts=restored_contacts,
             paths=restored_paths,
             conversations=conversations,
             direct_messages=messages,
+            channel_messages=channel_messages,
+            channel_posts_unknown=unknown,
         )
         self.logger.info(
             "persistence_restored",
@@ -294,6 +345,8 @@ class Persistence:
             paths=restored_paths,
             conversations=conversations,
             direct_messages=messages,
+            channel_messages=channel_messages,
+            channel_posts_unknown=unknown,
         )
         return self.restored
 
@@ -304,6 +357,7 @@ class Persistence:
             self.path_writer.start()
             self.packet_log_writer.start()
             self.dm_writer.start()
+            self.channel_writer.start()
             self.pruner.start()
         self.database.start_probe()
 
@@ -320,6 +374,7 @@ class Persistence:
             self.path_writer,
             self.packet_log_writer,
             self.dm_writer,
+            self.channel_writer,
         ):
             await writer.stop()
         await self.database.dispose()
@@ -363,6 +418,14 @@ class Persistence:
             self.database.stats.direct_messages_written += outcome.value
             return True
         self.database.stats.direct_messages_discarded += len(batch)
+        return False
+
+    async def _flush_channel_messages(self, batch: Sequence[ChannelMessageRecord]) -> bool:
+        outcome = await self.channel_messages.upsert_many(list(batch))
+        if isinstance(outcome, Succeeded):
+            self.database.stats.channel_messages_written += outcome.value
+            return True
+        self.database.stats.channel_messages_discarded += len(batch)
         return False
 
     # --- The packet log's producers ----------------------------------------
@@ -449,6 +512,7 @@ class Persistence:
             **self.path_writer.as_json(),
             **self.packet_log_writer.as_json(),
             **self.dm_writer.as_json(),
+            **self.channel_writer.as_json(),
         }
 
     async def wait_idle(self) -> None:
@@ -458,4 +522,5 @@ class Persistence:
             self.path_writer.wait_idle(),
             self.packet_log_writer.wait_idle(),
             self.dm_writer.wait_idle(),
+            self.channel_writer.wait_idle(),
         )

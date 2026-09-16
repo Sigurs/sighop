@@ -50,7 +50,7 @@ from fastapi.templating import Jinja2Templates
 from sighop.db.engine import Succeeded
 from sighop.logging import Logger, get_logger
 from sighop.web.auth import Authenticator
-from sighop.web.chat import ConversationLog
+from sighop.web.chat import ChannelLog, ConversationLog
 from sighop.web.deps import Panel
 from sighop.web.feed import Connection, EntityTraffic, FeedHub
 from sighop.web.guard import UNAUTHENTICATED, RequestGuard, current_session
@@ -115,6 +115,7 @@ def create_app(
     conversations: ConversationLog | None = None,
     sealing_secret: bytes | None = None,
     announce: Callable[[str], None] | None = None,
+    channel_log: ChannelLog | None = None,
 ) -> FastAPI:
     """Build the panel over one read seam, behind one authenticator.
 
@@ -160,6 +161,7 @@ def create_app(
         feed=feed,
         sealing_secret=sealing_secret,
         chat=conversations or ConversationLog(),
+        channel_log=channel_log or ChannelLog(),
         announce=announce,
     )
     app.state.feed = feed
@@ -412,6 +414,7 @@ class WebInterface:
     announce: Callable[[str], None] | None = None
     feed: FeedHub | None = None
     conversations: ConversationLog | None = None
+    channel_log: ChannelLog | None = None
     logger: Logger | None = None
     sealing_secret: bytes | None = None
     """Handed in by `cli.py`, which reads it anyway (design D1). Never logged,
@@ -435,6 +438,7 @@ class WebInterface:
         logger: Logger | None = None,
         sealing_secret: bytes | None = None,
         announce: Callable[[str], None] | None = None,
+        channel_log: ChannelLog | None = None,
     ) -> WebInterface:
         """Take the listening socket now, or fail startup saying why.
 
@@ -471,6 +475,7 @@ class WebInterface:
             announce=announce,
             feed=feed,
             conversations=conversations,
+            channel_log=channel_log,
             logger=logger or get_logger(component="web"),
             sealing_secret=sealing_secret,
         )
@@ -566,6 +571,7 @@ class WebInterface:
             conversations=self.conversations,
             sealing_secret=self.sealing_secret,
             announce=self.announce,
+            channel_log=self.channel_log,
         )
 
     def service(self) -> Callable[[], Awaitable[None]]:

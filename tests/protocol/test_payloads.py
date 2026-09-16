@@ -32,6 +32,7 @@ from sighop.protocol.payloads import (
     build_ack,
     build_advert,
     build_appdata,
+    build_group_text_body,
     build_payload,
     build_returned_path_body,
     build_room_login_body,
@@ -440,6 +441,22 @@ def test_group_message_splits_only_on_the_first_separator() -> None:
     body = ok(parse_group_text_body(make_text_body(1, 0, 0, b"a: b: c")))
     assert body.unverified_sender_name == "a"
     assert body.body == "b: c"
+
+
+def test_group_text_body_build_round_trips_a_parse() -> None:
+    body = ok(
+        parse_group_text_body(build_group_text_body(1_757_000_000, "dev-companion", "hello: world"))
+    )
+    assert body.unverified_sender_name == "dev-companion"
+    assert body.body == "hello: world"
+    assert body.message.txt_type is TextType.PLAIN
+    assert body.message.attempt == 0
+    assert body.message.timestamp == 1_757_000_000
+
+
+def test_group_text_body_refuses_a_sender_name_containing_the_separator() -> None:
+    with pytest.raises(EncodeError, match="': '"):
+        build_group_text_body(1, "a: b", "hello")
 
 
 # --- Returned path bodies --------------------------------------------------

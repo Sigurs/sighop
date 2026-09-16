@@ -66,7 +66,35 @@
 {% endif %}
 
 <h2>channels</h2>
-<p class="unavailable">{{ channels_absent }}</p>
+{% if channels %}
+<p class="note">Reading a channel needs no identity. Channel sender names are not
+authenticated: anyone holding a channel's key can claim any name.</p>
+<table>
+  <thead><tr><th>channel</th><th>hash</th><th>key</th><th></th></tr></thead>
+  <tbody>
+    {% for row in channels %}
+    <tr{% if row.new %} class="conversation-new"{% endif %}>
+      <td>{{ row.channel.name }}</td>
+      <td class="mono">{{ '%02x' % row.channel.channel_hash }}</td>
+      <td>{% if row.channel.guessable %}<span class="guessable">guessable</span> — anyone who knows the name can read and post{% else %}pre-shared{% endif %}</td>
+      <td>
+        <a href="/chat/channel/{{ row.channel.id }}">open</a>
+        {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">
+  <strong>No channels loaded.</strong> Group text on the air is left undecrypted
+  and appears only in the packet feed. Channels are added under
+  <a href="/admin/channels">channels</a>.
+</p>
+{% endif %}
+{% for name in channels_skipped %}
+<p class="unavailable">Channel {{ name }} is stored but not loaded: its pre-shared key does not open under SIGHOP_SECRET_KEY.</p>
+{% endfor %}
 
 {{ identity.verification_legend() }}
 {% endblock %}

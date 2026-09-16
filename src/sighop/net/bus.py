@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Protocol
 
@@ -171,7 +171,7 @@ Handler = Callable[[RxRecord], Awaitable[None]]
 
 type RxObserver = Callable[[RxRecord, bool], None]
 """`(record, was_a_duplicate)`. Never awaits, never raises — see
-`IngressPipeline.observer` for why this exists beside the bus."""
+`IngressPipeline.observers` for why this exists beside the bus."""
 
 
 class Subscription:
@@ -332,7 +332,10 @@ class IngressPipeline:
     `airtime_ms` DESIGN.md §9 asks for. Absent rather than guessed when it is
     not known — the same rule the budget follows."""
 
-    observer: RxObserver | None = None
+    observer: InitVar[RxObserver | None] = None
+    """Shorthand for a pipeline with one observer; appended to `observers`."""
+
+    observers: list[RxObserver] = field(default_factory=list)
     """Told about **every** reception, including the duplicates the bus never
     sees (milestone 8).
 
@@ -343,35 +346,42 @@ class IngressPipeline:
     duplicates — and would disagree with the deduplication counters on the same
     screen.
 
-    So this is the second, deliberately narrow way out: one callable, told what
+    So this is the second, deliberately narrow way out: callables told what
     happened and whether it was a duplicate, called after the decision it
-    describes. It is on the contact and path sinks' contract — it never awaits
-    and never raises — and nothing on the reception path consults it or waits
+    describes. Each is on the contact and path sinks' contract — it never awaits
+    and never raises — and nothing on the reception path consults one or waits
     for it. It is not a second bus subscription: the number of bus subscribers
     is a property of the platform and stays one per component, whatever is
-    watching."""
+    watching.
+
+    A list since change `channel-messaging`: the channel messenger counts its
+    own posts heard back through repeaters, duplicates included, and must not
+    displace the feed to do it. Each observer is isolated from the others."""
 
     duplicates: int = 0
     delivered: int = 0
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, observer: RxObserver | None) -> None:
         self.logger = self.logger or get_logger(component="rx")
+        if observer is not None:
+            self.observers.append(observer)
 
     def _observe(self, record: RxRecord, *, duplicate: bool) -> None:
-        """Offer one reception to the observer. Never awaits, never raises."""
-        if self.observer is None:
-            return
+        """Offer one reception to every observer. Never awaits, never raises."""
         assert self.logger is not None
-        try:
-            self.observer(record, duplicate)
-        except Exception as exc:
-            # A watcher that raises is a broken watcher, not a broken reception.
-            self.logger.error(
-                "rx_observer_error",
-                outcome="error",
-                packet_id=record.packet_id,
-                error=repr(exc),
-            )
+        for observer in self.observers:
+            try:
+                observer(record, duplicate)
+            except Exception as exc:
+                # A watcher that raises is a broken watcher, not a broken
+                # reception, and not a reason the next watcher goes blind.
+                self.logger.error(
+                    "rx_observer_error",
+                    outcome="error",
+                    packet_id=record.packet_id,
+                    observer=getattr(observer, "__qualname__", repr(observer)),
+                    error=repr(exc),
+                )
 
     def ingest(self, record: RxRecord) -> bool:
         """Process one decoded reception. True when it reached the bus."""

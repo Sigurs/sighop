@@ -760,6 +760,32 @@ def parse_group_text_body(body: bytes) -> DecodeResult[GroupTextBody]:
     return GroupTextBody(message=message, unverified_sender_name=name, body=remainder)
 
 
+def build_group_text_body(timestamp: int, sender_name: str, body: str) -> bytes:
+    """Build a plain group text body as `sendGroupMessage` does.
+
+    Text type plain, attempt zero, text `<sender name>: <body>`. A sender name
+    containing the separator is refused, because every receiver splits on its
+    first occurrence and would attribute part of the name to the body. Length
+    limits belong to the caller, which can say what counts towards them; block
+    padding is the cipher's job.
+    """
+    if GROUP_NAME_SEPARATOR in sender_name:
+        raise EncodeError(
+            f"sender name {sender_name!r} contains the separator {GROUP_NAME_SEPARATOR!r}"
+        )
+    if not 0 <= timestamp <= 0xFFFFFFFF:
+        raise EncodeError(f"timestamp {timestamp} does not fit in four bytes")
+    text = f"{sender_name}{GROUP_NAME_SEPARATOR}{body}"
+    return build_text_message_body(
+        TextMessageBody(
+            timestamp=timestamp,
+            txt_type=TextType.PLAIN,
+            attempt=0,
+            text=WireText.from_bytes(text.encode("utf-8")),
+        )
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ReturnedPathBody:
     """A decrypted PATH body: the route back, plus an optionally bundled extra.

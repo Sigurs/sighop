@@ -33,6 +33,7 @@ from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
     BOTS_OFF,
+    CHANNELS_OFF,
     PERSISTENCE_OFF,
     ROOMS_OFF,
     WEBHOOKS_OFF_NO_DATABASE,
@@ -41,6 +42,9 @@ from sighop.monitor.render import (
     render_bot_event,
     render_bot_startup,
     render_bot_status,
+    render_channel_event,
+    render_channel_startup,
+    render_channel_status,
     render_detail_line,
     render_dm_event,
     render_frame_line,
@@ -57,6 +61,13 @@ from sighop.net.acks import AckDispatcher, AckRegistry
 from sighop.net.adverts import AdvertScheduler, EntityStub
 from sighop.net.airtime import time_on_air_ms
 from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxOutcome
+from sighop.net.channels import (
+    ChannelEvent,
+    ChannelMessenger,
+    ChannelSet,
+    ChannelUndecryptable,
+    ChannelUnknown,
+)
 from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
 from sighop.net.dm import (
@@ -93,6 +104,9 @@ from sighop.radio.probe import Absent, ProbeResult
 from sighop.webhooks.dispatcher import WebhookDispatcher
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
+DEFAULT_CHANNEL_REFRESH_SECONDS = 60.0
+"""How soon a channel added or removed from another process reaches this run
+(channel-messaging D4). A change made in this run's own panel applies at once."""
 DEFAULT_ADVERT_TICK_SECONDS = 5.0
 
 DEFAULT_PEER_WAIT_SECONDS = 60.0
@@ -104,6 +118,10 @@ up, and a send that gave up instantly would be unusable. It gives up loudly
 rather than exiting: an unknown peer must not end a receiving session."""
 
 PEER_POLL_SECONDS = 0.25
+
+
+class ChannelLoadError(RuntimeError):
+    """The stored channels could not be read."""
 
 
 @dataclass(slots=True)
@@ -150,6 +168,7 @@ class RuntimeConfig:
     """The name of an entity to emit exactly one zero-hop advert for."""
 
     peer_wait_seconds: float = DEFAULT_PEER_WAIT_SECONDS
+    channel_refresh_seconds: float = DEFAULT_CHANNEL_REFRESH_SECONDS
 
 
 @dataclass(slots=True)
@@ -202,8 +221,14 @@ class Runtime:
     """
 
     webhook_secret: bytes | None = None
-    """`SIGHOP_SECRET_KEY`, which webhook URLs are sealed under. Without it a run
-    with a database delivers no webhooks and says so at startup."""
+    """`SIGHOP_SECRET_KEY`, which webhook URLs and channel pre-shared keys are
+    sealed under. Without it a run with a database delivers no webhooks and loads
+    no pre-shared-key channel, and says so at startup."""
+
+    channel_loader: Callable[[], Awaitable[ChannelSet]] | None = None
+    """Reads the stored channels with their keys, raising when it cannot. Built
+    from the database when one is present; a test may hand one in. `None` with
+    no database is the whole of "this run has no channels"."""
 
     webhooks: WebhookDispatcher | None = None
     """The webhook dispatcher. Built here when a database and the secret are
@@ -217,6 +242,7 @@ class Runtime:
     entities: EntityRegistry = field(init=False)
     contacts: ContactStore = field(init=False)
     messenger: DirectMessenger = field(init=False)
+    channels: ChannelMessenger = field(init=False)
     acks: AckRegistry = field(init=False)
     path_bodies: PathBodyReader = field(init=False)
     rooms: list[RoomServer] = field(init=False, default_factory=list)
@@ -226,6 +252,7 @@ class Runtime:
     bots: BotHost = field(init=False)
     _unrun_bots: list[str] = field(init=False, default_factory=list)
     _webhook_line: str = field(init=False, default="")
+    _channel_line: str = field(init=False, default=CHANNELS_OFF)
     _tx_watcher: Callable[[Submission, TxOutcome, dt.datetime], None] | None = field(
         init=False, default=None
     )
@@ -304,6 +331,20 @@ class Runtime:
             # not recording conversations" (design D8, D13).
             records=None if self.persistence is None else self.persistence.dm_sink(),
         )
+        # Channels (channel-messaging D3): a bus subscriber for group text and a
+        # reception observer for our own posts heard back. Station state, so the
+        # identities it posts as are the same live list the messenger holds.
+        self.channels = ChannelMessenger(
+            submit=self.bus.submit,
+            entities=self.adverts.stubs,
+            transmit_enabled=lambda: self.scheduler.transmit_enabled,
+            clock=self.clock,
+            on_event=self._on_channel_event,
+            logger=self.logger,
+            records=None if self.persistence is None else self.persistence.channel_sink(),
+        )
+        if self.channel_loader is None and self.persistence is not None:
+            self.channel_loader = self._load_stored_channels
         self.path_bodies = PathBodyReader(
             paths=self.pipeline.paths,
             contacts=self.contacts,
@@ -325,6 +366,8 @@ class Runtime:
             self.contacts.add_observation_listener(self.webhooks.on_observation)
         self.contacts.subscribe(self.bus)
         self.messenger.subscribe(self.bus)
+        self.channels.subscribe(self.bus)
+        self.pipeline.observers.append(self.channels.observe)
         self.path_bodies.subscribe(self.bus)
         AckDispatcher(registry=self.acks).subscribe(self.bus)
         if self.config.advert_override_seconds is not None:
@@ -356,6 +399,62 @@ class Runtime:
             logger=self.logger,
             contacts=self.contacts,
         )
+
+    # --- Channels (channel-messaging D4) --------------------------------------
+
+    async def _load_stored_channels(self) -> ChannelSet:
+        assert self.persistence is not None
+        outcome = await self.persistence.channels.load_keys(self.webhook_secret)
+        if not isinstance(outcome, Succeeded):
+            raise ChannelLoadError(str(outcome.error))
+        return outcome.value
+
+    async def _initial_channels(self) -> None:
+        if await self.reload_channels():
+            self._channel_line = render_channel_startup(self.channels.channels)
+        else:
+            self._channel_line = (
+                "channels: could not be read; none loaded yet, retried every "
+                f"{self.config.channel_refresh_seconds:.0f}s"
+            )
+
+    async def reload_channels(self) -> bool:
+        """Re-read the stored channels and adopt them whole, or keep the current set.
+
+        Called by the panel after it changes a channel, and every
+        `channel_refresh_seconds` for changes made by another process. A read
+        that fails is reported and changes nothing: decryption keeps the set it
+        had, because memory is the authority during an outage (§6).
+        """
+        if self.channel_loader is None:
+            return False
+        try:
+            loaded = await self.channel_loader()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.channels.config_read_failed(str(exc))
+            return False
+        self.channels.replace_channels(loaded)
+        return True
+
+    async def _channel_refresh_loop(self) -> None:
+        """Reload on the clock's own time, so a test clock that does not move
+        on sleep never turns this into a database read per event-loop turn."""
+        interval = dt.timedelta(seconds=self.config.channel_refresh_seconds)
+        while True:
+            due = self.clock.now() + interval
+            while (remaining := (due - self.clock.now()).total_seconds()) > 0:
+                await self.clock.sleep(remaining)
+            await self.reload_channels()
+
+    def _on_channel_event(self, event: ChannelEvent) -> None:
+        # A reception on a channel this run cannot open is counted in the status
+        # line and logged as its event; a line per frame would bury the messages
+        # it can open, and the frame's own line already shows the payload.
+        if isinstance(event, ChannelUnknown | ChannelUndecryptable):
+            return
+        self._print(render_channel_event(event))
 
     def _adopt_entity(self, entity: LocalEntity) -> None:
         """Give a local identity to the advert scheduler, whatever it came from."""
@@ -394,10 +493,11 @@ class Runtime:
 
         Callables rather than an object, for design D2's reason: the only thing
         that watches traffic today is the web panel, and `runtime.py` must not
-        learn that `web/` exists.
+        learn that `web/` exists. Watching appends: the channel messenger
+        observes receptions too, and a display must not displace it.
         """
         if on_reception is not None:
-            self.pipeline.observer = on_reception
+            self.pipeline.observers.append(on_reception)
         if on_transmission is not None:
             self._tx_watcher = on_transmission
 
@@ -409,6 +509,10 @@ class Runtime:
         contract: never awaits, never raises.
         """
         self.messenger.add_record_sink(sink)  # type: ignore[arg-type]
+
+    def watch_channels(self, sink: object) -> None:
+        """Attach a display of channel messages beside the durable sink. Same contract."""
+        self.channels.add_record_sink(sink)  # type: ignore[arg-type]
 
     def set_radio(self, radio: RadioParams | None) -> None:
         """Adopt a readback — at startup, and again after every reconnect."""
@@ -444,6 +548,8 @@ class Runtime:
         ]
         if self.webhooks is not None:
             tasks.append(asyncio.create_task(self.webhooks.run(), name="webhooks"))
+        if self.channel_loader is not None:
+            tasks.append(asyncio.create_task(self._channel_refresh_loop(), name="channels"))
         tasks.extend(
             asyncio.create_task(self._run_service(index, service), name=f"service-{index}")
             for index, service in enumerate(self.services)
@@ -517,6 +623,9 @@ class Runtime:
             # Also primes the dispatcher's last good configuration, so a database
             # that drops before the first event still has a list to deliver to.
             self._webhook_line = render_webhook_startup(await self.webhooks.startup_summary())
+        if self.channel_loader is not None:
+            # Before any traffic, after nothing else: channels need no contacts.
+            await self._initial_channels()
         if self.persistence is None:
             return
         await self.persistence.restore(
@@ -965,6 +1074,17 @@ class Runtime:
             routes_discarded=0 if writers is None else writers.path_writer.discarded,
             awaiting_backfill=self.contacts.awaiting_backfill,
             webhooks=None if self.webhooks is None else self.webhooks.status_segment(),
+            channels=(
+                None
+                if self.channel_loader is None
+                else render_channel_status(
+                    decrypted=self.channels.decrypted,
+                    unknown=self.channels.unknown,
+                    undecryptable=self.channels.undecryptable,
+                    transmitted=self.channels.posts_transmitted,
+                    repeats=self.channels.repeats_heard,
+                )
+            ),
         )
 
     async def _print_startup(self) -> None:
@@ -986,6 +1106,7 @@ class Runtime:
         for line in self._bot_lines():
             self._write(line)
         self._write(self._webhook_line)
+        self._write(self._channel_line)
         for entity in self.entities.entities:
             for warning in entity.warnings:
                 self._write(f"!! {warning}")
@@ -1080,6 +1201,8 @@ class Runtime:
             paths=self.persistence.restored.paths,
             conversations=self.persistence.restored.conversations,
             direct_messages=self.persistence.restored.direct_messages,
+            channel_messages=self.persistence.restored.channel_messages,
+            channel_posts_unknown=self.persistence.restored.channel_posts_unknown,
             writing=self.persistence.writes_enabled,
             not_writing_because=(
                 "a replay carries an earlier session's timestamps; "

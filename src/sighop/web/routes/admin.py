@@ -45,6 +45,7 @@ from sighop.web.guarded import (
     ADVERT_ZERO_HOP,
     ENABLE_TRANSMIT,
     RAISE_CEILING,
+    REMOVE_CHANNEL,
     REVEAL_KEY,
     audit,
 )
@@ -1576,4 +1577,247 @@ async def send_webhook_sample(
             "delivered": result.delivered,
             "detail": detail,
         },
+    )
+
+
+# --- Channels (channel-messaging, `web-admin`) -------------------------------
+#
+# Every write is `ChannelRepository`'s own call, so a hashtag or key this refuses
+# is one `sighop channel` refuses in the same words, and every change is followed
+# by `reload_channels()` so this run decrypts on it at once. A pasted pre-shared
+# key is never put back into a page, not even into the form re-shown after a
+# refusal, and a stored one is never read back at all.
+
+CHANNELS_NEED_DURABLE_STORAGE = (
+    "Channels are stored configuration and require durable storage. This run has "
+    "no database, so none can be configured, and group text is left undecrypted."
+)
+
+CHANNEL_KEY_NEEDS_THE_SECRET = (
+    "SIGHOP_SECRET_KEY is not available to this panel, and pre-shared keys are "
+    "sealed under it; nothing was added"
+)
+
+CHANNEL_KEY_COMMAND = "sighop channel key"
+
+CHANNEL_KEYS_ARE_A_TERMINAL_ACT = (
+    "A stored pre-shared key is not shown here. To share one, print it in a "
+    f"terminal on the host with `{CHANNEL_KEY_COMMAND} <name>`. The key is the "
+    "credential for reading and posting in the channel, and a key cannot be taken "
+    "back from whoever has seen it, so a stolen session that could display it "
+    "would hand the channel out for good."
+)
+
+
+@router.get("/channels", response_class=HTMLResponse)
+async def channels(
+    request: Request,
+    page: PanelDep,
+    *,
+    added: str = "",
+    removed: str = "",
+    refusal: Refusal | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """Every stored channel with its kind, hash, guessable marking and message count."""
+    from sighop.db.repositories import GUESSABLE_STATEMENT, ChannelRecord
+
+    listed: Outcome[list[ChannelRecord]] | None = None
+    counts: dict[int, int] = {}
+    if page.persistence is not None:
+        listed = await page.persistence.channels.list_all()
+        counted = await page.persistence.channels.message_counts()
+        if isinstance(counted, Succeeded):
+            counts = counted.value
+    records = listed.value if isinstance(listed, Succeeded) else []
+    just_added = next((record for record in records if record.name == added), None)
+    loaded = {channel.id for channel in page.state.channels.channels}
+    return page.page(
+        request,
+        "admin/channels.html",
+        channels=collection_for(listed, degraded="channels cannot be read"),
+        counts=counts,
+        loaded=loaded,
+        skipped=page.state.channels.channels.skipped,
+        public_stored=any(record.kind == "public" for record in records),
+        no_database=page.persistence is None,
+        no_database_note=CHANNELS_NEED_DURABLE_STORAGE,
+        guessable_statement=GUESSABLE_STATEMENT,
+        keys_note=CHANNEL_KEYS_ARE_A_TERMINAL_ACT,
+        key_command=CHANNEL_KEY_COMMAND,
+        just_added=just_added,
+        removed=removed,
+        refusal=refusal,
+        status_code=status_code,
+    )
+
+
+async def _refuse_channel(
+    request: Request, page: Panel, reason: str, *, field: str = "", **submitted: str
+) -> HTMLResponse:
+    return await channels(
+        request, page, refusal=refused(reason, field=field, **submitted), status_code=400
+    )
+
+
+async def _channel_added(
+    request: Request, page: Panel, outcome: Outcome[object], field: str, **submitted: str
+) -> RedirectResponse | HTMLResponse:
+    from urllib.parse import quote
+
+    if isinstance(outcome, Failed):
+        return await _refuse_channel(request, page, str(outcome.error), field=field, **submitted)
+    await page.state.reload_channels()
+    name = getattr(outcome.value, "name", "")
+    return RedirectResponse(f"/admin/channels?added={quote(name)}", status_code=SEE_OTHER)
+
+
+@router.post("/channels/hashtag", response_model=None)
+async def add_hashtag_channel(
+    request: Request,
+    page: PanelDep,
+    hashtag: Annotated[str, Form()] = "",
+    name: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop channel add --hashtag`'s own call."""
+    from sighop.db.repositories import ChannelConfigError
+
+    submitted = {"hashtag": hashtag, "name": name}
+    if page.persistence is None:
+        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE, **submitted)
+    try:
+        outcome = await page.persistence.channels.add_hashtag(
+            hashtag, name=name or None, secret=page.sealing_secret
+        )
+    except ChannelConfigError as exc:
+        return await _refuse_channel(request, page, str(exc), field="hashtag", **submitted)
+    return await _channel_added(request, page, outcome, "hashtag", **submitted)
+
+
+@router.post("/channels/psk", response_model=None)
+async def add_psk_channel(
+    request: Request,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+    key: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop channel add --psk-stdin`'s own call. The key is never carried back."""
+    from sighop.db.repositories import ChannelConfigError
+
+    if page.persistence is None:
+        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE, name=name)
+    if page.sealing_secret is None:
+        return await _refuse_channel(
+            request, page, CHANNEL_KEY_NEEDS_THE_SECRET, field="psk", name=name
+        )
+    try:
+        outcome = await page.persistence.channels.add_psk(
+            key, name=name, secret=page.sealing_secret
+        )
+    except ChannelConfigError as exc:
+        return await _refuse_channel(request, page, str(exc), field="psk", name=name)
+    return await _channel_added(request, page, outcome, "psk", name=name)
+
+
+@router.post("/channels/public", response_model=None)
+async def add_public_channel(request: Request, page: PanelDep) -> RedirectResponse | HTMLResponse:
+    """`sighop channel add --public`'s own call: re-adding Public after a removal."""
+    from sighop.db.repositories import ChannelConfigError
+
+    if page.persistence is None:
+        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE)
+    try:
+        outcome = await page.persistence.channels.add_public()
+    except ChannelConfigError as exc:
+        return await _refuse_channel(request, page, str(exc), field="public")
+    return await _channel_added(request, page, outcome, "public")
+
+
+async def _stored_channel(page: Panel, channel_id: str):  # type: ignore[no-untyped-def]
+    if page.persistence is None:
+        return None
+    try:
+        wanted = int(channel_id)
+    except ValueError:
+        return None
+    found = await page.persistence.channels.get_by_id(wanted)
+    return found.value if isinstance(found, Succeeded) else None
+
+
+@router.get("/channels/{channel_id}/remove", response_class=HTMLResponse)
+async def remove_channel_form(channel_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """What removing deletes, counted, before it deletes it."""
+    record = await _stored_channel(page, channel_id)
+    messages: int | None = None
+    if record is not None and page.persistence is not None:
+        counted = await page.persistence.channels.message_count(record.id)
+        messages = counted.value if isinstance(counted, Succeeded) else None
+    return page.page(
+        request,
+        "admin/channel_remove.html",
+        channel=record,
+        messages=messages,
+        description=ACTION_DESCRIPTIONS[REMOVE_CHANNEL],
+        nonce=None if record is None else page.nonces.mint(REMOVE_CHANNEL, channel_id),
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/channels/{channel_id}/remove", response_model=None)
+async def remove_channel(
+    channel_id: str,
+    request: Request,
+    page: PanelDep,
+    nonce: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop channel remove --delete-history`'s own call, behind confirm-and-nonce."""
+    from urllib.parse import quote
+
+    title = "remove channel"
+    actor = page.actor(request)
+    record = await _stored_channel(page, channel_id)
+    if record is None or page.persistence is None:
+        return await remove_channel_form(channel_id, request, page)
+    if not page.nonces.spend(nonce, REMOVE_CHANNEL, channel_id):
+        audit(
+            page.logger,
+            action=REMOVE_CHANNEL,
+            target=channel_id,
+            outcome="refused",
+            actor=actor,
+            reason="no confirmation was minted for this action",
+            channel=record.name,
+        )
+        return page.page(request, "admin/refused.html", title=title, refusal=None, status_code=403)
+    removed = await page.persistence.channels.remove(record.id)
+    if isinstance(removed, Failed) or removed.value is None:
+        reason = str(removed.error) if isinstance(removed, Failed) else "no such channel"
+        audit(
+            page.logger,
+            action=REMOVE_CHANNEL,
+            target=channel_id,
+            outcome="failed",
+            actor=actor,
+            reason=reason,
+            channel=record.name,
+        )
+        return page.page(
+            request, "admin/refused.html", title=title, refusal=reason, status_code=409
+        )
+    await page.state.reload_channels()
+    audit(
+        page.logger,
+        action=REMOVE_CHANNEL,
+        target=channel_id,
+        outcome="success",
+        actor=actor,
+        channel=record.name,
+        messages_deleted=removed.value,
+    )
+    page.say(
+        f"channel {record.name!r} removed with {removed.value} recorded message(s) "
+        f"from the web interface by account {actor!r}"
+    )
+    return RedirectResponse(
+        f"/admin/channels?removed={quote(record.name)}", status_code=SEE_OTHER
     )

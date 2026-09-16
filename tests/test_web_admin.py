@@ -729,3 +729,129 @@ def test_a_guarded_action_is_never_performed_by_a_bare_link() -> None:
             assert client.get(path).status_code == 200
 
     assert (state.scheduler.transmit_enabled, state.scheduler.budget.ceiling_fraction) == before
+
+
+# --- Channels (change `channel-messaging`, task 8.3) -------------------------
+
+PSK = base64.b64encode(bytes(range(60, 76))).decode()
+
+
+def _psk_absent(body: str) -> None:
+    """The pasted key, in any encoding it could be rendered in, is not on the page."""
+    raw = base64.b64decode(PSK)
+    for form in (PSK, raw.hex(), raw.hex().upper(), PSK.rstrip("=")):
+        assert form not in body
+
+
+def _channel_state(database: Database) -> tuple[FastAPI, StubState, RecordingLogger]:
+    state = stub_state(stub_names=("panel-identity",))
+    state.persistence = Persistence(database=database)
+    state.channel_secret = SECRET
+    log = RecordingLogger()
+    app = create_app(
+        state, auth=authenticator(), hosts=HOSTS, logger=log, sealing_secret=SECRET
+    )
+    return app, state, log
+
+
+def test_with_no_database_the_channels_page_offers_no_controls() -> None:
+    app, _state, _log = _built()
+    with _client(app) as client:
+        body = client.get("/admin/channels").text
+    assert "require durable storage" in body
+    assert 'action="/admin/channels/' not in body
+
+
+@pytest.mark.database
+async def test_the_channels_page_lists_kind_hash_guessable_and_count(database: Database) -> None:
+    app, _state, _log = _channel_state(database)
+    async with _live(app) as client:
+        body = (await client.get("/admin/channels")).text
+    assert "Public" in body and ">public<" in body and ">11<" in body
+    assert ">guessable<" in body
+    assert "sighop channel key" in body and "not shown here" in body
+
+
+@pytest.mark.database
+async def test_a_hashtag_added_in_the_ui_matches_the_cli_and_is_decrypted_at_once(
+    database: Database,
+) -> None:
+    from sighop.db.repositories import ChannelRepository
+    from sighop.protocol.crypto import channel_key_from_hashtag
+
+    app, state, _log = _channel_state(database)
+    async with _live(app) as client:
+        added = await _apost(client, app, "/admin/channels/hashtag", hashtag="dev-sighop")
+        page = (await client.get(added.headers["location"])).text
+
+    assert added.status_code == 303
+    assert "Channel #dev-sighop added" in page
+    assert "anyone who knows or guesses its name" in page
+    stored = await ChannelRepository(database=database).get("#dev-sighop")
+    assert isinstance(stored, Succeeded) and stored.value is not None
+    assert stored.value.kind == "hashtag" and stored.value.hashtag == "#dev-sighop"
+    assert stored.value.channel_hash == channel_key_from_hashtag("#dev-sighop").channel_hash
+    assert state.channel_reloads == 1
+    assert [c.name for c in state.channels.channels] == ["Public", "#dev-sighop"]
+
+
+@pytest.mark.database
+async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Database) -> None:
+    app, state, _log = _channel_state(database)
+    async with _live(app) as client:
+        added = await _apost(client, app, "/admin/channels/psk", name="crew", key=PSK)
+        after_add = (await client.get(added.headers["location"])).text
+        listing = (await client.get("/admin/channels")).text
+        refused = await _apost(client, app, "/admin/channels/psk", name="crew-2", key=PSK)
+        short = await _apost(
+            client, app, "/admin/channels/psk", name="short", key=base64.b64encode(bytes(8)).decode()
+        )
+
+    assert added.status_code == 303 and "Channel crew added" in after_add
+    for body in (after_add, listing, refused.text, short.text):
+        _psk_absent(body)
+    assert refused.status_code == 400 and "already stored as the channel &#39;crew&#39;" in refused.text
+    assert 'value="crew-2"' in refused.text, "the name is handed back"
+    assert short.status_code == 400 and "decodes to 8 bytes" in short.text
+    assert 'type="password" name="key"' in short.text
+    assert [c.name for c in state.channels.channels] == ["Public", "crew"]
+
+
+@pytest.mark.database
+async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
+    database: Database,
+) -> None:
+    from sighop.db.repositories import ChannelMessageRepository, ChannelRepository
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+
+    app, state, log = _channel_state(database)
+    history = ChannelMessageRepository(database=database)
+    await history.upsert_many(
+        [
+            ChannelMessageRecord(
+                channel_id=1, direction="in", ref=f"p{index}", text=b"x", wire_timestamp=1,
+                handled_at=NOW, outcome=ChannelOutcome.RECEIVED,
+            )
+            for index in range(40)
+        ]
+    )
+    announced: list[str] = []
+    app.state.panel.announce = announced.append
+
+    async with _live(app) as client:
+        bare = await _apost(client, app, "/admin/channels/1/remove")
+        form = (await client.get("/admin/channels/1/remove")).text
+        confirmed = await _apost(client, app, "/admin/channels/1/remove", nonce=_nonce(form))
+        again = (await client.get("/admin/channels")).text
+
+    assert bare.status_code == 403
+    assert "40 recorded message(s) will be deleted" in form
+    assert confirmed.status_code == 303
+    listed = await ChannelRepository(database=database).list_all()
+    assert isinstance(listed, Succeeded) and listed.value == []
+    assert state.channels.channels.channels == ()
+    events = log.named("web_guarded_action")
+    assert [e["outcome"] for e in events] == ["refused", "success"]
+    assert events[-1]["actor"] == OPERATOR and events[-1]["messages_deleted"] == 40
+    assert any(OPERATOR in line and "Public" in line for line in announced)
+    assert "add Public again" in again

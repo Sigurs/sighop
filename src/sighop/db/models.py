@@ -562,3 +562,88 @@ class Webhook(Base):
         CheckConstraint("format IN ('json', 'discord')", name="format"),
         CheckConstraint("max_hops IS NULL OR max_hops >= 0", name="max_hops"),
     )
+
+
+class Channel(Base):
+    """§6's thirteenth table: a group channel the station holds (channel-messaging D1, D2).
+
+    Station state, not identity state — there is no entity column, because
+    `GRP_TXT` has no recipient and every loaded identity may read and post in
+    every channel.
+
+    **Sealing is by kind.** A `psk` row carries its key in `sealed_key` (seal
+    version 2): a pre-shared key is a read-and-post credential. A `hashtag` row
+    carries the hashtag and a `public` row nothing but its kind, and both derive
+    their key when loaded — sealing a key anyone can derive from the row's own
+    name protects nothing, and is what lets the migration seed Public without
+    `SIGHOP_SECRET_KEY`. `channel_hash` is clear so a listing needs no secret.
+    """
+
+    __tablename__ = "channel"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    hashtag: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sealed_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    channel_hash: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_channel_name"),
+        CheckConstraint("kind IN ('public', 'hashtag', 'psk')", name="kind"),
+        CheckConstraint("(kind = 'hashtag') = (hashtag IS NOT NULL)", name="hashtag"),
+        CheckConstraint("(kind = 'psk') = (sealed_key IS NOT NULL)", name="sealed_key"),
+        CheckConstraint("channel_hash BETWEEN 0 AND 255", name="channel_hash"),
+    )
+
+
+class ChannelMessage(Base):
+    """§6's fourteenth table: one channel message, in either direction (D7).
+
+    `direct_message`'s shape for `direct_message`'s reasons: `ref` (the post id
+    outbound, the reception's packet id inbound) makes every write one row,
+    `ON CONFLICT (channel_id, ref) DO UPDATE`; ordering is by `handled_at` and
+    never by `wire_timestamp`; `text` is `bytea` and **not encrypted at rest**.
+
+    The claimed sender is `unverified_sender_name`, so nobody reads it without
+    reading the claim. A channel's messages go with the channel (`ON DELETE
+    CASCADE`): history is only meaningful under its key.
+    """
+
+    __tablename__ = "channel_message"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    channel_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("channel.id", ondelete="CASCADE"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(Text, nullable=False)
+    ref: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_public_key: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    unverified_sender_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wire_timestamp: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    handled_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    packet_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hop_count: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    snr_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rssi_dbm: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    outcome_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """The scheduler's reason for a post that was not transmitted."""
+
+    repeats_heard: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("channel_id", "ref", name="uq_channel_message_channel_id_ref"),
+        Index("ix_channel_message_channel_id_handled_at", "channel_id", "handled_at"),
+        CheckConstraint("direction IN ('in', 'out')", name="direction"),
+        CheckConstraint(
+            "outcome IN ('awaiting', 'transmitted', 'not_transmitted', 'unknown', 'received')",
+            name="outcome",
+        ),
+        CheckConstraint(
+            "(direction = 'out') = (entity_public_key IS NOT NULL)", name="entity_public_key"
+        ),
+        CheckConstraint("repeats_heard >= 0", name="repeats_heard"),
+    )

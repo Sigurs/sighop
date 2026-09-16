@@ -168,7 +168,15 @@ async def _truncate(handle: Database) -> None:
         await session.execute(
             text(
                 "TRUNCATE entity, contact, path, packet_log, room, room_member, "
-                "message, bot, bot_state, direct_message, web_user, webhook RESTART IDENTITY CASCADE"
+                "message, bot, bot_state, direct_message, web_user, webhook, channel, "
+                "channel_message RESTART IDENTITY CASCADE"
+            )
+        )
+        # Back to what an upgrade leaves: migration `0007` seeds the Public channel.
+        await session.execute(
+            text(
+                "INSERT INTO channel (name, kind, channel_hash, created_at) "
+                "VALUES ('Public', 'public', 17, now())"
             )
         )
         await session.commit()

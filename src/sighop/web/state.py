@@ -34,6 +34,7 @@ from sighop.bots.runtime import BotHost
 from sighop.db.persistence import Persistence
 from sighop.net.adverts import AdvertScheduler
 from sighop.net.bus import IngressPipeline
+from sighop.net.channels import ChannelMessenger
 from sighop.net.contacts import ContactStore
 from sighop.net.dm import DirectMessenger
 from sighop.net.room import RoomServer
@@ -72,6 +73,18 @@ class LiveState(Protocol):
     @property
     def messenger(self) -> DirectMessenger:
         """The send path, the acknowledgement expectations, and the counters."""
+
+    @property
+    def channels(self) -> ChannelMessenger:
+        """The loaded channels, the post path and the channel counters."""
+
+    async def reload_channels(self) -> bool:
+        """Re-read the stored channels after the panel changed one (channel-messaging D4).
+
+        A method rather than a property, and the one in this seam: a change made
+        here has to reach decryption at once, and the runtime owns the loader.
+        False when the read failed and the current set was kept.
+        """
 
     @property
     def rooms(self) -> list[RoomServer]:

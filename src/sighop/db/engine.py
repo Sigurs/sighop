@@ -212,6 +212,8 @@ class PersistenceStats:
     log row is a gap in a sample, and a dropped message is a gap in what somebody
     said (milestone 8 design D8)."""
 
+    channel_messages_written: int = 0
+    channel_messages_discarded: int = 0
     recoveries: int = 0
     probes: int = 0
 
@@ -226,6 +228,8 @@ class PersistenceStats:
             "contacts_written": self.contacts_written,
             "direct_messages_written": self.direct_messages_written,
             "direct_messages_discarded": self.direct_messages_discarded,
+            "channel_messages_written": self.channel_messages_written,
+            "channel_messages_discarded": self.channel_messages_discarded,
             "db_recoveries": self.recoveries,
             "db_probes": self.probes,
         }

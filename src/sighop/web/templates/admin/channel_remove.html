@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}remove channel · sighop{% endblock %}
+
+{% block content %}
+<h1>remove channel</h1>
+
+{% if channel is none %}
+<p class="unavailable"><strong>No such channel.</strong> It may already have been removed.</p>
+{% else %}
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+  <table class="counters">
+    <tbody>
+      <tr><td>channel</td><td>{{ channel.name }}</td></tr>
+      <tr><td>kind</td><td class="mono">{{ channel.kind }}</td></tr>
+      <tr><td>hash</td><td class="mono">{{ '%02x' % channel.channel_hash }}</td></tr>
+      <tr><td>messages that will be deleted</td>
+          <td class="mono">{{ 'unknown — the count could not be read' if messages is none else messages }}</td></tr>
+    </tbody>
+  </table>
+  {% if messages is not none %}
+  <p><strong>{{ messages }} recorded message(s) will be deleted.</strong></p>
+  {% endif %}
+  <p class="note">
+    Recorded as its own event naming your account. This run stops decrypting the
+    channel as soon as it is removed.
+  </p>
+  <form method="post" action="/admin/channels/{{ channel.id }}/remove">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <button type="submit">confirm: remove {{ channel.name }} and its messages</button>
+  </form>
+  <p><a href="/admin/channels">cancel, and delete nothing</a></p>
+</div>
+{% endif %}
+{% endblock %}

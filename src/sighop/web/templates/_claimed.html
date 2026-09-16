@@ -1,0 +1,21 @@
+{# How a channel sender is drawn (channel-messaging D8).
+
+   Not `_identity.html`, and sharing none of its classes: that component draws
+   keys we hold and adverts that were checked. A channel sender is a name inside
+   a plaintext that anyone holding the channel key could have written, so it is
+   never linked, never coloured as verified, and never looked up against the
+   contact table — a claim equal to a verified contact's name is still a claim. #}
+{% macro claimed(name) -%}
+{%- if name is none -%}
+<span class="claimed-name" title="this message names no sender">
+  <span class="claimed-mark" aria-hidden="true">✗</span>
+  <span class="claimed-status">no sender named</span>
+</span>
+{%- else -%}
+<span class="claimed-name" title="a name the message claims; channel sender names are not authenticated">
+  <span class="claimed-mark" aria-hidden="true">✗</span>
+  <span class="claimed-label">{{ name }}</span>
+  <span class="claimed-status">claimed, unverified</span>
+</span>
+{%- endif -%}
+{%- endmacro %}

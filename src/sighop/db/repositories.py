@@ -16,7 +16,10 @@ database fault and must not be reported as one.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import datetime as dt
+import hmac
 import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
@@ -29,6 +32,8 @@ from sqlalchemy.dialects.postgresql import insert
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
 from sighop.db.models import Bot as BotRow
 from sighop.db.models import BotState as BotStateRow
+from sighop.db.models import Channel as ChannelRow
+from sighop.db.models import ChannelMessage as ChannelMessageRow
 from sighop.db.models import Contact as ContactRow
 from sighop.db.models import DirectMessage as DirectMessageRow
 from sighop.db.models import Entity as EntityRow
@@ -41,9 +46,17 @@ from sighop.db.models import Webhook as WebhookRow
 from sighop.db.models import WebUser as WebUserRow
 from sighop.db.sealing import SealError, open_seed, open_value, seal_seed, seal_value
 from sighop.db.times import ensure_utc
+from sighop.net.channels import (
+    ChannelKind,
+    ChannelMessageRecord,
+    ChannelOutcome,
+    ChannelSet,
+    LoadedChannel,
+)
 from sighop.net.contacts import Contact
 from sighop.net.dm import DirectMessageRecord, RecordedOutcome
 from sighop.net.paths import LearnedPath, PathKey
+from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, ChannelKey, channel_key_from_hashtag
 from sighop.protocol.identity import LocalIdentity
 from sighop.protocol.payloads import (
     PERMISSION_ROLE_MASK,
@@ -2653,3 +2666,506 @@ def _open_webhook(record: WebhookRecord, sealed: bytes, secret: bytes) -> Opened
         return OpenedWebhook(record=record, url=opened.decode("utf-8"))
     except (SealError, UnicodeDecodeError) as exc:
         return OpenedWebhook(record=record, url=None, error=str(exc))
+
+
+# --- Channels (change `channel-messaging`) ------------------------------------
+#
+# The station's group channels and what was said in them. Every rule a stored
+# channel obeys is here, so `sighop channel` and the panel refuse identically and
+# in the same words (design D9, the `webui-write-parity` lesson). No refusal
+# repeats a pre-shared key: a refusal is printed to a terminal and rendered into
+# a page.
+
+MAX_CHANNEL_NAME_LENGTH = 64
+PUBLIC_CHANNEL_NAME = "Public"
+PSK_SIZES = (16, 32)
+DEFAULT_CHANNEL_PAGE = 50
+
+
+class ChannelConfigError(ValueError):
+    """A channel that cannot be stored. Says which rule it broke."""
+
+
+class ChannelExistsError(ChannelConfigError):
+    """The name, or the key, is already stored."""
+
+
+GUESSABLE_STATEMENT = (
+    "anyone who knows or guesses its name can derive the key, and read and post in it"
+)
+"""Said wherever a hashtag or Public channel is added or listed."""
+
+
+def parse_channel_name(value: str) -> str:
+    name = value.strip()
+    if not name:
+        raise ChannelConfigError("a channel name cannot be empty")
+    if len(name) > MAX_CHANNEL_NAME_LENGTH:
+        raise ChannelConfigError(
+            f"a channel name is at most {MAX_CHANNEL_NAME_LENGTH} characters; this one "
+            f"is {len(name)}"
+        )
+    for character in name:
+        if unicodedata.category(character).startswith("C"):
+            raise ChannelConfigError(
+                "a channel name cannot contain control or unassigned characters "
+                f"(found U+{ord(character):04X})"
+            )
+    return name
+
+
+def parse_hashtag(value: str) -> str:
+    """A hashtag with its leading `#`, which is part of the hashed bytes."""
+    tag = value.strip()
+    if not tag.startswith("#"):
+        tag = f"#{tag}"
+    if len(tag) == 1:
+        raise ChannelConfigError("a hashtag cannot be empty")
+    if any(character.isspace() for character in tag):
+        raise ChannelConfigError("a hashtag cannot contain whitespace")
+    return parse_channel_name(tag)
+
+
+def parse_psk(value: str) -> bytes:
+    """A base64 pre-shared key of 16 or 32 bytes. The refusal never echoes it."""
+    text = "".join(value.split())
+    if not text:
+        raise ChannelConfigError("a pre-shared key cannot be empty")
+    try:
+        key = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ChannelConfigError("the pre-shared key does not decode as base64") from exc
+    if len(key) not in PSK_SIZES:
+        raise ChannelConfigError(
+            f"the pre-shared key decodes to {len(key)} bytes; a channel key is 16 or 32 bytes"
+        )
+    return key
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelRecord:
+    """One stored channel. Carries no key, sealed or open, so it cannot leak one."""
+
+    id: int
+    name: str
+    kind: ChannelKind
+    channel_hash: int
+    created_at: dt.datetime
+    hashtag: str | None = None
+
+    @property
+    def guessable(self) -> bool:
+        return self.kind.guessable
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "channel_id": self.id,
+            "channel": self.name,
+            "kind": str(self.kind),
+            "channel_hash": f"{self.channel_hash:02x}",
+            "guessable": self.guessable,
+        }
+
+
+@dataclass(slots=True)
+class ChannelRepository:
+    """The `channel` table. Every rule is checked here, before any write."""
+
+    database: Database
+
+    async def add_public(self, *, name: str = PUBLIC_CHANNEL_NAME) -> Outcome[ChannelRecord]:
+        return await self._add(
+            parse_channel_name(name), ChannelKind.PUBLIC, PUBLIC_CHANNEL_KEY, secret=None
+        )
+
+    async def add_hashtag(
+        self, hashtag: str, *, name: str | None = None, secret: bytes | None = None
+    ) -> Outcome[ChannelRecord]:
+        """`secret`, when given, lets the duplicate-key check open stored pre-shared keys."""
+        tag = parse_hashtag(hashtag)
+        return await self._add(
+            parse_channel_name(name or tag),
+            ChannelKind.HASHTAG,
+            channel_key_from_hashtag(tag),
+            hashtag=tag,
+            secret=secret,
+        )
+
+    async def add_psk(self, key: str, *, name: str, secret: bytes) -> Outcome[ChannelRecord]:
+        checked_name = parse_channel_name(name)
+        raw = parse_psk(key)
+        return await self._add(
+            checked_name,
+            ChannelKind.PSK,
+            ChannelKey(key=raw),
+            sealed=seal_value(raw, secret),
+            secret=secret,
+        )
+
+    async def _add(
+        self,
+        name: str,
+        kind: ChannelKind,
+        key: ChannelKey,
+        *,
+        secret: bytes | None,
+        hashtag: str | None = None,
+        sealed: bytes | None = None,
+    ) -> Outcome[ChannelRecord]:
+        """Refuse a name or key already stored; the unique constraint backs the name race."""
+
+        async def read(session: object) -> list[tuple[ChannelRecord, bytes | None]]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelRow).order_by(ChannelRow.id)
+                )
+            ).scalars()
+            return [
+                (_channel(row), None if row.sealed_key is None else bytes(row.sealed_key))
+                for row in rows
+            ]
+
+        stored = await self.database.run("read_channels_for_add", read)
+        if not isinstance(stored, Succeeded):
+            return stored
+        for record, _sealed in stored.value:
+            if record.name == name:
+                raise ChannelExistsError(
+                    f"a channel named {name!r} already exists; the stored channel is unchanged"
+                )
+        for record, stored_sealed in stored.value:
+            existing = _derive_key(record, stored_sealed, secret)
+            # Constant time: the candidate may be a secret, and so may the stored key.
+            if existing is not None and hmac.compare_digest(existing.key, key.key):
+                raise ChannelExistsError(
+                    f"this key is already stored as the channel {record.name!r}; "
+                    "nothing was added"
+                )
+
+        created_at = dt.datetime.now(dt.UTC)
+
+        async def work(session: object) -> ChannelRecord:
+            row = ChannelRow(
+                name=name,
+                kind=str(kind),
+                hashtag=hashtag,
+                sealed_key=sealed,
+                channel_hash=key.channel_hash,
+                created_at=created_at,
+            )
+            session.add(row)  # type: ignore[attr-defined]
+            await session.flush()  # type: ignore[attr-defined]
+            return _channel(row)
+
+        return await self.database.run("add_channel", work)
+
+    async def list_all(self) -> Outcome[list[ChannelRecord]]:
+        async def work(session: object) -> list[ChannelRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelRow).order_by(ChannelRow.id)
+                )
+            ).scalars()
+            return [_channel(row) for row in rows]
+
+        return await self.database.run("list_channels", work)
+
+    async def get(self, name: str) -> Outcome[ChannelRecord | None]:
+        wanted = name.strip()
+
+        async def work(session: object) -> ChannelRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelRow).where(ChannelRow.name == wanted)
+                )
+            ).scalar_one_or_none()
+            return None if row is None else _channel(row)
+
+        return await self.database.run("get_channel", work)
+
+    async def get_by_id(self, channel_id: int) -> Outcome[ChannelRecord | None]:
+        async def work(session: object) -> ChannelRecord | None:
+            row = await session.get(ChannelRow, channel_id)  # type: ignore[attr-defined]
+            return None if row is None else _channel(row)
+
+        return await self.database.run("get_channel_by_id", work)
+
+    async def message_count(self, channel_id: int) -> Outcome[int]:
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count())
+                    .select_from(ChannelMessageRow)
+                    .where(ChannelMessageRow.channel_id == channel_id)
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_channel_messages", work)
+
+    async def message_counts(self) -> Outcome[dict[int, int]]:
+        async def work(session: object) -> dict[int, int]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelMessageRow.channel_id, func.count()).group_by(
+                        ChannelMessageRow.channel_id
+                    )
+                )
+            ).all()
+            return {int(channel_id): int(count) for channel_id, count in rows}
+
+        return await self.database.run("count_messages_per_channel", work)
+
+    async def remove(self, channel_id: int) -> Outcome[int | None]:
+        """Delete a channel and, by cascade, its history.
+
+        The number of messages deleted with it, or `None` when no such channel.
+        """
+
+        async def work(session: object) -> int | None:
+            counted = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count())
+                    .select_from(ChannelMessageRow)
+                    .where(ChannelMessageRow.channel_id == channel_id)
+                )
+            ).scalar_one()
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(ChannelRow).where(ChannelRow.id == channel_id)
+            )
+            return int(counted) if result.rowcount else None
+
+        return await self.database.run("remove_channel", work)
+
+    async def load_keys(self, secret: bytes | None) -> Outcome[ChannelSet]:
+        """Every stored channel with its key, and the names of any that would not open.
+
+        Opening happens outside `run`, for `EntityRepository.load_all`'s reason: a
+        wrong secret or an altered row is not a database fault, and one row that
+        does not open must not take the other channels with it.
+        """
+
+        async def work(session: object) -> list[tuple[ChannelRecord, bytes | None]]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelRow).order_by(ChannelRow.id)
+                )
+            ).scalars()
+            return [
+                (_channel(row), None if row.sealed_key is None else bytes(row.sealed_key))
+                for row in rows
+            ]
+
+        outcome = await self.database.run("load_channels", work)
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        loaded: list[LoadedChannel] = []
+        skipped: list[str] = []
+        for record, sealed in outcome.value:
+            key = _derive_key(record, sealed, secret)
+            if key is None:
+                skipped.append(record.name)
+                continue
+            loaded.append(LoadedChannel(record.id, record.name, record.kind, key))
+        return Succeeded(ChannelSet(channels=tuple(loaded), skipped=tuple(skipped)))
+
+    async def key_of(self, name: str, secret: bytes | None) -> Outcome[bytes | None]:
+        """One channel's key bytes, for `sighop channel key`. `None` for no such channel.
+
+        Raises `SealError` when a pre-shared key does not open, so the caller
+        can say why rather than print nothing.
+        """
+
+        async def work(session: object) -> tuple[ChannelRecord, bytes | None] | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelRow).where(ChannelRow.name == name.strip())
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            return _channel(row), None if row.sealed_key is None else bytes(row.sealed_key)
+
+        outcome = await self.database.run("read_channel_key", work)
+        if not isinstance(outcome, Succeeded):
+            return outcome
+        if outcome.value is None:
+            return Succeeded(None)
+        record, sealed = outcome.value
+        if record.kind is ChannelKind.PSK:
+            if secret is None or sealed is None:
+                raise SealError(
+                    f"channel {record.name!r}: its pre-shared key is sealed under "
+                    "SIGHOP_SECRET_KEY, which is not set"
+                )
+            return Succeeded(open_value(sealed, secret, what=f"channel {record.name!r}"))
+        key = _derive_key(record, sealed, secret)
+        assert key is not None
+        return Succeeded(key.key)
+
+
+def _derive_key(
+    record: ChannelRecord, sealed: bytes | None, secret: bytes | None
+) -> ChannelKey | None:
+    """A stored channel's key, or `None` when a pre-shared key cannot be opened."""
+    match record.kind:
+        case ChannelKind.PUBLIC:
+            return PUBLIC_CHANNEL_KEY
+        case ChannelKind.HASHTAG:
+            return channel_key_from_hashtag(record.hashtag or record.name)
+        case ChannelKind.PSK:
+            if secret is None or sealed is None:
+                return None
+            try:
+                return ChannelKey(key=open_value(sealed, secret, what=f"channel {record.name!r}"))
+            except (SealError, ValueError):
+                return None
+
+
+def _channel(row: ChannelRow) -> ChannelRecord:
+    return ChannelRecord(
+        id=int(row.id),
+        name=row.name,
+        kind=ChannelKind(row.kind),
+        channel_hash=int(row.channel_hash),
+        created_at=row.created_at,
+        hashtag=row.hashtag,
+    )
+
+
+@dataclass(slots=True)
+class ChannelMessageRepository:
+    """The `channel_message` table: one row per message, updated in place.
+
+    Read directly rather than mirrored, for `DirectMessageRepository`'s reason.
+    Nothing on the packet path consults it.
+    """
+
+    database: Database
+
+    async def upsert_many(self, records: Sequence[ChannelMessageRecord]) -> Outcome[int]:
+        """Write a batch, collapsed to the latest offer per `(channel_id, ref)`.
+
+        `handled_at` is left out of the update: a post must not move in its
+        channel because it resolved or was heard repeated.
+        """
+        if not records:
+            return Succeeded(value=0)
+        values = _latest_per_key(
+            ((record.channel_id, record.ref), _channel_message_values(record))
+            for record in records
+        )
+
+        async def work(session: object) -> int:
+            statement = insert(ChannelMessageRow).values(values)
+            await session.execute(  # type: ignore[attr-defined]
+                statement.on_conflict_do_update(
+                    index_elements=[ChannelMessageRow.channel_id, ChannelMessageRow.ref],
+                    set_={
+                        "text": statement.excluded.text,
+                        "packet_id": statement.excluded.packet_id,
+                        "outcome": statement.excluded.outcome,
+                        "outcome_reason": statement.excluded.outcome_reason,
+                        "repeats_heard": func.greatest(
+                            ChannelMessageRow.repeats_heard, statement.excluded.repeats_heard
+                        ),
+                    },
+                )
+            )
+            return len(values)
+
+        return await self.database.run("upsert_channel_messages", work)
+
+    async def upsert(self, record: ChannelMessageRecord) -> Outcome[int]:
+        return await self.upsert_many([record])
+
+    async def recent(
+        self, channel_id: int, *, limit: int = DEFAULT_CHANNEL_PAGE
+    ) -> Outcome[list[ChannelMessageRecord]]:
+        """The newest `limit` messages, newest first, by handled time and never wire time."""
+
+        async def work(session: object) -> list[ChannelMessageRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(ChannelMessageRow)
+                    .where(ChannelMessageRow.channel_id == channel_id)
+                    .order_by(ChannelMessageRow.handled_at.desc(), ChannelMessageRow.id.desc())
+                    .limit(limit)
+                )
+            ).scalars()
+            return [_channel_message(row) for row in rows]
+
+        return await self.database.run("read_channel_history", work)
+
+    async def mark_awaiting_unknown(self) -> Outcome[int]:
+        """At startup: a post left awaiting by the last run has an unknown outcome."""
+
+        async def work(session: object) -> int:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(ChannelMessageRow)
+                .where(ChannelMessageRow.outcome == str(ChannelOutcome.AWAITING))
+                .values(outcome=str(ChannelOutcome.UNKNOWN))
+            )
+            return int(result.rowcount or 0)
+
+        return await self.database.run("mark_channel_posts_unknown", work)
+
+    async def count(self) -> Outcome[int]:
+        async def work(session: object) -> int:
+            total = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.count()).select_from(ChannelMessageRow)
+                )
+            ).scalar_one()
+            return int(total)
+
+        return await self.database.run("count_all_channel_messages", work)
+
+
+def _channel_message_values(record: ChannelMessageRecord) -> dict[str, object]:
+    return {
+        "channel_id": record.channel_id,
+        "direction": record.direction,
+        "ref": record.ref,
+        "entity_public_key": record.entity_public_key,
+        "unverified_sender_name": record.unverified_sender_name,
+        "text": record.text,
+        "wire_timestamp": record.wire_timestamp,
+        "handled_at": ensure_utc(record.handled_at, field="channel_message.handled_at"),
+        "packet_id": record.packet_id,
+        "hop_count": record.hop_count,
+        "snr_db": record.snr_db,
+        "rssi_dbm": record.rssi_dbm,
+        "outcome": str(record.outcome),
+        "outcome_reason": record.outcome_reason,
+        "repeats_heard": record.repeats_heard,
+    }
+
+
+def _channel_outcome(stored: str) -> ChannelOutcome:
+    """A stored outcome, or `UNKNOWN` for one this build does not know."""
+    try:
+        return ChannelOutcome(stored)
+    except ValueError:
+        return ChannelOutcome.UNKNOWN
+
+
+def _channel_message(row: ChannelMessageRow) -> ChannelMessageRecord:
+    return ChannelMessageRecord(
+        channel_id=int(row.channel_id),
+        direction=row.direction,
+        ref=row.ref,
+        text=bytes(row.text),
+        wire_timestamp=int(row.wire_timestamp),
+        handled_at=row.handled_at,
+        outcome=_channel_outcome(row.outcome),
+        entity_public_key=None if row.entity_public_key is None else bytes(row.entity_public_key),
+        unverified_sender_name=row.unverified_sender_name,
+        packet_id=row.packet_id,
+        hop_count=row.hop_count,
+        snr_db=row.snr_db,
+        rssi_dbm=row.rssi_dbm,
+        repeats_heard=int(row.repeats_heard),
+        outcome_reason=row.outcome_reason,
+        row_id=int(row.id),
+    )

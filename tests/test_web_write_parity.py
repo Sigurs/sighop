@@ -1750,7 +1750,10 @@ async def _populated(database: Database):
     )
     assert isinstance(webhook, Succeeded)
     state = stub_state(persistence=persistence, stub_names=("swept-run-identity",))
+    # Change `channel-messaging`: the seeded Public channel, loaded as a run would.
+    assert await state.reload_channels()
     return persistence, state, {
+        "channel_id": str(state.channels.channels.channels[0].id),
         "webhook_id": str(webhook.value.id),
         "entity_id": str(identity_record.id),
         "room_id": str(room.value.id),
@@ -1826,6 +1829,11 @@ async def test_every_page_this_change_added_renders_the_meter(
             response = await client.request(method, path)
             assert response.status_code < 500, f"{method} {path} → {response.status_code}"
             if method == "HEAD":
+                continue
+            if path.endswith("/messages") and response.status_code == 200:
+                # An HTMX fragment, swapped into a page that already carries the
+                # meter; a fragment that carried its own would draw it twice.
+                assert "<html" not in response.text, f"{path} is a whole page"
                 continue
             assert 'aria-label="duty cycle"' in response.text, f"{path} has no meter"
             assert "persistence" in response.text, f"{path} does not state durability"

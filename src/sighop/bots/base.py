@@ -8,11 +8,14 @@ cannot be bypassed by a driver that forgets to check — there is no path along
 which a driver could reach the radio to bypass them with.
 
 **Why there is no `on_channel_message`.** §7's sketch has three handlers. Two
-are here. The third is not, and its absence is intent rather than oversight: no
-channel key store exists and nothing in `net/` decrypts `GRP_TXT`, so a hook
-declared here could never fire. A protocol member that is structurally
-unreachable is a promise the runtime cannot keep, and a driver author would
-write against it. It arrives with channels.
+are here. The third is not, and its absence is an operator decision rather than
+an oversight. Milestone 7 left it out because no hook could have fired; since
+change `channel-messaging` `GRP_TXT` is decrypted, so that reason is gone and a
+better one stands. A bot reacting to channel traffic is triggered by
+unauthenticated content from anyone holding a key that is often guessable — a
+hashtag or the Public channel — and a bot posting to a channel floods the whole
+mesh. Both deserve a change of their own rather than arriving because channels
+exist (DESIGN.md §7 Bots).
 
 **Why an advert event and not an advert.** `AdvertEvent` is built from a
 `ContactObservation` and the `RxRecord` that produced it, and `ContactStore`
@@ -440,9 +443,9 @@ class Bot(Protocol):
     configuration behaviour, because `sighop bot set` hands each value to the
     driver that owns it rather than to a schema in the CLI (design D14).
 
-    There is no `on_channel_message`. See the module docstring: nothing decrypts
-    `GRP_TXT` yet, and a hook that could never fire is a promise the runtime
-    cannot keep.
+    There is no `on_channel_message`, by operator decision. See the module
+    docstring: a channel's sender is unauthenticated and its key often guessable,
+    and a channel post floods the mesh.
     """
 
     driver_name: str

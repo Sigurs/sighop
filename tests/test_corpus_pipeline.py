@@ -159,3 +159,85 @@ def test_the_pipeline_sees_the_same_single_transport_routed_frame(replayed):
     assert len(routed) == EXPECTED_TRANSPORT_FRAMES
     assert routed[0].route_type is RouteType.TRANSPORT_FLOOD
     assert not routed[0].failed
+
+
+# --- Channels (change `channel-messaging`, task 6.2) -------------------------
+
+
+ALL_CAPTURES = tuple(sorted(path.name for path in CAPTURES_DIR.glob("*.jsonl")))
+"""Every capture, as `tests/protocol/test_channel_foreign_decrypt.py` reads them:
+the Public channel's 85 distinct frames span files the protocol corpus does not
+name."""
+
+EXPECTED_PUBLIC_DECRYPTED = 85
+EXPECTED_UNKNOWN_CHANNEL = 108
+
+
+async def _replay_with_channels(*, public_loaded: bool) -> dict[str, int]:
+    """Every capture through ingest, the bus, the contact store and the channel
+    messenger, each subscription drained after every frame so no subscriber
+    queue overflows and the count is a count of frames rather than of drops."""
+    from sighop.net.bus import IngressPipeline, NetworkBus
+    from sighop.net.channels import ChannelKind, ChannelMessenger, ChannelSet, LoadedChannel
+    from sighop.net.contacts import ContactStore
+    from sighop.net.dedup import DedupCache
+    from sighop.net.paths import PathStore
+    from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY
+    from tests.test_tx import RecordingLogger
+
+    submissions: list[object] = []
+
+    def submit(submission: object) -> object:
+        submissions.append(submission)
+        raise AssertionError("a replay with channels loaded submitted a packet")
+
+    bus = NetworkBus(logger=RecordingLogger())
+    contacts = ContactStore(logger=RecordingLogger())
+    contact_queue = bus.subscribe("contacts")
+    channel_queue = bus.subscribe("channels")
+    pipeline = IngressPipeline(
+        bus=bus, dedup=DedupCache(), paths=PathStore(), logger=RecordingLogger()
+    )
+    channels = ChannelSet(
+        channels=(LoadedChannel(1, "Public", ChannelKind.PUBLIC, PUBLIC_CHANNEL_KEY),)
+        if public_loaded
+        else ()
+    )
+    messenger = ChannelMessenger(
+        submit=submit,  # type: ignore[arg-type]
+        channels=channels,
+        logger=RecordingLogger(),
+    )
+    pipeline.observers.append(messenger.observe)
+    for name in ALL_CAPTURES:
+        for event in CaptureReplay.open(CAPTURES_DIR / name).read():
+            pipeline.ingest(decode_event(event))
+            while not channel_queue.queue.empty():
+                await messenger.handle(channel_queue.queue.get_nowait())
+            while not contact_queue.queue.empty():
+                await contacts.handle(contact_queue.queue.get_nowait())
+    return {
+        "considered": pipeline.dedup.stats.considered,
+        "duplicates": pipeline.duplicates,
+        "delivered": pipeline.delivered,
+        "contacts": len(contacts),
+        "paths": pipeline.paths.destination_count,
+        "decrypted": messenger.decrypted,
+        "unknown": messenger.unknown,
+        "undecryptable": messenger.undecryptable,
+        "submissions": len(submissions),
+    }
+
+
+async def test_loading_public_changes_no_reception_count_and_decrypts_its_frames():
+    without = await _replay_with_channels(public_loaded=False)
+    with_public = await _replay_with_channels(public_loaded=True)
+
+    for key in ("considered", "duplicates", "delivered", "contacts", "paths"):
+        assert with_public[key] == without[key], f"loading Public changed {key}"
+    assert with_public["decrypted"] == EXPECTED_PUBLIC_DECRYPTED
+    assert with_public["unknown"] == EXPECTED_UNKNOWN_CHANNEL
+    assert with_public["undecryptable"] == 0
+    assert without["decrypted"] == 0
+    assert without["unknown"] == EXPECTED_PUBLIC_DECRYPTED + EXPECTED_UNKNOWN_CHANNEL
+    assert with_public["submissions"] == without["submissions"] == 0

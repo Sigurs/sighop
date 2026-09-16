@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
+import secrets
 import sys
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
@@ -30,8 +32,12 @@ from sighop.db.migrations import MigrationsNotFoundError
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
     BOT_ENTITY_TYPE,
+    GUESSABLE_STATEMENT,
+    PUBLIC_CHANNEL_NAME,
     BotExistsError,
     BotRecord,
+    ChannelConfigError,
+    ChannelRecord,
     EntityExistsError,
     EntityHasRoleError,
     EntityLoadError,
@@ -62,6 +68,7 @@ from sighop.monitor.render import (
 )
 from sighop.monitor.run import MonitorRun
 from sighop.net.airtime import cross_check_airtime
+from sighop.net.channels import ChannelKind, ChannelMessageRecord, ChannelOutcome
 from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
 from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
@@ -94,7 +101,7 @@ from sighop.web.app import (
     validate_allowed_hosts,
 )
 from sighop.web.auth import Authenticator, FirstRunSetup
-from sighop.web.chat import ConversationLog
+from sighop.web.chat import ChannelLog, ConversationLog
 from sighop.web.feed import FeedHub
 from sighop.webhooks.config import (
     FIRST_RUN_BURST,
@@ -787,6 +794,82 @@ def build_parser() -> argparse.ArgumentParser:
         webhook_test,
     ):
         _add_database_url_argument(webhook_parser)
+
+    channel = subparsers.add_parser(
+        "channel",
+        help=(
+            "add, list, inspect, remove and read the group channels this station holds "
+            "(needs a database)"
+        ),
+    )
+    channel_actions = channel.add_subparsers(dest="channel_command", required=True)
+    channel_add = channel_actions.add_parser(
+        "add",
+        help="add a channel: Public, a hashtag, or a pre-shared key. " + PSK_IS_READ_FROM_STDIN,
+        description=PSK_IS_READ_FROM_STDIN,
+    )
+    channel_source = channel_add.add_mutually_exclusive_group(required=True)
+    channel_source.add_argument(
+        "--public", action="store_true", help="the stock MeshCore Public channel"
+    )
+    channel_source.add_argument(
+        "--hashtag",
+        metavar="HASHTAG",
+        default=None,
+        help="a channel whose key is derived from this hashtag, e.g. #dev-sighop",
+    )
+    channel_source.add_argument(
+        "--psk-stdin",
+        action="store_true",
+        help="a 16- or 32-byte pre-shared key, base64, read from standard input",
+    )
+    channel_source.add_argument(
+        "--generate",
+        action="store_true",
+        help="a newly generated 16-byte pre-shared key, printed once",
+    )
+    channel_add.add_argument(
+        "--name",
+        default=None,
+        help=(
+            "the channel's name (default: Public, or the hashtag); required for a "
+            "pre-shared key"
+        ),
+    )
+    channel_actions.add_parser("list", help="list the channels, with kind and hash, no keys")
+    channel_show = channel_actions.add_parser(
+        "show", help="show one channel and its recorded message count"
+    )
+    channel_show.add_argument("name", help="the channel's name")
+    channel_remove = channel_actions.add_parser(
+        "remove", help="delete a channel and all of its recorded messages"
+    )
+    channel_remove.add_argument("name", help="the channel's name")
+    channel_remove.add_argument(
+        "--delete-history",
+        action="store_true",
+        help="accept that the channel's recorded messages are deleted, without a prompt",
+    )
+    channel_key = channel_actions.add_parser(
+        "key", help="print a channel's key in base64, for sharing it"
+    )
+    channel_key.add_argument("name", help="the channel's name")
+    channel_history = channel_actions.add_parser(
+        "history", help="print a channel's most recent messages"
+    )
+    channel_history.add_argument("name", help="the channel's name")
+    channel_history.add_argument(
+        "--limit", type=int, default=20, help="how many messages (default: 20)"
+    )
+    for channel_parser in (
+        channel_add,
+        channel_actions.choices["list"],
+        channel_show,
+        channel_remove,
+        channel_key,
+        channel_history,
+    ):
+        _add_database_url_argument(channel_parser)
 
     web = subparsers.add_parser(
         "web", help="manage what the web interface needs from a terminal (accounts)"
@@ -2649,6 +2732,8 @@ async def _attach_web(
     # working while the database is degraded.
     conversations = ConversationLog()
     runtime.watch_messages(conversations)
+    channel_log = ChannelLog()
+    runtime.watch_channels(channel_log)
     interface = WebInterface.bind(
         runtime,
         auth=auth,
@@ -2660,6 +2745,7 @@ async def _attach_web(
         conversations=conversations,
         sealing_secret=_web_sealing_secret(args, runtime),
         announce=runtime.say,
+        channel_log=channel_log,
     )
     # The event first, then the output. Both are unconditional: there is no
     # option that serves a non-loopback bind without saying what it exposes.
@@ -3113,6 +3199,349 @@ def _webhook_test(args: argparse.Namespace, config: Config, out: IO[str]) -> int
     return 1
 
 
+# --- sighop channel -----------------------------------------------------------
+
+PSK_IS_READ_FROM_STDIN = (
+    "A pre-shared key is read from standard input or generated, never taken as an "
+    "argument: arguments are visible in process listings and shell history, and "
+    "the key is the credential for reading and posting in the channel"
+)
+
+CHANNELS_NEED_A_DATABASE = (
+    "no database is configured: channels are stored configuration and require "
+    "durable storage, so this command needs one. Set DATABASE_URL or pass "
+    "--database-url"
+)
+
+CHANNEL_CHANGES_REACH_A_RUNNING_PROCESS = (
+    "a running run applies this within 60 s; a change made in a run's own web "
+    "interface applies at once"
+)
+
+
+def _channel_command(args: argparse.Namespace, out: IO[str]) -> int:
+    try:
+        config = Config.from_environment(database_url=getattr(args, "database_url", None))
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if config.database is None:
+        print(CHANNELS_NEED_A_DATABASE, file=sys.stderr)
+        return 2
+    try:
+        match args.channel_command:
+            case "add":
+                return _channel_add(args, config, out)
+            case "list":
+                return _channel_list(config.database, out)
+            case "show":
+                return _channel_show(args, config.database, out)
+            case "remove":
+                return _channel_remove(args, config.database, out)
+            case "key":
+                return _channel_key(args, config, out)
+            case _:
+                return _channel_history(args, config.database, out)
+    except (ChannelConfigError, ConfigError, SealError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+def _optional_secret(config: Config) -> bytes | None:
+    try:
+        return config.secret_key_bytes()
+    except ConfigError:
+        return None
+
+
+def _render_channel(record: ChannelRecord, out: IO[str], *, messages: int | None = None) -> None:
+    print(f"channel    {record.name}", file=out)
+    print(f"kind       {record.kind}", file=out)
+    print(f"hash       {record.channel_hash:02x}", file=out)
+    if record.hashtag is not None:
+        print(f"hashtag    {record.hashtag}", file=out)
+    if messages is not None:
+        print(f"messages   {messages}", file=out)
+    if record.guessable:
+        print(f"guessable  yes — {GUESSABLE_STATEMENT}", file=out)
+    else:
+        print("guessable  no — readable only by whoever holds the pre-shared key", file=out)
+
+
+def _outcome_or_refusal(outcome: Any, name: str) -> int | None:
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no channel named {name!r}", file=sys.stderr)
+        return 2
+    return None
+
+
+def _channel_add(args: argparse.Namespace, config: Config, out: IO[str]) -> int:
+    assert config.database is not None
+    generated: str | None = None
+    if args.psk_stdin or args.generate:
+        if not args.name:
+            print("a pre-shared-key channel needs --name", file=sys.stderr)
+            return 2
+        secret = config.secret_key_bytes()
+        if args.generate:
+            generated = base64.b64encode(secrets.token_bytes(16)).decode("ascii")
+            key = generated
+        elif sys.stdin.isatty():
+            import getpass
+
+            key = getpass.getpass("pre-shared key (base64): ")
+        else:
+            key = sys.stdin.readline()
+
+        async def work(persistence: Persistence) -> Any:
+            return await persistence.channels.add_psk(key, name=args.name, secret=secret)
+
+    elif args.hashtag is not None:
+        optional = _optional_secret(config)
+
+        async def work(persistence: Persistence) -> Any:
+            return await persistence.channels.add_hashtag(
+                args.hashtag, name=args.name, secret=optional
+            )
+
+    else:
+
+        async def work(persistence: Persistence) -> Any:
+            return await persistence.channels.add_public(name=args.name or PUBLIC_CHANNEL_NAME)
+
+    outcome = asyncio.run(_with_rooms(config.database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record = outcome.value
+    _render_channel(record, out)
+    if generated is not None:
+        print(f"key        {generated}", file=out)
+        print(
+            "this key is the credential for reading and posting in the channel, and is "
+            f"printed once; `sighop channel key {record.name}` prints it again",
+            file=out,
+        )
+    if record.kind is ChannelKind.PUBLIC:
+        print(
+            "Public is flooded to the whole mesh; adding it transmits nothing, and "
+            "posting still needs the run's transmit gate",
+            file=out,
+        )
+    print(
+        f"channel {record.name!r} is added; {CHANNEL_CHANGES_REACH_A_RUNNING_PROCESS}",
+        file=out,
+    )
+    return 0
+
+
+def _channel_list(database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        listed = await persistence.channels.list_all()
+        if isinstance(listed, Failed):
+            return listed
+        counts = await persistence.channels.message_counts()
+        if isinstance(counts, Failed):
+            return counts
+        return listed.value, counts.value
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    records, counts = outcome
+    if not records:
+        print("no channels are configured; group text is left undecrypted", file=out)
+        return 0
+    for record in records:
+        marking = "guessable" if record.guessable else "private"
+        print(
+            f"{record.name}  kind={record.kind}  hash={record.channel_hash:02x}  "
+            f"{marking}  messages={counts.get(record.id, 0)}",
+            file=out,
+        )
+    if any(record.guessable for record in records):
+        print(f"guessable: {GUESSABLE_STATEMENT}", file=out)
+    return 0
+
+
+async def _find_channel(persistence: Persistence, name: str) -> Any:
+    found = await persistence.channels.get(name)
+    if isinstance(found, Failed):
+        return found
+    return found.value
+
+
+def _channel_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_channel(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        counted = await persistence.channels.message_count(record.id)
+        return counted if isinstance(counted, Failed) else (record, counted.value)
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _outcome_or_refusal(outcome, args.name)
+    if refused is not None:
+        return refused
+    record, messages = outcome
+    _render_channel(record, out, messages=messages)
+    return 0
+
+
+def _channel_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    async def count(persistence: Persistence) -> Any:
+        record = await _find_channel(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        counted = await persistence.channels.message_count(record.id)
+        return counted if isinstance(counted, Failed) else (record, counted.value)
+
+    outcome = asyncio.run(_with_rooms(database, count))
+    refused = _outcome_or_refusal(outcome, args.name)
+    if refused is not None:
+        return refused
+    record, messages = outcome
+    consequence = (
+        f"removing channel {record.name!r} deletes its {messages} recorded message(s); "
+        "they cannot be recovered"
+    )
+    if not args.delete_history:
+        if not sys.stdin.isatty():
+            print(
+                f"{consequence}. Nothing was removed: confirm at a terminal, or pass "
+                "--delete-history to accept it",
+                file=sys.stderr,
+            )
+            return 2
+        print(consequence, file=out)
+        answer = input(f"type the channel name ({record.name}) to remove it: ")
+        if answer.strip() != record.name:
+            print("not confirmed; nothing was removed", file=sys.stderr)
+            return 2
+
+    async def remove(persistence: Persistence) -> Any:
+        return await persistence.channels.remove(record.id)
+
+    removed = asyncio.run(_with_rooms(database, remove))
+    if isinstance(removed, Failed):
+        print(str(removed.error), file=sys.stderr)
+        return 2
+    if removed.value is None:
+        print(f"no channel named {record.name!r}", file=sys.stderr)
+        return 2
+    print(
+        f"channel {record.name!r} is removed with {removed.value} recorded message(s); "
+        f"{CHANNEL_CHANGES_REACH_A_RUNNING_PROCESS}",
+        file=out,
+    )
+    return 0
+
+
+def _channel_key(args: argparse.Namespace, config: Config, out: IO[str]) -> int:
+    assert config.database is not None
+    secret = _optional_secret(config)
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_channel(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        key = await persistence.channels.key_of(record.name, secret)
+        return key if isinstance(key, Failed) else (record, key.value)
+
+    outcome = asyncio.run(_with_rooms(config.database, work))
+    refused = _outcome_or_refusal(outcome, args.name)
+    if refused is not None:
+        return refused
+    record, key = outcome
+    print(base64.b64encode(key).decode("ascii"), file=out)
+    if record.guessable:
+        print(
+            f"this key is derivable by anyone: {GUESSABLE_STATEMENT}",
+            file=out,
+        )
+    return 0
+
+
+def _channel_history(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    if args.limit <= 0:
+        print("--limit must be positive", file=sys.stderr)
+        return 2
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_channel(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        history = await persistence.channel_messages.recent(record.id, limit=args.limit)
+        if isinstance(history, Failed):
+            return history
+        entities = await persistence.entities.list_all()
+        names = (
+            {entity.public_key: entity.name for entity in entities.value}
+            if isinstance(entities, Succeeded)
+            else {}
+        )
+        return record, history.value, names
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _outcome_or_refusal(outcome, args.name)
+    if refused is not None:
+        return refused
+    record, messages, names = outcome
+    if not messages:
+        print(f"channel {record.name!r} has no recorded messages", file=out)
+        return 0
+    print(
+        f"channel {record.name!r}, oldest first. Sender names are claims: anyone "
+        "holding the channel key can write any name",
+        file=out,
+    )
+    for message in reversed(messages):
+        print(_render_channel_history_line(message, names), file=out)
+    return 0
+
+
+def _render_channel_history_line(message: ChannelMessageRecord, names: dict[bytes, str]) -> str:
+    when = message.handled_at.isoformat(timespec="seconds")
+    text = message.rendered().text
+    if message.inbound:
+        sender = (
+            "no sender"
+            if message.unverified_sender_name is None
+            else f"claimed {message.unverified_sender_name!r}"
+        )
+        hops = "?" if message.hop_count is None else str(message.hop_count)
+        return f"{when}  ✗ {sender} (unverified)  h{hops}: {text}"
+    # The entity store names identities it holds; a `run --entity keyfile.json`
+    # identity was never in it, so "no longer stored" said the one thing that is
+    # not true of the commonest case. The key is printed instead, which is what
+    # tells the two apart: it is the same key `sighop keys list` shows.
+    key = message.entity_public_key
+    if key is None:
+        identity = "an identity whose key was not recorded"
+    else:
+        identity = names.get(
+            key,
+            f"{key.hex()[:16]}… (not in the entity store: a keyfile identity, or one removed)",
+        )
+    match message.outcome:
+        case ChannelOutcome.TRANSMITTED:
+            state = (
+                f"transmitted, {message.repeats_heard} repeat(s) heard "
+                "(repeater evidence, not delivery)"
+            )
+        case ChannelOutcome.AWAITING:
+            state = "awaiting transmission"
+        case ChannelOutcome.NOT_TRANSMITTED:
+            state = f"not transmitted: {message.outcome_reason or 'no reason recorded'}"
+        case _:
+            state = "outcome unknown — the run stopped before it resolved"
+    return f"{when}  -> posted as {identity}: {text}  [{state}]"
+
+
 def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -3149,6 +3578,10 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
     if args.command == "webhook":
         configure_logging(stream=sys.stderr)
         return _webhook_command(args, stream)
+
+    if args.command == "channel":
+        configure_logging(stream=sys.stderr)
+        return _channel_command(args, stream)
 
     if args.command == "db":
         configure_logging(stream=sys.stderr)

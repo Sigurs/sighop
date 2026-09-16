@@ -17,6 +17,7 @@ import pytest
 
 from sighop.protocol.crypto import (
     CIPHER_BLOCK_SIZE,
+    PUBLIC_CHANNEL_KEY,
     AdvertVerificationFailure,
     ChannelKey,
     MacCandidateMatch,
@@ -349,6 +350,16 @@ def test_channel_hash_is_the_first_byte_of_sha256_of_the_key() -> None:
     assert ChannelKey(key=key16).channel_hash == hashlib.sha256(key16).digest()[0]
     key32 = bytes(range(32))
     assert ChannelKey(key=key32).channel_hash == hashlib.sha256(key32).digest()[0]
+
+
+def test_public_channel_hash_is_taken_over_the_real_length() -> None:
+    """KAT. Every corpus `GRP_TXT` on the Public channel carries hash `0x11`;
+    the same hash over the zero-extended 32-byte buffer would be `0x17`.
+    """
+    assert PUBLIC_CHANNEL_KEY.key.hex() == "8b3387e9c5cdea6ac9e5edbaa115cd72"
+    assert PUBLIC_CHANNEL_KEY.channel_hash == 0x11
+    assert hashlib.sha256(PUBLIC_CHANNEL_KEY.secret).digest()[0] == 0x17
+    assert not PUBLIC_CHANNEL_KEY.is_brute_forceable
 
 
 def test_short_channel_key_is_zero_extended_for_the_secret() -> None:

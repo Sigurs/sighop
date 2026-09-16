@@ -96,6 +96,13 @@ A companion and a bot are the same runtime with a different driver: one driven b
 through the WebUI, one by code. Build them as one type with a pluggable driver rather than
 two parallel implementations.
 
+A **channel** is not an entity and belongs to no entity: it is **station state**, a key the
+station holds (change `channel-messaging`). `GRP_TXT` has no recipient, and its only "sender" is
+a name inside the plaintext, so per-identity membership would model something the wire cannot
+express — a handheld's channel slots are a property of the device, and sighop is the device.
+Every loaded identity that may chat can read and post in every stored channel, and a channel has
+one history, not one per identity. Path knowledge is platform-wide (§4.2) for the same reason.
+
 ### The node-hash collision problem
 
 MeshCore addresses packets by a **1-byte** destination hash. With 256 possible values,
@@ -413,10 +420,20 @@ length is **not** recoverable from the ciphertext: a body that legitimately ends
 indistinguishable from padding. Strip trailing zeros in the body parser, which knows the
 layout — never centrally in the cipher, which would corrupt binary bodies like GRP_DATA.
 
-**Channel keys (GRP_TXT).** Either a pre-shared 16-byte key, or derived from a hashtag as
-`sha256(b"#roomname")[:16]`. The channel hash in the payload is the first byte of
-`sha256(channel_key)`. Hashtag-derived keys have a small keyspace and are brute-forceable —
-surface this in the WebUI when a user creates a hashtag channel.
+**Channel keys (GRP_TXT).** Either a pre-shared 16- or 32-byte key, or derived from a hashtag
+as `sha256(b"#roomname")[:16]`. The stock **Public** channel is a pre-shared key everybody
+has — `izOH6cXN6mrJ5e26oRXNcg==`, `protocol.PUBLIC_CHANNEL_KEY` — and is exactly as private as
+a hashtag. The channel hash in the payload is the first byte of `sha256(channel_key)` **taken
+over the key at its real length** (`BaseChatMesh.cpp:907-910`): Public's hash is `0x11`, and
+over the zero-extended 32-byte buffer it would be `0x17`, which no corpus frame carries. The
+cipher and MAC key with that zero-extended buffer. **HMAC cannot tell the two apart** — it
+zero-pads a short key to its block size itself, so a 16-byte key and its zero extension yield
+the same MAC — which leaves the hash length the only falsifiable negative, and the known-answer
+test asserts it. As of change `channel-messaging` this is also confirmed against a foreign
+implementation: `tests/protocol/test_channel_foreign_decrypt.py` verifies and decrypts all 85
+distinct corpus `GRP_TXT` frames on `0x11` under Public, and asserts none of the 108 on `0x81`
+opens. Hashtag-derived keys have a small keyspace and are brute-forceable — surface this in the
+WebUI when a user creates a hashtag channel.
 
 **Adverts** are unencrypted but Ed25519-signed over `public key ‖ timestamp ‖ appdata`, in
 that order (`Mesh.cpp::createAdvert`). **Always verify the signature before trusting any
@@ -462,7 +479,8 @@ must not render channel sender names in a way that implies verified identity.
 Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
 them. Milestone 8 adds a tenth, milestone 9 an eleventh that is not about the mesh at
-all, and change `webhook-notifications` a twelfth.
+all, change `webhook-notifications` a twelfth, and change `channel-messaging` a thirteenth and
+fourteenth.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -510,6 +528,38 @@ all, and change `webhook-notifications` a twelfth.
   host, clear), format (`json`|`discord`, checked), triggers (`TEXT[]`, validated in the
   repository rather than a database enum), nullable `max_hops` (checked `>= 0`), enabled,
   `created_at`, nullable `last_delivered_at`, `last_failed_at`, `last_failure`
+
+**Built (change `channel-messaging`, migration `0007`):**
+
+- **channel** — id, **unique** name, kind (`public`|`hashtag`|`psk`, checked), `hashtag`
+  (required iff `hashtag`), **sealed** key (seal version 2, required iff `psk`), `channel_hash`
+  (clear), `created_at`
+- **channel_message** — id, channel id (`ON DELETE CASCADE`), direction, `ref`, nullable
+  `entity_public_key` (outbound), nullable `unverified_sender_name` (inbound), text as
+  **bytes**, `wire_timestamp` (`BIGINT`), `handled_at` (`TIMESTAMPTZ`), `packet_id`,
+  `hop_count`, `snr_db`, `rssi_dbm`, outcome, nullable `outcome_reason` (the scheduler's
+  reason for a post not transmitted), `repeats_heard`, unique on (channel id, `ref`),
+  indexed on (channel id, `handled_at`)
+
+**The thirteenth table holds channels, and it seals by kind** (§7 Channels). A pre-shared key
+is a read-and-post credential, the same class as a webhook URL, so a `psk` row carries it
+sealed. A `hashtag` row stores the hashtag and a `public` row only its kind, and both derive
+their key when loaded: sealing a key anyone can derive from the row's own name protects
+nothing, and storing Public as a kind is what lets the migration **seed the Public channel
+without `SIGHOP_SECRET_KEY`**, which migrations do not have. `channel_hash` is clear so a
+listing needs no secret. Seeding transmits nothing — posting still needs the transmit gate —
+and an operator who removes Public keeps it removed; no later start re-adds it.
+
+**The fourteenth table is `direct_message`'s shape for the same reasons.** `ref` is the post's
+id outbound and the reception's `packet_id` inbound, every write is `ON CONFLICT (channel_id,
+ref) DO UPDATE`, ordering is by `handled_at`, and a post left `awaiting` by a restart is
+rewritten `unknown` at startup. The claimed sender column is `unverified_sender_name` so nobody
+reads it without reading the claim. **Stored channel text is not encrypted at rest**, as for
+direct messages, and the migration says so. Removing a channel deletes its history — history is
+only meaningful under its key, and a channel re-added later is a new row — and both surfaces
+state the count before doing it. Channel history is not pruned otherwise. **A downgrade from
+`0007` deletes every channel and all channel history**; pre-shared keys have to be re-added from
+wherever they were shared.
 
 **The twelfth table holds webhooks** (§7). The URL is sealed like a seed, because a Discord
 or n8n webhook URL is itself the posting credential and a dump must not hand one out;
@@ -796,10 +846,12 @@ class Bot(Protocol):
     async def on_direct_message(self, ctx: BotContext, event: DirectMessageEvent) -> None: ...
 ```
 
-`on_channel_message` is **absent, and its absence is intent.** No channel key store exists
-and nothing in `net/` decrypts `GRP_TXT`, so a hook declared here could never fire — a
-promise the runtime cannot keep, that a driver author would nonetheless write against. It
-arrives with channels.
+`on_channel_message` is **absent, and its absence is intent.** Until change
+`channel-messaging` the reason was that nothing decrypted `GRP_TXT`, so a hook could never
+fire. That is no longer true, and the hook stays absent **by operator decision**: a bot reacting
+to channel traffic is triggered by unauthenticated content from anyone holding a key that is
+often guessable, and a bot posting to a channel floods the mesh. Both deserve their own change
+rather than arriving as a side effect of channels existing.
 
 `BotContext` exposes sending, contact lookup and durable state, and nothing else: not the
 scheduler, not the bus, not the modem, not a database session. That is what makes the rate
@@ -938,6 +990,74 @@ wait.
 Every suppression is counted by reason and reported, because a greeter that silently greets
 nobody looks exactly like a mesh that went quiet — and exactly like a broken greeter.
 
+### Channels
+
+Change `channel-messaging`. Reading group text on the station's channels (§3) and posting into
+them as a loaded identity. A channel message has no sender authentication, no recipient and no
+acknowledgement, and every surface says so rather than hiding it.
+
+- **Kinds.** `public` (the stock Public channel, §5), `hashtag` (key derived from the name,
+  brute-forceable) and `psk` (a 16- or 32-byte key, sealed at rest). Hashtag and Public channels
+  are marked *guessable* wherever a channel is added or listed. A key equal to one already stored
+  is refused naming that channel, as is a name in use; a different key with the same one-byte
+  hash is accepted, because it collides routinely (§3). All rules live in `ChannelRepository`,
+  so the command line and the panel refuse identically. Channels require a database: a run
+  without one loads none and says so at startup, and the channel commands refuse.
+- **Receive.** `net/channels.py`'s `ChannelMessenger` is a bus subscriber, never inside
+  `net/rx.py`, so replay determinism is untouched. For each `GRP_TXT` it trials **every** loaded
+  channel whose hash matches (no firmware cap of four — a local store is small), decrypts only
+  under a channel whose MAC matched, and stops at the first whose plaintext parses. No matching
+  hash is counted as *unknown channel*; a hash with no matching MAC as *undecryptable*.
+- **Plain text only**, as the firmware does (`onGroupDataRecv` drops `txt_type >> 2 != 0`): a
+  decrypted message of another text type is counted as unsupported and not presented, and
+  `GRP_DATA` is never decrypted — it stays in the feed as the payload it is.
+- **A sender name is a claim.** It is shown only as the name the plaintext claims, marked
+  unverified wherever it appears — in events under a field named `unverified_sender_name`, in
+  run output with the same marking as other unauthenticated content, in the panel with a
+  presentation that shares nothing with a verified identity — and never linked, coloured or
+  badged as a contact or local identity of the same name. A message with no `": "` has no sender.
+- **Compose.** A post is plain group text: the station's clock in epoch seconds, text type plain,
+  attempt zero, `"<identity name>: <text>"` (`protocol.build_group_text_body`), encrypted under
+  the channel key and carried in one `GRP_TXT` under its hash — byte-identical to
+  `sendGroupMessage`. The timestamp is `max(now, last + 1)` station-wide, so two identical posts
+  never share a packet hash and a repeater never drops the second as a duplicate.
+- **The 160-byte limit, refused rather than truncated.** `name: text` must fit 160 bytes of
+  UTF-8 — the firmware's `MAX_TEXT_LEN`, which stock senders produce and stock clients display in
+  full (the phone frame gives 165). Both ends agree, unlike the room post constant milestone 6
+  found. A name containing `": "` is refused too, because receivers split on the first one. A
+  post is also refused for a channel or identity not loaded and while the transmit gate is closed.
+  Refusals happen before composition and record nothing; the author is present to edit.
+- **One flood, class 2, no retry, no acknowledgement.** The outcome is `awaiting` →
+  `transmitted` | `not transmitted` with the scheduler's reason, and never a claim that anyone
+  received it. There is no cooldown: the gate and the airtime ceiling are the controls, as for
+  direct messages. Every post is run output naming the identity, and the account when it came
+  from the panel.
+- **Our own post heard back is a repeat, not a message.** The dedup cache sees receptions only,
+  so a repeater's copy of our flood arrives fresh and would decrypt as someone using our name. A
+  transmitted post is remembered by its dedup key in a registry local to the messenger (256
+  entries, 1 h). A reception observer — which sees every copy, duplicates included — counts each
+  hit as a repeat heard on the post; the bus handler skips a registered key entirely, so the first
+  copy is not counted twice and never recorded as inbound. It matches by payload and **never by
+  claimed name**: a message claiming `dev-companion` that we did not post must appear as
+  received. The count is labelled as repeater evidence, and *none heard* is stated not to mean
+  not received. The shared dedup cache is not seeded instead: that would change dedup semantics
+  for all traffic, its 300 s TTL is shorter than a slow flood echo, and our own adverts' echoes
+  would vanish from counters that show them today.
+- **Refresh.** The channel set is an immutable snapshot held in memory, loaded at startup and
+  swapped atomically. A change in the panel applies at once through `reload_channels()`; a change
+  from another process is picked up by a 60 s reload, and a reload that adopts a *different* set
+  says so — `channel_set_changed`, named channels and a run-output line, because the CLI's promise
+  that a change reaches a running run cannot otherwise be checked from the run. A failed reload
+  keeps the last set and emits `channel_config_read_failed` — decryption sits on every group
+  reception, and memory answers during an outage (§6), so unlike webhooks nothing is read per
+  event.
+- **Replay and receive-only.** A replay decrypts (pure over captured bytes) and records only with
+  `--persist-replay`. Receive-only mode decrypts and records normally and refuses posts.
+- **Not in this change:** bot channel hooks and sends (§7 Bots), channel webhook triggers,
+  `GRP_DATA`, posting from the command line (a CLI process cannot reach a running run's radio, and
+  unlike a room post a channel post has no stored-row delivery loop), per-identity membership, and
+  region-scoped floods.
+
 ### Webhooks
 
 Change `webhook-notifications`. Tells systems outside sighop — Discord, n8n, Home Assistant —
@@ -1006,7 +1126,7 @@ All four areas confirmed in scope. Priority order for building:
 1. **Admin & config** — CRUD virtual entities, key management, radio settings, enable/disable bots, room passwords and retention.
 2. **Observability dashboard** — live packet feed (WebSocket), airtime and duty-cycle usage against budget, per-entity TX/RX counters, contact table with learned paths, SNR/RSSI, modem health.
 3. **Room browsing** — message history from Postgres, per-room member lists.
-4. **Chat client** — send DMs and channel messages as any companion entity. This makes sighop usable without a handheld and is the strongest argument for the project.
+4. **Chat client** — send DMs and channel messages as any companion entity. This makes sighop usable without a handheld and is the strongest argument for the project. Channels (change `channel-messaging`) are listed beside direct conversations with unread indication and read without choosing an identity; posting requires choosing one, and the Public composer says the post is flooded to the whole mesh. A received sender is a claimed name, never a verified identity, and the conversation says names are not authenticated. `/admin/channels` adds hashtag and pre-shared-key channels, re-adds Public, and removes a channel through confirm-and-nonce stating how many messages go with it.
 
 ### Design direction: instrument panel
 
@@ -1154,7 +1274,7 @@ safe direction.
 
 ### What the interface deliberately does not expose
 
-The browser reaches every `sighop` capability an operator administers a node with, with three
+The browser reaches every `sighop` capability an operator administers a node with, with four
 exceptions. All are deliberate, all are stated *in the interface* at the point an operator
 would look for them rather than only here, and none is a gap waiting to be closed by
 whoever notices it first.
@@ -1176,6 +1296,12 @@ whoever notices it first.
   smaller reason: it prints a value once that must be kept and must never be regenerated —
   losing it makes every stored identity unrecoverable — and a browser is a poor place to
   hand somebody something they must not lose. The identities page says so.
+- **Revealing a stored channel pre-shared key** (change `channel-messaging`). `sighop channel
+  key` has no browser equivalent. The key is the credential for reading and posting in the
+  channel, and a stolen session that could display it would hand out a channel for good — a key
+  cannot be revoked from the people who already have it. The pre-shared key is entered in a
+  password field, never re-filled after a refusal and never rendered; the channels page names the
+  command and says why.
 
 `capture`, `monitor` and `run` are not candidates at all and the reasoning is worth
 recording: `run` *is* the process serving the panel, and `capture` and `monitor` are
@@ -1235,6 +1361,17 @@ Webhook delivery (§7) emits `webhook_event_raised` (trigger, node hash, `event_
 `webhook_dropped`, `webhook_config_read_failed`, `webhook_url_unsealable`,
 `webhook_outcome_record_failed` and `webhook_test_sent`. Only `url_host` ever appears — never
 a URL's path or query, which is where its token lives.
+
+Channels (§7) report as typed events that `monitor/render.py` formats: `channel_message_received`
+(channel, `packet_id`, hop count, SNR, and the claimed name only as `unverified_sender_name`),
+`channel_unknown` and `channel_undecryptable` (channel hash, `packet_id`),
+`channel_unsupported_text` (channel, text type), `channel_post_submitted` (channel, identity,
+post id, `actor` when from the panel), `channel_post_refused` (reason),
+`channel_post_resolved` (outcome and the scheduler's reason), `channel_repeat_heard` (post id,
+hop count, SNR, running count), `channel_config_read_failed`, and `channel_set_changed` (the
+names added and removed, and how many are loaded) for a reload that adopted a different set — a
+reload that changes nothing says nothing. No event, log line, error or page ever carries a
+pre-shared key.
 
 ---
 
@@ -1407,7 +1544,8 @@ sighop/
 │   ├── net/            rx.py (decode stage), dedup.py, paths.py, bus.py,
 │   │                   tx.py (scheduler), airtime.py, adverts.py,
 │   │                   contacts.py, dm.py (direct messages, both directions),
-│   │                   room.py (the room server), acks.py, pathbodies.py
+│   │                   room.py (the room server), acks.py, pathbodies.py,
+│   │                   channels.py (channel set, receive, post, repeat registry)
 │   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
 │   ├── keystore.py     entity keyfiles (`sighop keys`) — file I/O, so not
 │   │                   under protocol/
@@ -1419,7 +1557,7 @@ sighop/
 │   │                   events.py, render.py (json and discord bodies),
 │   │                   transport.py (one stdlib POST), dispatcher.py (queue,
 │   │                   retries, sample sends)
-│   ├── db/             models.py (the twelve tables), repositories.py (what net/
+│   ├── db/             models.py (the fourteen tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
 │   │                   writer.py (bounded write-behind), sealing.py (seeds and
 │   │                   webhook URLs at rest), packetlog.py (feed rows, pruner),
@@ -1432,7 +1570,9 @@ sighop/
 │   │                   event per request with its actor),
 │   │                   guarded.py (confirm-then-act and its audit event),
 │   │                   feed.py (one bus subscription, per-connection queues),
-│   │                   chat.py (this run's own conversations),
+│   │                   chat.py (this run's own conversations and channel
+│   │                   logs), routes/chat.py (direct and channel conversations),
+│   │                   routes/admin.py (including /admin/channels),
 │   │                   serialize.py, render.py (view models), deps.py,
 │   │                   routes/ (session.py: sign-in and sign-out), templates/,
 │   │                   static/ (vendored htmx, no bundler)
@@ -1499,6 +1639,8 @@ every dispatch, limit, mode and gate test runnable with no database configured.
 Decryption needs local keys and a contact table; the decode stage stays a pure function of one
 frame, which is what keeps a replayed capture reproducing every reception exactly. It reports
 its work as typed events that `monitor/render.py` formats, so `net/` never imports `monitor/`.
+`net/channels.py` follows the same rule for group text, and reaches storage the way `dm.py`
+does — through record sinks and a loader callable — so it imports nothing from `db/` or `web/`.
 
 `radio/replay.py` is the inverse of `radio/capture.py` and lives beside it deliberately:
 it re-hydrates a capture file into the same event stream the modem produces, so the live
@@ -2115,6 +2257,11 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      `web_guarded_action` event — so this is a defect in the runbook, not in the guard. **A
      nonce that is spent once is not the same thing as a nonce that a reload retires**, and
      only the first is implemented.
+   - **The chat page said channels were absent, and that was the one true statement it could
+     make.** §8 item 4 promised channel messages from the start; the page shipped saying they
+     were unsupported and why, while 85 corpus frames on the Public hash sat in the feed as
+     ciphertext. Change `channel-messaging` replaced the sentence with the channels themselves
+     (§7 Channels). Saying so was still better than a chat page that silently had no channels.
    - **The mesh was far quieter than the corpus's busiest session, so "keeps up" is still
      untested at volume.** Fourteen receptions in fifty-nine minutes, against the 555 in 2 h
      54 min that §3's dedup tail was measured over. Every connection of the session — five of
@@ -2283,6 +2430,82 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      seen (`ADVERT`, `TXT_MSG`, `ACK`) are shapes the corpus already holds. A deployment that
      should contribute captures needs a mounted, writable directory, which is a decision
      rather than an oversight to fix quietly.
+10. **Channels.** The channel key store, the receiver, the poster, the history and both
+    surfaces — §7's "Channels", tables thirteen and fourteen, `net/channels.py`, the
+    `sighop channel` noun and the chat channel pages.
+    *Done.* The live exercise ran on 2026-09-16 against the **Heltec V4 OLED** on native USB
+    as the station's modem and a **stock V3 companion** ("[redacted]",
+    `v1.17.1-d929643`) on its own USB as the peer, on the hashtag channel `#dev-sighop`[cd]
+    and never on Public. The peer's post appeared in the browser as
+    `✗ [redacted] — claimed, unverified … received, 0 hop(s)`; two posts composed
+    in the browser as `dev-companion` went out as one flooded class-2 transmission each
+    (53 B, 640 ms of air, 2.5 s of queue wait, no retry) and arrived on the peer's own
+    channel slot as `dev-companion: browser post over the air` at SNR +12.00 and +12.25;
+    each was heard back from a repeater once (`h1`, SNR +13.25) and the page said so —
+    *transmitted; no acknowledgement exists for channel messages; repeat heard 1x — a
+    repeater forwarded it*. A restart restored `channel_messages=9` and left all three rows
+    in place with their states. **The whole session cost 1 s of the 360 s hour — 0.4% against
+    a 10% ceiling**, with `ch_rx`/`ch_tx`/`ch_repeats` on the status line agreeing with the
+    events. Findings:
+    - **The reception line and the channel line contradicted each other on every decrypted
+      frame.** `net/rx.py` printed `not decrypted (no key held)` for a `GRP_TXT` that the
+      channel layer decrypts and prints in full on the next line. Both were true of their own
+      stage — nothing in `net/rx.py` holds channel keys — but read together the first line was
+      a failure report about a message that did not fail. *Fixed:* every envelope now reads
+      `not decrypted at decode (keys are tried by the layer that holds them)`, which is the
+      same sentence for direct messages, where decoding holds no key either.
+    - **The startup line said how many direct messages were restored and not how many channel
+      messages.** `persistence_restored` carried `channel_messages=9`; `restored: … held:
+      conversations=3 messages=4` did not, so milestone 8's advice — *if history looks empty,
+      read the startup line* — did not extend to channels. *Fixed:* the line carries
+      `channel_messages=`, and names the posts a stop left mid-flight when there are any,
+      since rewriting `awaiting` to `unknown` was otherwise invisible.
+    - **A channel added from the terminal arrived in a running station silently.** The 60 s
+      refresh picked up `#dev-sighop-refresh` and the browser listed it, while the run's
+      output and its events said nothing: only `channel_config_read_failed` was reported.
+      The CLI promises "a running run applies this within 60 s" and nothing in the run
+      confirmed it. *Fixed:* a reload that adopts a different set emits `channel_set_changed`
+      and prints `channels changed: +#dev-reload-check  (3 loaded; …)`; a reload that changes
+      nothing stays silent, and the first set a run loads is its startup report, not a change.
+    - **`sighop channel history` called a keyfile identity "an identity no longer stored".**
+      The two posts read `-> posted as an identity no longer stored: …` from the terminal and
+      `dev-companion (this station)` in the browser, because a `--entity` keyfile is never in
+      the entity store. The row was right that the store cannot name it and wrong about why:
+      it was never there, rather than removed. *Fixed:* the line prints the key —
+      `posted as bf447b986a9f302a… (not in the entity store: a keyfile identity, or one
+      removed)` — which is what tells the two cases apart, and is the key `sighop keys list`
+      shows.
+    - **The peer's firmware confirmed two constants the corpus could only imply.** Its slot 0
+      holds `8b3387e9c5cdea6ac9e5edbaa115cd72` — `PUBLIC_CHANNEL_KEY` — and reports its hash
+      as `11`; setting a slot to `#dev-sighop` produced the same 16 bytes and the same hash
+      `cd` as `channel_key_from_hashtag`. The `0x11`-vs-`0x17` distinction of §5 is the
+      firmware's own arithmetic, read back from a second implementation.
+    - **Foreign Public traffic decrypts live, not merely in the corpus.** The first Public
+      message arrived 60 ms after startup and every one after it decrypted with a claimed
+      name; the 85 corpus decrypts were not a property of old captures.
+    - **A companion peer holds channel messages until a client fetches them.** The first
+      browser post did not appear on the peer until a client attached minutes later, and then
+      arrived alongside four buffered Public messages. A live client's silence is not evidence
+      that a post was not received, and a test peer driven over USB has to be listening
+      *before* the post, which is how the exercise was re-run.
+    - **A repeater's copy of someone else's channel message is dropped by dedup, not by the
+      repeat registry.** The peer's own post came back as `h1 path=bed0` 3 s later: two
+      receptions, `dup=50.0%`, `ch_rx=1`, one stored row. The registry of D6 only ever sees
+      copies of *our* posts.
+    - **The over-limit refusal counts what it says it counts.** 170 bytes of text plus 15 of
+      name and separator was refused as *185, which is 25 over*, with a `400`, the text and
+      the chosen identity both preserved in the re-rendered composer, and nothing submitted.
+    - **Ctrl-C produces no record of itself.** No summary line, no stop event, nothing that
+      distinguishes a stop the operator asked for from a kill — the process simply stops
+      appearing. Channel rows written before the signal did survive it, including a reception
+      one minute before, but that is the write-behind's periodic flush rather than a drain.
+    - **The exercise's capture is not in the corpus, and that is a decision rather than a
+      rule.** 16 frames, and unlike milestones 8 and 9 it *does* hold shapes the corpus lacks:
+      `GRP_TXT` on hash `0xcd` that we can decrypt, and two `tx_frame`s of our own posting.
+      Appending it changes what "foreign" means for
+      `tests/protocol/test_channel_foreign_decrypt.py`, which walks every `captures/*.jsonl`
+      and asserts 85 on `0x11` and 108 on `0x81`; a corpus that holds a channel we hold the
+      key to needs that test split first.
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at
 all. Get real adverts decoded off real air before building anything else.

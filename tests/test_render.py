@@ -146,6 +146,21 @@ def test_a_group_envelope_shows_its_channel_hash():
     assert "not decrypted" in detail
 
 
+def test_no_detail_line_claims_a_key_is_not_held():
+    """Decoding holds no keys at all, so it cannot report one as missing: the
+    channel layer decrypts the same frame on the next line (§12, milestone 10).
+    """
+    envelopes = (
+        (PayloadType.TXT_MSG, bytes([0xA3, 0x7F]) + b"\x11\x22" + b"\x00" * 32),
+        (PayloadType.GRP_TXT, bytes([0x5A]) + b"\x11\x22" + b"\x00" * 16),
+        (PayloadType.ANON_REQ, bytes([0xA3]) + b"\x01" * 32 + b"\x11\x22" + b"\x00" * 16),
+    )
+    for payload_type, payload in envelopes:
+        detail = render_detail_line(record_for(packet_bytes(payload_type, payload)))
+        assert "no key held" not in detail
+        assert "not decrypted at decode (keys are tried by the layer that holds them)" in detail
+
+
 def test_an_ack_shows_its_checksum_and_tail():
     detail = render_detail_line(
         record_for(packet_bytes(PayloadType.ACK, bytes.fromhex("aabbccdd0102")))
@@ -673,3 +688,138 @@ def test_the_banner_with_the_gate_open_names_no_identity_when_there_is_none():
 
     assert "packets WILL be transmitted on air" in text
     assert "originating identities: none" in text
+
+
+# --- Channels (change `channel-messaging`) ----------------------------------
+
+
+def test_a_channel_message_renders_its_claimed_sender_as_unverified():
+    from sighop.monitor.render import VERIFIED_MARK, render_channel_message_received
+    from sighop.net.channels import ChannelMessageReceived
+
+    line = render_channel_message_received(
+        ChannelMessageReceived(
+            channel_id=1,
+            channel_name="Public",
+            packet_id="pkt9",
+            unverified_sender_name="Sigurs",
+            body="hej",
+            wire_timestamp=1_757_000_000,
+            hop_count=2,
+            snr_db=5.0,
+            rssi_dbm=-90,
+            channels_tried=1,
+        )
+    )
+
+    assert VERIFIED_MARK not in line, "a channel sender name was rendered as verified"
+    assert line == (
+        "          ✗ Public from claimed 'Sigurs' (unverified)  h2: 'hej'  "
+        "ts=1757000000"
+    )
+    assert "pkt9" not in line, "a per-reception id would make a replay render differently"
+
+
+def test_a_channel_message_with_no_separator_names_no_sender():
+    from sighop.monitor.render import render_channel_message_received
+    from sighop.net.channels import ChannelMessageReceived
+
+    line = render_channel_message_received(
+        ChannelMessageReceived(1, "Public", "p", None, "words", 1, None, None, None, 1)
+    )
+
+    assert "from no sender (unverified)  h?: 'words'" in line
+
+
+def test_channel_posts_and_their_outcomes_render_with_the_account():
+    from sighop.monitor.render import (
+        render_channel_post_refused,
+        render_channel_post_resolved,
+        render_channel_post_submitted,
+        render_channel_repeat_heard,
+    )
+    from sighop.net.channels import (
+        ChannelOutcome,
+        ChannelPostRefused,
+        ChannelPostResolved,
+        ChannelPostSubmitted,
+        ChannelRepeatHeard,
+    )
+
+    submitted = render_channel_post_submitted(
+        ChannelPostSubmitted("post1", 2, "#dev-sighop", "dev-companion", "hello", 7, 30, "op")
+    )
+    assert submitted == (
+        "          -> #dev-sighop post as dev-companion: 'hello'  flood class 2  30B  "
+        "ts=7  post=post1  by account 'op'"
+    )
+    assert "by account" not in render_channel_post_submitted(
+        ChannelPostSubmitted("post1", 2, "#dev-sighop", "dev-companion", "hello", 7, 30)
+    )
+    transmitted = render_channel_post_resolved(
+        ChannelPostResolved(
+            "post1", "#dev-sighop", "dev-companion", ChannelOutcome.TRANSMITTED, "p1",
+            airtime_ms=420.0,
+        )
+    )
+    assert "transmitted (no acknowledgement exists for channel messages)" in transmitted
+    dropped = render_channel_post_resolved(
+        ChannelPostResolved(
+            "post1", "#dev-sighop", "dev-companion", ChannelOutcome.NOT_TRANSMITTED, "p1",
+            reason="deadline_expired",
+        )
+    )
+    assert "! #dev-sighop post as dev-companion not transmitted: deadline_expired" in dropped
+    refused = render_channel_post_refused(
+        ChannelPostRefused(2, "#dev-sighop", "dev-companion", "too long", "op")
+    )
+    assert refused.endswith("refused: too long  by account 'op'")
+    repeat = render_channel_repeat_heard(
+        ChannelRepeatHeard("post1", "#dev-sighop", "p2", 1, 3.5, 2, True)
+    )
+    assert "repeated by a repeater (heard 2x, duplicate)  h1" in repeat
+
+
+def test_unknown_and_undecryptable_channel_receptions_render_their_hash():
+    from sighop.monitor.render import render_channel_undecryptable, render_channel_unknown
+    from sighop.net.channels import ChannelUndecryptable, ChannelUnknown
+
+    assert "unknown channel 0x81" in render_channel_unknown(ChannelUnknown("p", 0x81))
+    assert "0x11 not decrypted after 2 channel key(s)" in render_channel_undecryptable(
+        ChannelUndecryptable("p", 0x11, 2)
+    )
+
+
+def test_the_channel_startup_lists_hashes_guessable_marks_and_skips():
+    from sighop.monitor.render import render_channel_startup, render_channel_status
+    from sighop.net.channels import ChannelKind, ChannelSet, LoadedChannel
+    from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, ChannelKey
+
+    text = render_channel_startup(
+        ChannelSet(
+            channels=(
+                LoadedChannel(1, "Public", ChannelKind.PUBLIC, PUBLIC_CHANNEL_KEY),
+                LoadedChannel(2, "private", ChannelKind.PSK, ChannelKey(bytes(16))),
+            ),
+            skipped=("lost",),
+        )
+    )
+    assert text.startswith("channels: Public[11](public, guessable), private[")
+    assert "(psk)" in text
+    assert "channel 'lost' skipped" in text
+    assert render_channel_status(
+        decrypted=3, unknown=1, undecryptable=0, transmitted=2, repeats=5
+    ) == "ch_rx=3 ch_unknown=1 ch_undecryptable=0 ch_tx=2 ch_repeats=5"
+
+
+def test_a_changed_channel_set_names_what_was_added_and_removed():
+    from sighop.monitor.render import render_channel_event
+    from sighop.net.channels import ChannelSetChanged
+
+    line = render_channel_event(
+        ChannelSetChanged(added=("#dev-sighop",), removed=("old",), loaded=2)
+    )
+    assert line == (
+        "channels changed: +#dev-sighop, -old  "
+        "(2 loaded; group text is trialled against all of them)"
+    )

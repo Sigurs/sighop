@@ -22,7 +22,7 @@ from fastapi.templating import Jinja2Templates
 from sighop.db.persistence import Persistence
 from sighop.logging import Logger
 from sighop.web.auth import Authenticator, Session
-from sighop.web.chat import ConversationLog
+from sighop.web.chat import ChannelLog, ConversationLog
 from sighop.web.feed import FeedHub
 from sighop.web.guard import client_address, current_session
 from sighop.web.guarded import NonceStore, audit
@@ -56,6 +56,9 @@ class Panel:
     chat: ConversationLog = field(default_factory=ConversationLog)
     """This run's own view of its conversations — the live half of chat, beside
     the durable history."""
+
+    channel_log: ChannelLog = field(default_factory=ChannelLog)
+    """This run's own view of its channels, the same shape for channels."""
 
     announce: Callable[[str], None] | None = None
     """Writes a line to the run's own output. `cli.py` hands in the runtime's,

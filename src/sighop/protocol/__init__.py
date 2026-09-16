@@ -15,6 +15,7 @@ Decoding returns failures rather than raising (design D3); encoding raises
 """
 
 from sighop.protocol.crypto import (
+    PUBLIC_CHANNEL_KEY,
     AdvertVerificationFailure,
     ChannelKey,
     MacCandidateMatch,
@@ -77,6 +78,7 @@ from sighop.protocol.payloads import (
     TracePayload,
     UnparsedPayload,
     WireText,
+    build_group_text_body,
     build_payload,
     build_request_body,
     build_returned_path_body,
@@ -109,6 +111,7 @@ __all__ = [
     "MAX_PACKET_PAYLOAD",
     "MAX_PATH_SIZE",
     "MAX_TRANS_UNIT",
+    "PUBLIC_CHANNEL_KEY",
     "Acknowledgement",
     "Advert",
     "AdvertAppData",
@@ -152,6 +155,7 @@ __all__ = [
     "WireText",
     "ack_checksum",
     "ack_checksum_for",
+    "build_group_text_body",
     "build_payload",
     "build_request_body",
     "build_returned_path_body",

@@ -158,12 +158,12 @@ def advert_event(contact: Contact | None = None, **kwargs: object) -> AdvertEven
 
 
 def test_the_protocol_has_two_handlers_and_no_channel_hook() -> None:
-    """6.1: §7 sketches three handlers; the third could never fire.
+    """6.1: §7 sketches three handlers; the third is absent by operator decision.
 
-    Nothing in `net/` decrypts `GRP_TXT` and no channel key store exists, so a
-    declared `on_channel_message` would be a promise the runtime cannot keep and
-    a driver author would write against it. Its absence is asserted, and the
-    module says why.
+    Milestone 7 left it out because nothing decrypted `GRP_TXT`; change
+    `channel-messaging` decrypts it, and the hook stays absent because channel
+    senders are unauthenticated and a channel post floods the mesh. Its absence
+    is asserted, and the module says why.
     """
     members = set(Bot.__protocol_attrs__)  # type: ignore[attr-defined]
 

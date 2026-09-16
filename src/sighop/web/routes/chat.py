@@ -30,6 +30,13 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.db.engine import Succeeded
+from sighop.net.channels import (
+    MAX_CHANNEL_TEXT_LEN,
+    ChannelMessageRecord,
+    ChannelOutcome,
+    ChannelPostError,
+    LoadedChannel,
+)
 from sighop.net.contacts import Contact
 from sighop.net.dm import (
     MAX_TEXT_LEN,
@@ -47,11 +54,24 @@ router = APIRouter(prefix="/chat")
 
 SEE_OTHER = 303
 
-CHANNELS_ABSENT = (
-    "Channel messaging is not supported by this build. There is no channel key "
-    "store and group text is not decrypted, so a channel tab would be an element "
-    "that could never carry a message. A received group text appears in the "
-    "packet feed as the undecrypted payload it is."
+CLAIMS_NOTE = (
+    "Channel sender names are not authenticated: anyone holding the channel key "
+    "can claim any name, so a name here is what a message says about itself."
+)
+
+GUESSABLE_NOTE = (
+    "This channel's key is derivable by anyone who knows or guesses its name, so "
+    "anyone can read and post in it."
+)
+
+PUBLIC_NOTE = (
+    "A post to Public is flooded to the whole mesh and readable by anyone."
+)
+
+POST_NOTE = (
+    "A post is one flooded transmission with no retry. No acknowledgement exists "
+    "for channel messages: a repeat heard is evidence that a repeater forwarded "
+    "it, not that anyone received it."
 )
 
 AUTHENTICATION_NOTE = (
@@ -100,7 +120,11 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
         contact_views={
             contact.public_key.hex(): identity_for(contact) for contact in contacts
         },
-        channels_absent=CHANNELS_ABSENT,
+        channels=[
+            {"channel": channel, "new": page.channel_log.new_for(channel.id)}
+            for channel in page.state.channels.channels
+        ],
+        channels_skipped=page.state.channels.channels.skipped,
         recorded=_recorded(page),
         not_recorded=NOT_RECORDED,
     )
@@ -170,6 +194,163 @@ def _entity_name(page: Panel, public_key: bytes) -> str:
     return public_key.hex()[:16]
 
 
+# --- One channel (channel-messaging D8) -------------------------------------
+#
+# Declared before the conversation routes, whose two path segments would
+# otherwise also match `/chat/channel/{id}`.
+
+
+@router.get("/channel/{channel_id}", response_class=HTMLResponse)
+async def channel(
+    channel_id: int, request: Request, page: PanelDep, identity: str = ""
+) -> HTMLResponse:
+    """One channel, newest first. Reading needs no identity and transmits nothing."""
+    loaded = page.state.channels.channels.by_id(channel_id)
+    if loaded is None:
+        return page.page(request, "chat/missing.html", status_code=404)
+    page.channel_log.opened(channel_id)
+    context = await _channel_context(page, loaded)
+    context["chosen"] = identity
+    return page.page(request, "chat/channel.html", **context)
+
+
+@router.get("/channel/{channel_id}/messages", response_class=HTMLResponse)
+async def channel_messages(channel_id: int, request: Request, page: PanelDep) -> HTMLResponse:
+    """The message list alone, for the partial refresh. A GET; transmits nothing."""
+    loaded = page.state.channels.channels.by_id(channel_id)
+    if loaded is None:
+        return page.page(request, "chat/missing.html", status_code=404)
+    page.channel_log.opened(channel_id)
+    context = await _channel_context(page, loaded)
+    return page.page(request, "chat/_channel_messages.html", **context)
+
+
+@router.post("/channel/{channel_id}", response_model=None)
+async def post_to_channel(
+    channel_id: int,
+    request: Request,
+    page: PanelDep,
+    text: Annotated[str, Form()] = "",
+    identity: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """Refuse, or submit one post through the platform's own path — never truncate.
+
+    Every refusal the messenger makes is made before anything is composed, so
+    the post is refused here with its reason and the author's text handed back,
+    and nothing is recorded. A post that is submitted returns at once: there is
+    no acknowledgement to wait for, and the outcome arrives in the refreshed list.
+    """
+    loaded = page.state.channels.channels.by_id(channel_id)
+    if loaded is None:
+        return page.page(request, "chat/missing.html", status_code=404)
+    entity = _entity(page, identity) if identity else None
+    refusal = ""
+    if entity is None:
+        refusal = (
+            "An identity must be chosen: a channel post is sent as one of this "
+            "run's identities."
+        )
+    elif not text.encode("utf-8"):
+        refusal = "There is nothing to post."
+    else:
+        try:
+            page.state.channels.post(channel_id, entity, text, actor=page.actor(request))
+        except ChannelPostError as exc:
+            refusal = str(exc)
+    if refusal:
+        context = await _channel_context(page, loaded)
+        context.update(refusal=refusal, draft=text, chosen=identity)
+        return page.page(request, "chat/channel.html", status_code=400, **context)
+    return RedirectResponse(
+        f"/chat/channel/{channel_id}?identity={identity}", status_code=SEE_OTHER
+    )
+
+
+async def _channel_context(page: Panel, loaded: LoadedChannel) -> dict[str, Any]:
+    messages, readable = await _channel_messages(page, loaded.id)
+    return {
+        "channel": loaded,
+        "messages": messages,
+        "identities": list(page.state.adverts.stubs),
+        "chosen": "",
+        "max_text_len": MAX_CHANNEL_TEXT_LEN,
+        "claims_note": CLAIMS_NOTE,
+        "guessable_note": GUESSABLE_NOTE,
+        "public_note": PUBLIC_NOTE,
+        "post_note": POST_NOTE,
+        "recorded": _recorded(page),
+        "not_recorded": NOT_RECORDED,
+        "history_readable": readable,
+        "history_unreadable": HISTORY_UNREADABLE,
+        "refusal": "",
+        "draft": "",
+    }
+
+
+async def _channel_messages(
+    page: Panel, channel_id: int
+) -> tuple[list[dict[str, object]], bool]:
+    """Durable rows and this session's own, merged on `ref`; the session's copy wins."""
+    merged: dict[str, ChannelMessageRecord] = {}
+    readable = False
+    if page.persistence is not None:
+        stored = await page.persistence.channel_messages.recent(channel_id)
+        if isinstance(stored, Succeeded):
+            merged = {record.ref: record for record in stored.value}
+            readable = True
+    for record in page.channel_log.messages(channel_id):
+        merged[record.ref] = record
+    ordered = sorted(merged.values(), key=lambda record: record.handled_at, reverse=True)
+    return [_channel_message_view(page, record) for record in ordered], readable
+
+
+def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str, object]:
+    rendered = record.rendered()
+    handled = int(record.handled_at.timestamp())
+    wire_time = (
+        ""
+        if record.wire_timestamp == handled
+        else dt.datetime.fromtimestamp(record.wire_timestamp, dt.UTC).isoformat()
+    )
+    return {
+        "ref": record.ref,
+        "inbound": record.inbound,
+        "claimed": record.unverified_sender_name,
+        "entity_name": (
+            ""
+            if record.entity_public_key is None
+            else _entity_name(page, record.entity_public_key)
+        ),
+        "text": rendered.text,
+        "displayable": rendered.is_valid_utf8,
+        "raw": record.text.hex(),
+        "handled_at": record.handled_at,
+        "wire_time": wire_time,
+        "state": _channel_state_text(record),
+    }
+
+
+def _channel_state_text(record: ChannelMessageRecord) -> str:
+    """A channel message's state, in the only terms a channel offers."""
+    if record.inbound:
+        hops = "?" if record.hop_count is None else str(record.hop_count)
+        return f"received, {hops} hop(s)"
+    repeats = (
+        "no repeat heard — which does not mean it was not received"
+        if record.repeats_heard == 0
+        else f"repeat heard {record.repeats_heard}x — a repeater forwarded it"
+    )
+    match record.outcome:
+        case ChannelOutcome.AWAITING:
+            return "awaiting transmission"
+        case ChannelOutcome.TRANSMITTED:
+            return f"transmitted; no acknowledgement exists for channel messages; {repeats}"
+        case ChannelOutcome.NOT_TRANSMITTED:
+            return f"not transmitted — {record.outcome_reason or 'no reason given'}; not retried"
+        case _:
+            return "outcome unknown — the run stopped before it resolved"
+
+
 # --- One conversation -------------------------------------------------------
 
 
@@ -221,7 +402,6 @@ async def _conversation_context(
         "max_text_len": MAX_TEXT_LEN,
         "route": _route_note(page, contact),
         "authentication_note": AUTHENTICATION_NOTE,
-        "channels_absent": CHANNELS_ABSENT,
         "recorded": _recorded(page),
         "not_recorded": NOT_RECORDED,
         "history_readable": history_readable,

@@ -334,3 +334,44 @@ async def test_undecodable_receptions_are_published_every_time(corpus_records) -
     pipeline.ingest(decode_event(event))
 
     assert subscription.queue.qsize() == 2
+
+
+# --- Observers (change `channel-messaging`, `net-bus`) ---------------------
+
+
+async def test_two_observers_are_both_told_about_a_duplicate(record) -> None:
+    bus = NetworkBus(logger=RecordingLogger())
+    subscription = bus.subscribe("entity")
+    pipeline = IngressPipeline(bus=bus, dedup=DedupCache(), logger=RecordingLogger())
+    first: list[tuple[str, bool]] = []
+    second: list[tuple[str, bool]] = []
+    pipeline.observers.append(lambda r, dup: first.append((r.packet_id, dup)))
+    pipeline.observers.append(lambda r, dup: second.append((r.packet_id, dup)))
+
+    pipeline.ingest(_copy(record, "original"))
+    subscription.queue.get_nowait()
+    pipeline.ingest(_copy(record, "echo", after=1.0))
+
+    assert first == [("original", False), ("echo", True)]
+    assert second == first
+    assert subscription.queue.qsize() == 0, "a subscriber received the duplicate"
+
+
+async def test_a_raising_first_observer_does_not_blind_the_second(record) -> None:
+    bus = NetworkBus(logger=RecordingLogger())
+    subscription = bus.subscribe("entity")
+    logger = RecordingLogger()
+    pipeline = IngressPipeline(bus=bus, dedup=DedupCache(), logger=logger)
+    seen: list[bool] = []
+
+    def explode(r: RxRecord, dup: bool) -> None:
+        raise RuntimeError("broken watcher")
+
+    pipeline.observers.append(explode)
+    pipeline.observers.append(lambda r, dup: seen.append(dup))
+
+    assert pipeline.ingest(record) is True
+
+    assert "rx_observer_error" in logger.names()
+    assert seen == [False]
+    assert subscription.queue.qsize() == 1

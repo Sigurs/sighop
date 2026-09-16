@@ -495,25 +495,7 @@ def test_a_message_from_a_verified_contact_uses_the_same_marking_as_elsewhere() 
     assert "identity-verified" in contacts
 
 
-# --- 15.7 Channels are absent, and the interface says why -------------------
-
-
-def test_the_chat_interface_states_that_channels_are_unsupported_and_why() -> None:
-    """15.7: no composer that could never carry a message."""
-    contact = _contact()
-    app, state, _log = _built(contacts=[contact])
-    stub = state.adverts.stubs[0]
-
-    with _client(app) as client:
-        listing = client.get("/chat").text
-        conversation = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
-
-    for body in (listing, conversation):
-        assert "Channel messaging is not supported" in body
-        assert "no channel key store" in body
-        assert "group text is not decrypted" in body
+# --- 15.7 Group text is not a direct message -------------------------------
 
 
 def test_a_group_text_reception_produces_no_chat_message() -> None:
@@ -789,3 +771,291 @@ async def test_a_conversation_survives_a_restart(database: Database) -> None:
 
     assert "before the restart" in body
     assert "delivered" in body
+
+
+# --- Channels (change `channel-messaging`, tasks 8.1, 8.2, 8.4) --------------
+
+
+def _channels(state: StubState, *names: str) -> None:
+    from sighop.net.channels import ChannelKind, ChannelSet, LoadedChannel
+    from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, channel_key_from_hashtag
+
+    loaded = [LoadedChannel(1, "Public", ChannelKind.PUBLIC, PUBLIC_CHANNEL_KEY)]
+    for index, name in enumerate(names, start=2):
+        loaded.append(
+            LoadedChannel(index, name, ChannelKind.HASHTAG, channel_key_from_hashtag(name))
+        )
+    state.channels.replace_channels(ChannelSet(channels=tuple(loaded)))
+
+
+def _channel_app(
+    *, stub_names: tuple[str, ...] = ("dev-companion",), transmit_enabled: bool = True
+):
+    from sighop.web.chat import ChannelLog
+
+    state = stub_state(
+        stub_names=stub_names, transmit_enabled=transmit_enabled, radio=EU868_NARROW
+    )
+    _channels(state, "#dev-sighop")
+    channel_log = ChannelLog()
+    state.channels.add_record_sink(channel_log)
+    app = create_app(
+        state,
+        auth=authenticator(),
+        hosts=HOSTS,
+        logger=RecordingLogger(),
+        channel_log=channel_log,
+    )
+    return app, state, channel_log
+
+
+def _received(channel_id: int, ref: str, name: str | None, text: bytes = b"hej"):
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+
+    return ChannelMessageRecord(
+        channel_id=channel_id,
+        direction="in",
+        ref=ref,
+        text=text,
+        wire_timestamp=int(NOW.timestamp()),
+        handled_at=NOW,
+        outcome=ChannelOutcome.RECEIVED,
+        unverified_sender_name=name,
+        hop_count=2,
+    )
+
+
+def test_the_channel_log_updates_in_place_and_is_bounded() -> None:
+    from dataclasses import replace
+
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+    from sighop.web.chat import ChannelLog
+
+    log = ChannelLog(capacity=3)
+    post = ChannelMessageRecord(
+        channel_id=2, direction="out", ref="post", text=b"hi", wire_timestamp=1,
+        handled_at=NOW, outcome=ChannelOutcome.AWAITING, entity_public_key=b"\x01" * 32,
+    )
+    log.offer(post)
+    log.offer(replace(post, outcome=ChannelOutcome.TRANSMITTED, repeats_heard=1))
+    assert [r.outcome for r in log.messages(2)] == [ChannelOutcome.TRANSMITTED]
+    assert log.new_for(2) == 0, "our own post is not something new"
+
+    for index in range(10):
+        log.offer(_received(2, f"p{index}", "alice"))
+    assert [r.ref for r in log.messages(2)] == ["p9", "p8", "p7"]
+    assert log.new_for(2) == 10
+    log.opened(2)
+    assert log.new_for(2) == 0
+
+
+def test_channels_are_listed_guessable_and_readable_without_an_identity() -> None:
+    app, _state, log = _channel_app(stub_names=())
+    log.offer(_received(2, "p1", "alice"))
+
+    with _client(app) as client:
+        index = client.get("/chat").text
+        channel = client.get("/chat/channel/1")
+
+    assert "Public" in index and "#dev-sighop" in index
+    assert index.count(">guessable<") == 2
+    assert 'href="/chat/channel/2"' in index and "1 new" in index
+    assert "Channel messaging is not supported" not in index
+    assert channel.status_code == 200
+    assert "No identity to post as" in channel.text
+
+
+def test_a_message_arriving_in_an_open_channel_appears_on_refresh() -> None:
+    app, _state, log = _channel_app()
+    with _client(app) as client:
+        before = client.get("/chat/channel/2/messages").text
+        log.offer(_received(2, "p1", "alice", b"arrived just now"))
+        after = client.get("/chat/channel/2/messages").text
+    assert "arrived just now" not in before
+    assert "arrived just now" in after and "received, 2 hop(s)" in after
+    assert 'hx-trigger="every 3s"' in after
+
+
+def test_a_claim_matching_a_verified_contact_is_not_drawn_as_that_contact() -> None:
+    app, state, log = _channel_app()
+    contact = _contact("[redacted]", verified=True)
+    state.contacts.restore([contact])
+    log.offer(_received(2, "p1", "[redacted]"))
+
+    with _client(app) as client:
+        body = client.get("/chat/channel/2").text
+
+    start = body.index('<div id="channel"')
+    listing = body[start:]
+    assert "claimed-name" in listing and "claimed, unverified" in listing
+    assert "identity-verified" not in listing
+    assert "identity " not in listing, "the identity component drew a claimed name"
+    assert contact.public_key.hex() not in body, "the claim was linked to the contact"
+    assert "Channel sender names are not authenticated" in body
+
+
+def test_a_post_needs_an_identity_and_is_shown_under_it() -> None:
+    app, state, _log = _channel_app()
+    stub = state.adverts.stubs[0]
+    submitted: list[Submission] = []
+
+    def recording(submission: Submission):
+        submitted.append(submission)
+        return state.scheduler.submit(submission)
+
+    state.channels.submit = recording
+
+    with _client(app) as client:
+        missing = client.post("/chat/channel/2", data={TOKEN_FIELD: csrf(client), "text": "hi"})
+        posted = client.post(
+            "/chat/channel/2",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "hello channel",
+                "identity": stub.identity.public_key.hex(),
+            },
+        )
+        page = client.get(posted.headers["location"]).text
+
+    assert missing.status_code == 400 and "An identity must be chosen" in missing.text
+    assert posted.status_code == 303
+    assert len(submitted) == 1
+    assert "hello channel" in page and "dev-companion" in page and "(this station)" in page
+    assert "awaiting transmission" in page
+
+
+def test_a_transmitted_post_states_repeats_and_that_no_acknowledgement_exists() -> None:
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+
+    app, state, log = _channel_app()
+    stub = state.adverts.stubs[0]
+    log.offer(
+        ChannelMessageRecord(
+            channel_id=2, direction="out", ref="post", text=b"hi", wire_timestamp=1,
+            handled_at=NOW, outcome=ChannelOutcome.TRANSMITTED,
+            entity_public_key=stub.identity.public_key, repeats_heard=3,
+        )
+    )
+    log.offer(
+        ChannelMessageRecord(
+            channel_id=2, direction="out", ref="quiet", text=b"hi", wire_timestamp=1,
+            handled_at=NOW, outcome=ChannelOutcome.TRANSMITTED,
+            entity_public_key=stub.identity.public_key,
+        )
+    )
+    with _client(app) as client:
+        body = client.get("/chat/channel/2/messages").text
+    assert "no acknowledgement exists for channel messages" in body
+    assert "repeat heard 3x" in body
+    assert "which does not mean it was not received" in body
+
+
+def test_a_post_over_the_limit_is_refused_with_the_text_kept_and_nothing_recorded() -> None:
+    app, state, log = _channel_app()
+    stub = state.adverts.stubs[0]
+    text = "x" * 150
+
+    with _client(app) as client:
+        refused = client.post(
+            "/chat/channel/2",
+            data={TOKEN_FIELD: csrf(client), "text": text, "identity": stub.identity.public_key.hex()},
+        )
+
+    assert refused.status_code == 400
+    assert "at most 160 bytes" in refused.text and "5 over" in refused.text
+    assert "name" in refused.text
+    assert f">{text}</textarea>" in refused.text
+    assert log.messages(2) == [] and state.scheduler.status().stats.submitted == 0
+
+
+def test_a_closed_gate_refuses_a_post_and_queues_nothing() -> None:
+    app, state, log = _channel_app(transmit_enabled=False)
+    stub = state.adverts.stubs[0]
+    with _client(app) as client:
+        refused = client.post(
+            "/chat/channel/2",
+            data={TOKEN_FIELD: csrf(client), "text": "hi", "identity": stub.identity.public_key.hex()},
+        )
+    assert refused.status_code == 400 and "Transmission is disabled" in refused.text
+    assert log.messages(2) == [] and state.scheduler.status().stats.submitted == 0
+
+
+def test_the_public_composer_states_its_audience() -> None:
+    app, _state, _log = _channel_app()
+    with _client(app) as client:
+        public = client.get("/chat/channel/1").text
+        hashtag = client.get("/chat/channel/2").text
+    assert "flooded to the whole mesh and readable by anyone" in public
+    assert "flooded to the whole mesh and readable by anyone" not in hashtag
+
+
+def test_opening_a_channel_transmits_nothing() -> None:
+    app, state, log = _channel_app()
+    log.offer(_received(2, "p1", "alice"))
+    before = state.scheduler.status().as_json()
+    with _client(app) as client:
+        for _ in range(3):
+            client.get("/chat/channel/2")
+            client.get("/chat/channel/2/messages")
+    assert state.scheduler.status().as_json() == before
+
+
+def test_a_degraded_database_is_said_in_an_open_channel_while_posting_continues() -> None:
+    from sighop.db.engine import DatabaseError, Failed, Succeeded
+
+    class _ChannelMessages:
+        failing = False
+
+        async def recent(self, channel_id: int, **_: object):
+            if self.failing:
+                return Failed(operation="read_channel_history", error=DatabaseError("down"))
+            return Succeeded(value=[])
+
+    class _Persist:
+        state = "ok"
+        degraded = False
+        channel_messages = _ChannelMessages()
+
+        def as_json(self) -> dict[str, object]:
+            return {}
+
+    app, state, log = _channel_app()
+    persistence = _Persist()
+    state.persistence = persistence
+    stub = state.adverts.stubs[0]
+
+    with _client(app) as client:
+        healthy = client.get("/chat/channel/2/messages").text
+        persistence.degraded = True
+        persistence.channel_messages.failing = True
+        log.offer(_received(2, "p1", "alice", b"still arriving"))
+        partial = client.get("/chat/channel/2/messages").text
+        posted = client.post(
+            "/chat/channel/2",
+            data={TOKEN_FIELD: csrf(client), "text": "still posting", "identity": stub.identity.public_key.hex()},
+        )
+
+    assert "not being recorded" not in healthy
+    assert "new messages are not being recorded" in partial
+    assert "still arriving" in partial
+    assert posted.status_code == 303
+
+
+def test_a_post_from_the_interface_is_run_output_naming_the_account() -> None:
+    from sighop.monitor.render import render_channel_event
+    from tests.webfixtures import OPERATOR
+
+    app, state, _log = _channel_app()
+    stub = state.adverts.stubs[0]
+    output: list[str] = []
+    state.channels._on_event = lambda event: output.append(render_channel_event(event))
+
+    with _client(app) as client:
+        client.post(
+            "/chat/channel/2",
+            data={TOKEN_FIELD: csrf(client), "text": "hello", "identity": stub.identity.public_key.hex()},
+        )
+
+    [line] = [line for line in output if "post as" in line]
+    assert "#dev-sighop" in line and "dev-companion" in line
+    assert f"by account '{OPERATOR}'" in line

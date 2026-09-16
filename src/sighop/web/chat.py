@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 
+from sighop.net.channels import ChannelMessageRecord
 from sighop.net.dm import DirectMessageRecord
 
 DEFAULT_PER_CONVERSATION = 200
@@ -101,4 +102,63 @@ class ConversationLog:
             "conversations": len(self._messages),
             "messages_held": sum(len(held) for held in self._messages.values()),
             "records_offered": self.offered,
+        }
+
+
+# --- Channels (change `channel-messaging`, design D7) ------------------------
+
+DEFAULT_PER_CHANNEL = 200
+"""How much of one channel this run keeps in memory — the direct conversation
+bound. Whether a busy Public channel makes it too small for a useful outage view
+is an open question the design leaves to a busy band."""
+
+
+@dataclass(slots=True)
+class ChannelLog:
+    """This run's own view of its channels. A `ChannelMessageSink`.
+
+    The second sink beside the durable one, so channel chat keeps working while
+    the database is degraded, and says so. Keyed on `(channel_id, ref)` like the
+    table, so a post offered at submission, on resolution and on each repeat
+    heard is one entry updated in place.
+    """
+
+    capacity: int = DEFAULT_PER_CHANNEL
+    _messages: dict[int, dict[str, ChannelMessageRecord]] = field(default_factory=dict)
+    _order: dict[int, deque[str]] = field(default_factory=dict)
+    unread: dict[int, int] = field(default_factory=dict)
+    offered: int = 0
+
+    def offer(self, record: ChannelMessageRecord) -> bool:
+        """Take one record. Never awaits, never raises."""
+        held = self._messages.setdefault(record.channel_id, {})
+        order = self._order.setdefault(record.channel_id, deque())
+        if record.ref not in held:
+            order.append(record.ref)
+            while len(order) > self.capacity:
+                held.pop(order.popleft(), None)
+            if record.inbound:
+                self.unread[record.channel_id] = self.unread.get(record.channel_id, 0) + 1
+        held[record.ref] = record
+        self.offered += 1
+        return True
+
+    def messages(self, channel_id: int) -> list[ChannelMessageRecord]:
+        """This session's messages in one channel, newest first."""
+        held = self._messages.get(channel_id, {})
+        order = self._order.get(channel_id, deque())
+        return [held[ref] for ref in reversed(order) if ref in held]
+
+    def new_for(self, channel_id: int) -> int:
+        return self.unread.get(channel_id, 0)
+
+    def opened(self, channel_id: int) -> None:
+        """Mark a channel as looked at."""
+        self.unread.pop(channel_id, None)
+
+    def as_json(self) -> dict[str, object]:
+        return {
+            "channels": len(self._messages),
+            "channel_messages_held": sum(len(held) for held in self._messages.values()),
+            "channel_records_offered": self.offered,
         }
