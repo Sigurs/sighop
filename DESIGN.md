@@ -1073,14 +1073,24 @@ when something worth an operator's attention happens, without anyone watching th
   at the moment of the sighting, identical across retries and webhooks), `occurred_at`,
   `test`, `node` (`public_key` hex, `node_hash` as two hex digits — always the first key byte,
   `hash` as the key's leading `hash_size` bytes in hex, `hash_size`, `name`, `node_type` as a
-  lower-case name, `position` or null) and `reception` (`hop_count`, `snr_db`, `rssi_dbm`,
+  lower-case name, `position` as `{latitude, longitude, map_url}` or null) and `reception`
+  (`hop_count`, `snr_db`, `rssi_dbm`,
   `received_at`, each null when unknown, and `path`: a list of `{hash, name, matches}` hops in
   travel order, empty for a zero-hop reception). Fields may be added within a schema version;
   never removed or repurposed. `discord` is one embed showing the node hash at its heard size,
-  the full 64-hex public key as inline code, and the path (`heard directly` when empty, cut on
-  a hop boundary with `…` at Discord's 1024-character field limit); every advert-derived
-  string, including contact names in the path, is markdown-escaped and `allowed_mentions` is
-  empty, because advert names are written by strangers.
+  the full 64-hex public key as inline code, the location, and the path (`heard directly` when
+  empty, cut on a hop boundary with `…` at Discord's 1024-character field limit); every
+  advert-derived string, including contact names in the path, is markdown-escaped and
+  `allowed_mentions` is empty, because advert names are written by strangers. **The two formats
+  do not carry the same fields:** the embed shows no `snr_db` — link quality of a first sighting
+  is for a machine, and stays in `json`, which never loses a field within schema 1.
+- **Location.** Both formats build the same
+  `https://www.google.com/maps/search/?api=1&query=<lat>,<lon>` from the advert's own
+  coordinates, formatted to six decimals — the wire's 1e-6° precision, fixed-point so a small
+  value cannot reach a URL as `5.9e-05`. `json` carries it as `position.map_url`, present only
+  when a position is; Discord's `Location` field is always there, a masked link labelled with
+  the coordinates or `not advertised`. Coordinates are numbers sighop formats, not advert text,
+  so they are not escaped — but they are self-declared and shown as heard, like the name.
 - **Hash size and path.** The hash size is the advert packet's path hash size (1–3 bytes, from
   its path length byte); a zero-hop advert declares 1 byte and is not inferred larger. Each hop
   is resolved against the contact store once, when the event is raised, so every retry and

@@ -21,6 +21,8 @@ SAMPLE_PUBLIC_KEY = bytes(32)
 SAMPLE_NAME = "dev-sample"
 SAMPLE_HASH_SIZE = 2
 SAMPLE_HOP_NAME = "dev-hop"
+SAMPLE_LATITUDE = 59.329460
+SAMPLE_LONGITUDE = 18.068580
 
 UNKNOWN_HOP = "<unknown>"
 AMBIGUOUS_HOP = "<ambiguous>"
@@ -180,7 +182,11 @@ def event_from_observation(
 
 
 def sample_event(trigger: Trigger, now: dt.datetime) -> WebhookEvent:
-    """A made-up event marked as a test, for `sighop webhook test` (design D8)."""
+    """A made-up event marked as a test, for `sighop webhook test` (design D8).
+
+    It carries a position so a test message exercises the location link, the one
+    field an operator has to click to check.
+    """
     node_type = NodeType.REPEATER if trigger is Trigger.NEW_REPEATER else NodeType.CHAT
     return WebhookEvent(
         event_id=str(uuid.uuid4()),
@@ -189,7 +195,7 @@ def sample_event(trigger: Trigger, now: dt.datetime) -> WebhookEvent:
         public_key=SAMPLE_PUBLIC_KEY,
         name=SAMPLE_NAME,
         node_type=node_type,
-        position=None,
+        position=Position(latitude=SAMPLE_LATITUDE, longitude=SAMPLE_LONGITUDE),
         hop_count=2,
         snr_db=5.0,
         rssi_dbm=-90,

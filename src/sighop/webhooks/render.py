@@ -4,6 +4,10 @@
 within a schema version, never removed or repurposed. `discord` is a
 Discord webhook message, and every advert-derived string in it was written by
 whoever sent the advert — so markdown is escaped and mentions are disabled.
+
+The two formats do not carry the same fields. The Discord message shows an
+advertised position as a maps link a reader can click, and shows no SNR: link
+quality of a first sighting is for a machine, and stays in `json`.
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import re
 import unicodedata
 
 from sighop.webhooks.config import WebhookFormat
-from sighop.webhooks.events import PathHop, WebhookEvent
+from sighop.webhooks.events import PathHop, Position, WebhookEvent
 from sighop.webhooks.triggers import Trigger
 
 JSON_SCHEMA_VERSION = 1
@@ -26,9 +30,15 @@ DISCORD_COLOURS: dict[Trigger, int] = {
 }
 UNNAMED = "unnamed node"
 HEARD_DIRECTLY = "heard directly"
+NO_POSITION = "not advertised"
 DISCORD_FIELD_LIMIT = 1024
 PATH_SEPARATOR = " → "
 ELLIPSIS = "…"
+MAPS_URL = "https://www.google.com/maps/search/?api=1&query={latitude},{longitude}"
+COORDINATE_DECIMALS = 6
+"""Decimals shown for a coordinate: the advert's own precision, 1e-6° of a
+degree (`payloads.GEO_SCALE`). Fixed-point, so a small value cannot reach a URL
+as `5.9e-05`."""
 
 _DISCORD_MARKDOWN = re.compile(r"([\\*_~`|>\[\]()#\-<:@])")
 
@@ -37,6 +47,17 @@ def _instant(value: dt.datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(dt.UTC).isoformat().replace("+00:00", "Z")
+
+
+def _coordinate(value: float) -> str:
+    return f"{value:.{COORDINATE_DECIMALS}f}"
+
+
+def maps_url(position: Position) -> str:
+    """The advertised coordinates as a Google Maps link, shared by both formats."""
+    return MAPS_URL.format(
+        latitude=_coordinate(position.latitude), longitude=_coordinate(position.longitude)
+    )
 
 
 def render(event: WebhookEvent, format: WebhookFormat | str) -> bytes:
@@ -61,7 +82,11 @@ def render_json(event: WebhookEvent) -> bytes:
             "node_type": event.node_type_name,
             "position": None
             if event.position is None
-            else {"latitude": event.position.latitude, "longitude": event.position.longitude},
+            else {
+                "latitude": event.position.latitude,
+                "longitude": event.position.longitude,
+                "map_url": maps_url(event.position),
+            },
         },
         "reception": {
             "hop_count": event.hop_count,
@@ -110,6 +135,18 @@ def discord_path(path: tuple[PathHop, ...]) -> str:
     return shown
 
 
+def discord_location(position: Position | None) -> str:
+    """The coordinates as a masked maps link, or that none were advertised.
+
+    Coordinates are numbers sighop formats, never advert text, so they are not
+    escaped; the masked-link syntax around them is ours.
+    """
+    if position is None:
+        return NO_POSITION
+    label = f"{_coordinate(position.latitude)}, {_coordinate(position.longitude)}"
+    return f"[{label}]({maps_url(position)})"
+
+
 def render_discord(event: WebhookEvent) -> bytes:
     marker = "[test] " if event.test else ""
     public_key = event.public_key.hex()
@@ -133,11 +170,7 @@ def render_discord(event: WebhookEvent) -> bytes:
             "value": "unknown" if event.hop_count is None else str(event.hop_count),
             "inline": True,
         },
-        {
-            "name": "SNR",
-            "value": "unknown" if event.snr_db is None else f"{event.snr_db:.1f} dB",
-            "inline": True,
-        },
+        {"name": "Location", "value": discord_location(event.position), "inline": True},
         {"name": "Public key", "value": f"`{public_key}`", "inline": False},
         {"name": "Path", "value": discord_path(event.path), "inline": False},
     ]

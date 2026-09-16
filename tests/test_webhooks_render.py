@@ -20,7 +20,9 @@ from sighop.webhooks.events import (
 )
 from sighop.webhooks.render import (
     DISCORD_FIELD_LIMIT,
+    NO_POSITION,
     escape_discord,
+    maps_url,
     render,
     render_discord,
     render_json,
@@ -106,6 +108,7 @@ def test_a_sample_event_is_marked_as_a_test() -> None:
     assert event.event_id != sample_event(Trigger.NEW_COMPANION, NOW).event_id
     assert event.hash_size == 2
     assert event.hop_count == 2
+    assert event.position == Position(latitude=59.329460, longitude=18.068580)
     assert event.path == (
         PathHop(hash=bytes.fromhex("c3d4"), name="dev-hop", matches=1),
         PathHop(hash=bytes.fromhex("e5f6"), name=None, matches=0),
@@ -198,6 +201,24 @@ async def test_without_a_lookup_every_hop_is_unknown() -> None:
     assert all(hop.matches == 0 for hop in event.path)
 
 
+# --- 3.4 Maps link -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("position", "query"),
+    [
+        (Position(latitude=60.169856, longitude=24.938379), "60.169856,24.938379"),
+        (Position(latitude=-33.868820, longitude=-151.209290), "-33.868820,-151.209290"),
+        (Position(latitude=51.0, longitude=0.0), "51.000000,0.000000"),
+        (Position(latitude=0.000059, longitude=0.000001), "0.000059,0.000001"),
+    ],
+)
+def test_the_maps_url_carries_the_coordinates_at_advert_precision(
+    position: Position, query: str
+) -> None:
+    assert maps_url(position) == f"https://www.google.com/maps/search/?api=1&query={query}"
+
+
 # --- 4.2 JSON ----------------------------------------------------------------
 
 
@@ -238,7 +259,11 @@ def test_the_json_body_is_the_documented_schema_1_event() -> None:
             "hash_size": 2,
             "name": "Hilltop",
             "node_type": "repeater",
-            "position": {"latitude": 60.169856, "longitude": 24.938379},
+            "position": {
+                "latitude": 60.169856,
+                "longitude": 24.938379,
+                "map_url": "https://www.google.com/maps/search/?api=1&query=60.169856,24.938379",
+            },
         },
         "reception": {
             "hop_count": 2,
@@ -273,7 +298,7 @@ def test_unknown_values_are_null_in_json() -> None:
         )
     )
     assert body["node"]["name"] is None
-    assert body["node"]["position"] is None
+    assert body["node"]["position"] is None  # no position, so no map URL either
     assert body["reception"] == {
         "hop_count": None,
         "snr_db": None,
@@ -281,6 +306,13 @@ def test_unknown_values_are_null_in_json() -> None:
         "received_at": "2026-09-13T12:00:00Z",
         "path": [],
     }
+
+
+def test_an_unlocated_node_keeps_its_snr_in_json() -> None:
+    """SNR left the Discord message; schema 1 keeps it."""
+    body = json.loads(render_json(_fixed(position=None)))
+    assert body["node"]["position"] is None
+    assert body["reception"]["snr_db"] == -4.25
 
 
 def test_rendering_the_same_event_twice_gives_the_same_event_id() -> None:
@@ -307,10 +339,16 @@ def test_the_discord_body_is_one_embed_with_mentions_disabled() -> None:
         ("Type", "repeater", True),
         ("Node hash", "ab01", True),
         ("Hops", "2", True),
-        ("SNR", "-4.2 dB", True),
+        (
+            "Location",
+            "[60.169856, 24.938379]"
+            "(https://www.google.com/maps/search/?api=1&query=60.169856,24.938379)",
+            True,
+        ),
         ("Public key", "`ab" + "01" * 31 + "`", False),
         ("Path", "`c3d4` Relay → `e5f6` <unknown>", False),
     ]
+    assert "SNR" not in [field["name"] for field in embed["fields"]]
 
 
 def test_a_mention_in_a_name_notifies_nobody() -> None:
@@ -346,9 +384,39 @@ def test_an_unnamed_node_is_identified_by_hash_and_key_prefix() -> None:
     assert embed["fields"][0]["value"] == "unnamed node"
 
 
-def _path_field(event: WebhookEvent) -> str:
-    [value] = [field["value"] for field in _discord(event)["embeds"][0]["fields"] if field["name"] == "Path"]
+def _field(event: WebhookEvent, name: str) -> str:
+    [value] = [field["value"] for field in _discord(event)["embeds"][0]["fields"] if field["name"] == name]
     return value
+
+
+def test_a_located_node_links_its_coordinates_to_a_map() -> None:
+    assert _field(_fixed(), "Location") == (
+        "[60.169856, 24.938379]"
+        "(https://www.google.com/maps/search/?api=1&query=60.169856,24.938379)"
+    )
+
+
+def test_a_node_with_no_advertised_position_says_so() -> None:
+    assert _field(_fixed(position=None), "Location") == NO_POSITION
+
+
+def test_negative_coordinates_keep_their_sign_in_the_link() -> None:
+    position = Position(latitude=-33.868820, longitude=-151.209290)
+    assert _field(_fixed(position=position), "Location") == (
+        "[-33.868820, -151.209290]"
+        "(https://www.google.com/maps/search/?api=1&query=-33.868820,-151.209290)"
+    )
+
+
+def test_the_snr_is_not_in_the_discord_message() -> None:
+    """It stays in `json`: link quality of a first sighting is for a machine."""
+    body = _discord(_fixed())
+    assert "SNR" not in [field["name"] for field in body["embeds"][0]["fields"]]
+    assert "dB" not in json.dumps(body)
+
+
+def _path_field(event: WebhookEvent) -> str:
+    return _field(event, "Path")
 
 
 def test_a_contact_name_in_the_path_is_shown_literally() -> None:
@@ -392,9 +460,14 @@ def test_a_sample_is_marked_as_a_test_in_both_formats() -> None:
     embed = _discord(event)["embeds"][0]
     assert embed["title"].startswith("[test] ")
     assert _path_field(event) == "`c3d4` dev\\-hop → `e5f6` <unknown>"
+    assert _field(event, "Location") == (
+        "[59.329460, 18.068580]"
+        "(https://www.google.com/maps/search/?api=1&query=59.329460,18.068580)"
+    )
     body = json.loads(render_json(event))
     assert body["test"] is True
     assert body["node"]["hash_size"] == 2
+    assert body["node"]["position"]["map_url"].endswith("query=59.329460,18.068580")
     assert body["reception"]["path"] == [
         {"hash": "c3d4", "name": "dev-hop", "matches": 1},
         {"hash": "e5f6", "name": None, "matches": 0},
