@@ -17,6 +17,7 @@ from sighop.config import (
     DEFAULT_MAX_OVERFLOW,
     DEFAULT_POOL_SIZE,
     DEFAULT_POOL_TIMEOUT,
+    DEFAULT_SHUTDOWN_BUDGET,
     DEFAULT_STATEMENT_TIMEOUT,
     REQUIRED_DRIVER,
     ROLE_CONNECTION_LIMIT,
@@ -157,7 +158,17 @@ def test_time_bounds_are_overridable_and_reach_the_driver() -> None:
     assert args["server_settings"]["statement_timeout"] == "2000"
 
 
-@pytest.mark.parametrize("bound", ["connect_timeout", "statement_timeout"])
+def test_the_shutdown_budget_is_bounded_below_one_operation_and_overridable() -> None:
+    config = DatabaseConfig(url=URL)
+    assert config.shutdown_budget == DEFAULT_SHUTDOWN_BUDGET == 5.0
+    # Below one operation_timeout on purpose (design D4): a hung database has
+    # its batch cancelled and counted rather than being waited out.
+    assert config.shutdown_budget < config.connect_timeout + config.statement_timeout
+    assert DatabaseConfig(url=URL, shutdown_budget=1.5).shutdown_budget == 1.5
+    assert DatabaseConfig(url=URL).as_json()["shutdown_budget"] == 5.0
+
+
+@pytest.mark.parametrize("bound", ["connect_timeout", "statement_timeout", "shutdown_budget"])
 def test_a_non_positive_time_bound_is_refused(bound: str) -> None:
     overrides: dict[str, float] = {bound: 0.0}
     with pytest.raises(ConfigError, match=bound):
@@ -190,5 +201,3 @@ def test_a_secret_of_the_wrong_length_says_so_and_is_not_reshaped() -> None:
         parse_secret_key(short)
     assert "16 bytes" in str(excinfo.value)
     assert "32" in str(excinfo.value)
-
-

@@ -403,6 +403,51 @@ async def test_a_restart_reports_what_the_database_holds_before_the_first_frame(
     assert "messages=4" in line
 
 
+@pytest.mark.database
+async def test_a_stop_writes_what_more_than_one_lane_had_buffered(
+    database: Database, database_config: DatabaseConfig
+) -> None:
+    """`database`/`dm-history`: the stop drains every lane, past one batch each.
+
+    Forty rows per lane against a batch of 32, so the stop has to keep writing
+    batches rather than write one and abandon the rest.
+    """
+    persistence = Persistence(database=database)
+    persistence.start()
+    for index in range(40):
+        assert persistence.dm_writer.offer(record(ref=f"stop-{index:03d}")) is True
+        assert (
+            persistence.packet_log_writer.offer(
+                PacketLogRow(
+                    packet_id=f"stop{index:03d}",
+                    direction="rx",
+                    at=NOW + dt.timedelta(seconds=index),
+                    outcome="dispatched",
+                )
+            )
+            is True
+        )
+
+    await persistence.stop()  # disposes the fixture's handle; read back on a new one
+
+    assert persistence.dm_writer.written == 40
+    assert persistence.dm_writer.discarded == 0
+    assert persistence.packet_log_writer.written == 40
+    assert persistence.packet_log_writer.discarded == 0
+
+    reading = Database(config=database_config)
+    await reading.open()
+    try:
+        conversations = await DirectMessageRepository(database=reading).conversations(ENTITY)
+        assert isinstance(conversations, Succeeded)
+        assert sum(summary.messages for summary in conversations.value) == 40
+        counted = await PacketLogRepository(database=reading).count()
+        assert isinstance(counted, Succeeded)
+        assert counted.value == 40
+    finally:
+        await reading.dispose()
+
+
 # --- 3.4 What the pruners do not touch --------------------------------------
 
 

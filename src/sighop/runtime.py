@@ -579,8 +579,13 @@ class Runtime:
             # logged rather than abandoned.
             for room in self.rooms:
                 await room.stop()
-            # Before the bus too: a bot mid-dispatch may be awaiting a send, and
-            # cancelling it here resolves that send rather than abandoning it.
+            # Before the bus too, and after `scheduler.stop()` above: a bot
+            # mid-dispatch may be awaiting a send, and the scheduler's stop is
+            # what resolves it — every queued packet is answered with
+            # `DropReason.SHUTDOWN` rather than left hanging. So the bots can be
+            # let finish the dispatch they are running, under their own budget,
+            # instead of being cancelled inside the `bot_state` write that a
+            # dispatch may be holding (design D6).
             await self.bots.stop()
             if self.retention is not None:
                 await self.retention.stop()

@@ -53,7 +53,8 @@ The system SHALL send a `json` webhook an HTTP `POST` with content type `applica
 body carries: a schema version of `1`; the trigger name; an event identifier unique to the event and
 identical across retries of it; the time the event occurred in UTC; the node's full public key in
 hex, its node hash as the key's first byte, its node hash at the size it was heard together with
-that hash size, its advertised name or null, its node type, and its advertised position or null;
+that hash size, its advertised name or null, its node type, and its advertised position or null —
+a position carrying its latitude, its longitude, and a map URL that opens those coordinates;
 and the reception's hop count, SNR, RSSI and receive time, each null
 when unknown, and its path as a list of hops each carrying the hop hash in hex, the resolved contact
 name or null, and the number of matching contacts. Fields SHALL NOT be removed or change meaning
@@ -75,11 +76,22 @@ within schema version `1`; fields MAY be added within it.
 - **WHEN** an event from a zero-hop advert is delivered to a `json` webhook
 - **THEN** the reception's path is an empty list
 
+#### Scenario: A located node in JSON
+- **WHEN** an event for a node whose advert carried coordinates is delivered to a `json` webhook
+- **THEN** the node's position carries its latitude, its longitude and a map URL for those coordinates
+
+#### Scenario: A node with no advertised position in JSON
+- **WHEN** an event for a node whose advert carried no coordinates is delivered to a `json` webhook
+- **THEN** the node's position is null, and the reception's SNR is unaffected
+
 ### Requirement: The Discord format is safe to render advert content
 The system SHALL send a `discord` webhook a message with one embed that names the trigger in words,
-the node's name, node type, node hash at the size it was heard, full public key, hop count, SNR,
-and the path it was heard by. The full public key SHALL be shown as 64 lower-case hex characters in
-inline code so it can be copied whole. The path SHALL list each hop's hash with its shown label in
+the node's name, node type, node hash at the size it was heard, full public key, hop count, location,
+and the path it was heard by. The message SHALL NOT show the reception's SNR, which stays in the
+`json` format. The full public key SHALL be shown as 64 lower-case hex characters in
+inline code so it can be copied whole. The location SHALL be a link that opens the node's advertised
+coordinates in a map, shown under the coordinates themselves, and SHALL state that no position was
+advertised when the advert carried none. The path SHALL list each hop's hash with its shown label in
 travel order, or state that the node was heard directly when the path is empty, and SHALL be
 shortened with an ellipsis rather than exceed Discord's field length limit. Because advert names are
 chosen by whoever sent the advert, the system SHALL escape Discord markdown in advert content —
@@ -122,16 +134,29 @@ an advert cannot ping users or roles or change the message's formatting.
 - **WHEN** the rendered path would exceed Discord's field length limit
 - **THEN** the path field is cut to fit and ends with an ellipsis, and the message is still delivered
 
+#### Scenario: A located node
+- **WHEN** a new repeater adverts coordinates
+- **THEN** the location field shows those coordinates as a link that opens them in a map
+
+#### Scenario: A node with no advertised position
+- **WHEN** a new companion adverts no coordinates
+- **THEN** the location field states that no position was advertised
+
+#### Scenario: No SNR in the message
+- **WHEN** any event is delivered to a `discord` webhook
+- **THEN** the embed carries no SNR field
+
 ### Requirement: A webhook can be tested with a sample event
 The system SHALL allow an operator to send a sample event of a chosen trigger to one webhook,
 regardless of whether it is enabled and regardless of its hop filter, and SHALL report the outcome
 of the attempt — delivered with status code, or failed with status code or reason. A sample event
 SHALL be marked as a test in both formats so a receiver cannot mistake it for a real sighting,
-SHALL carry a sample path containing a named hop and an `<unknown>` hop, and SHALL NOT be retried.
+SHALL carry a sample path containing a named hop and an `<unknown>` hop and a sample position, and
+SHALL NOT be retried.
 
 #### Scenario: Testing a Discord webhook
 - **WHEN** an operator tests a `discord` webhook with `new_repeater`
-- **THEN** one message marked as a test is posted, showing a sample path, and the outcome with its status code is reported
+- **THEN** one message marked as a test is posted, showing a sample path and a location link, and the outcome with its status code is reported
 
 #### Scenario: Testing an unreachable webhook
 - **WHEN** an operator tests a webhook whose host does not resolve

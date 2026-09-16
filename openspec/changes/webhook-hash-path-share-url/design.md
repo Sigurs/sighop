@@ -14,6 +14,10 @@ Current state:
   and has no access to the store. `ContactStore.by_node_hash(int)` indexes by first key byte only.
 - The Discord `Public key` field shows `public_key.hex()[:16]` followed by `…` (inline field); JSON
   already carries the full key.
+- `WebhookEvent.position` is set from the raising advert's appdata (`AdvertAppData.latitude_degrees`
+  / `longitude_degrees`, each the wire integer over `GEO_SCALE = 1_000_000`, so 1e-6° of precision)
+  and reaches JSON as `node.position` only; the Discord embed never shows it. The embed does show
+  an `SNR` field, which no operator acts on from a chat message.
 - DESIGN.md §Webhooks states "fields are added in a later schema version, never removed or
   repurposed within one", and `render.py`'s docstring repeats it. The operator chose additive fields
   within schema 1 for this change, which revises that stated convention.
@@ -28,6 +32,8 @@ Current state:
 
 **Non-Goals:**
 - Inferring a node's real hash size for zero-hop adverts (from stored history, later floods, etc.).
+- A map provider the operator can choose, or a rendered map image.
+- Removing SNR from the `json` format, or from anything outside webhooks (monitor, run output).
 - Contact share links (`meshcore://contact/add?…`) or QR images — dropped by the operator.
 - Matching hops against sighop's own local identities.
 - Changing `as_log_fields` (logs keep the 1-byte hash).
@@ -74,17 +80,45 @@ zero path length byte, and a flood advert heard with 0 hops keeps its declared s
   escaped — Discord treats `<…>` specially only for mention/channel/emoji/timestamp/URL forms, and
   mentions are disabled regardless. Empty path → `heard directly`. Built hop by hop and cut at
   1024 characters (Discord's field limit) ending with `…`, never mid-hop.
-- Field order: `Name`, `Type`, `Node hash`, `Hops`, `SNR` (inline), then `Public key`, then `Path`.
+- New `Location` field (inline), value a masked link
+  `[59.329460, 18.068580](https://www.google.com/maps/search/?api=1&query=59.329460,18.068580)`, or
+  `not advertised` when the event has no position. The label is ~21 characters, so it fits a
+  third-width column without wrapping mid-value; only the label is displayed, so the URL's length
+  does not matter. The field is always present, like the `SNR` field it replaces in the grid: a
+  fixed field set keeps the embed's shape the same for every sighting.
+- The `SNR` field goes away (D8).
+- Field order: `Name`, `Type`, `Node hash`, `Hops`, `Location` (inline), then `Public key`, then
+  `Path`.
 
 ### D6. JSON additive fields
 `node.hash` (sized hex), `node.hash_size`; `reception.path` as
-`[{"hash": "c3d4", "name": "Hilltop" | null, "matches": 1}]`. `node_hash` unchanged. Update
+`[{"hash": "c3d4", "name": "Hilltop" | null, "matches": 1}]`; `node.position.map_url` alongside the
+existing `latitude` and `longitude`, absent as a whole when `position` is `null`. `node_hash` and
+`reception.snr_db` unchanged — schema 1 forbids removing a field, and a machine consumer is exactly
+who SNR is for. Update
 `render.py` docstring and DESIGN.md §Webhooks to "fields may be added within a schema version;
 never removed or repurposed".
 
 ### D7. Sample event
 `sample_event` uses `hash_size=2`, a path of `c3d4` named `dev-hop` (1 match) and `e5f6`
-(0 matches), so a test message exercises both labels. `hop_count` becomes 2 to match the path.
+(0 matches), so a test message exercises both labels. `hop_count` becomes 2 to match the path. It
+also carries a sample position, so `sighop webhook test` exercises the maps link — the one field an
+operator has to click to check.
+
+### D8. The maps link and the SNR field
+One helper in `render.py`, `maps_url(position) -> str`, formats
+`https://www.google.com/maps/search/?api=1&query={lat},{lon}` — Google's documented URL scheme,
+which opens the app on a phone and the web map elsewhere, and needs no key or account. Both formats
+call it, so a URL never differs between them. Coordinates are formatted to 6 decimals
+(`f"{value:.6f}"`), the wire precision: fixed-point avoids a float repr like `5.9e-05` in a URL, and
+the trailing zeros of a round value cost nothing. Coordinates are numbers sighop formats, not advert
+text, so they are not passed through `escape_discord`; the masked-link syntax around them is ours.
+*Alternative:* OpenStreetMap or a geo: URI — rejected: the operator asked for Google Maps, and a
+`geo:` URI is not clickable in Discord on desktop.
+
+SNR leaves the Discord embed in the same change because the field it frees is the one `Location`
+takes: the embed keeps five inline fields and its current shape. SNR stays in `json` (D6) and
+everywhere outside webhooks.
 
 ## Risks / Trade-offs
 
@@ -100,3 +134,10 @@ never removed or repurposed".
   well under Discord's 6000.
 - [JSON consumers with strict schemas reject unknown fields] → accepted by operator; noted in
   DESIGN.md convention change.
+- [A Discord reader who used the SNR field loses it] → accepted; the link quality of a first
+  sighting is a machine concern and stays in `json`.
+- [An advert's coordinates are self-declared and may be wrong, zeroed or spoofed] → shown as heard,
+  labelled with the coordinates so an operator sees `0.000000, 0.000000` for what it is; sighop
+  neither validates nor hides them, the same as the advertised name.
+- [A maps link sends the coordinates to Google when an operator clicks it] → the operator chose the
+  provider; nothing is fetched by sighop, and the link is only rendered.

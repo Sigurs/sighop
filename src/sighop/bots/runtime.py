@@ -70,6 +70,14 @@ Bounded, and small: the queue exists so a driver's work happens off the
 reception path, not so a slow driver can accumulate an hour of adverts and then
 answer all of them at once. Overflow is a reported event, not a silent stall."""
 
+DEFAULT_BOT_SHUTDOWN_BUDGET = 2.0
+"""What every bot together may spend finishing the dispatch it is running.
+
+Two seconds out of compose's 20 s grace, beside the web server's 5 s and the
+writers' 5 s (design D6). Long enough for a `bot_state` write bounded at one
+`operation_timeout` to have been issued and answered, short enough that a driver
+that is slow for its own reasons cannot hold the shutdown open."""
+
 
 @dataclass(slots=True)
 class TokenBucket:
@@ -176,12 +184,16 @@ class BotWorker:
     state: BotStateHandle = field(init=False)
     _queue: asyncio.Queue[BotEvent] = field(init=False)
     _task: asyncio.Task[None] | None = field(default=None, init=False)
+    _idle: asyncio.Event = field(init=False)
+    _stopping: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="bot", bot=self.name)
         self.bucket = limits_from_config(self.record.config)
         self.state = BotStateHandle(bot_id=self.record.id, store=self.storage.bot_state)
         self._queue = asyncio.Queue(maxsize=self.capacity)
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     # --- Identity and reporting --------------------------------------------
 
@@ -427,20 +439,60 @@ class BotWorker:
 
     def start(self) -> None:
         if self._task is None:
+            self._stopping = False
             self._task = asyncio.create_task(self.run(), name=f"bot-{self.name}")
 
-    async def stop(self) -> None:
+    async def stop(self, deadline: float | None = None) -> None:
+        """Let the dispatch in progress finish, then stop (design D6).
+
+        A dispatch can be holding the `bot_state` write that guards an outbound
+        action, so cancelling where it stands costs that write. `deadline` is an
+        absolute event-loop instant shared with the other workers; without one
+        the budget is `DEFAULT_BOT_SHUTDOWN_BUDGET` from now. A dispatch still
+        running at the deadline is cancelled and reported, naming the bot, so a
+        badly behaved driver is identifiable rather than merely slow.
+
+        Safe at its position in the shutdown order because the scheduler has
+        already stopped and resolved every pending send (`runtime.py`), so a
+        dispatch waiting on a send gets an answer rather than hanging.
+        """
+        assert self.logger is not None
+        self._stopping = True
         task, self._task = self._task, None
         if task is None:
             return
+        if deadline is None:
+            timeout = DEFAULT_BOT_SHUTDOWN_BUDGET
+        else:
+            timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+        cut_short = False
+        try:
+            await asyncio.wait_for(self._idle.wait(), timeout)
+        except TimeoutError:
+            cut_short = True
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
+        if cut_short:
+            self.logger.error(
+                "bot_dispatch_cut_short",
+                outcome="error",
+                bot=self.name,
+                driver=self.driver_name,
+                detail="the dispatch in progress did not finish within the shutdown budget",
+            )
 
     async def run(self) -> None:
         while True:
             event = await self._queue.get()
-            await self.dispatch(event)
+            if self._stopping:
+                # Queued dispatches are not started once the stop has begun.
+                return
+            self._idle.clear()
+            try:
+                await self.dispatch(event)
+            finally:
+                self._idle.set()
 
     async def dispatch(self, event: BotEvent) -> None:
         """Run one handler, containing whatever it does.
@@ -555,8 +607,15 @@ class BotHost:
             worker.start()
 
     async def stop(self) -> None:
-        for worker in self.workers:
-            await worker.stop()
+        """Drain the workers concurrently under one deadline, as the lanes do.
+
+        One budget for all the bots rather than one each: the stop's cost is
+        bounded by the slowest driver, not by how many bots are configured.
+        """
+        if not self.workers:
+            return
+        deadline = asyncio.get_running_loop().time() + DEFAULT_BOT_SHUTDOWN_BUDGET
+        await asyncio.gather(*(worker.stop(deadline=deadline) for worker in self.workers))
 
     def as_json(self) -> dict[str, object]:
         return {"bots": len(self.workers)}

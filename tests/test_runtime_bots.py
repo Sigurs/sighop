@@ -15,6 +15,7 @@ submissions across a whole corpus replay, whatever the driver decides.
 from __future__ import annotations
 
 import ast
+import asyncio
 import base64
 import io
 from pathlib import Path
@@ -37,6 +38,22 @@ from tests.test_runtime import _events, run_briefly, runtime
 
 SECRET = base64.b64decode(generate_secret_key())
 CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
+
+
+class _RecordingLogger:
+    """Captures events at the two levels the wide-event contract allows."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+
+    def info(self, event: str, **fields: object) -> None:
+        self.events.append(("info", event, fields))
+
+    def error(self, event: str, **fields: object) -> None:
+        self.events.append(("error", event, fields))
+
+    def names(self) -> list[str]:
+        return [name for _level, name, _fields in self.events]
 
 
 async def _stored_bot(
@@ -300,6 +317,105 @@ async def test_stopping_a_host_with_no_bots_is_not_an_error() -> None:
     host = BotHost(workers=[])
     host.start()
     await host.stop()
+
+
+class _SlowDriver:
+    """A driver that parks mid-dispatch and then writes the state it owes."""
+
+    def __init__(self, entered: asyncio.Event, release: asyncio.Event | None) -> None:
+        self.entered = entered
+        self.release = release
+
+    async def on_advert(self, context, event) -> None:
+        self.entered.set()
+        if self.release is None:
+            await asyncio.Event().wait()  # never finishes
+        await self.release.wait()
+        assert await context.state.set("greeted", True) is True
+
+    async def on_direct_message(self, context, event) -> None:
+        return None
+
+
+async def _dispatching_worker(release: asyncio.Event | None):
+    """A started worker parked inside one dispatch, with its storage."""
+    from tests.botfixtures import MemoryBotStorage
+    from tests.test_bot_runtime import advert_event, worker
+
+    entered = asyncio.Event()
+    storage = MemoryBotStorage()
+    running = worker(_SlowDriver(entered, release), storage=storage)
+    running.start()
+    running.offer(advert_event())
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    return running, storage
+
+
+async def test_a_stopping_worker_finishes_the_dispatch_it_is_running() -> None:
+    """9.4, design D6: the `bot_state` write a dispatch owes lands at the stop."""
+    release = asyncio.Event()
+    running, storage = await _dispatching_worker(release)
+
+    stopping = asyncio.ensure_future(running.stop())
+    await asyncio.sleep(0)
+    assert storage.bot_state.writes == 0, "the driver has not written yet"
+    release.set()  # the driver finishes only after the stop has begun
+    await asyncio.wait_for(stopping, timeout=2)
+
+    assert storage.bot_state.writes == 1, "the state write landed, not cancelled"
+    assert running._task is None
+
+
+async def test_a_driver_that_never_finishes_is_cut_short_and_named() -> None:
+    """9.4, design D6: the budget bounds the stop and the report names the bot."""
+    running, storage = await _dispatching_worker(None)
+    logger = _RecordingLogger()
+    running.logger = logger
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(running.stop(deadline=loop.time() + 0.2), timeout=2)
+    elapsed = loop.time() - started
+
+    assert elapsed >= 0.2
+    assert storage.bot_state.writes == 0
+    cut_short = [fields for level, name, fields in logger.events if name == "bot_dispatch_cut_short"]
+    assert len(cut_short) == 1
+    assert cut_short[0]["bot"] == running.name
+
+
+async def test_a_stop_does_not_start_the_dispatches_still_queued() -> None:
+    """9.4: what was queued behind the one in progress is not run."""
+    from tests.test_bot_runtime import advert_event
+
+    release = asyncio.Event()
+    running, storage = await _dispatching_worker(release)
+    running.offer(advert_event(packet_id="packet-2"))
+    running.offer(advert_event(packet_id="packet-3"))
+
+    stopping = asyncio.ensure_future(running.stop())
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.wait_for(stopping, timeout=2)
+
+    assert storage.bot_state.writes == 1, "one dispatch ran, the queued two did not"
+
+
+async def test_an_idle_worker_stops_at_once_and_reports_nothing() -> None:
+    from tests.test_bot_runtime import worker
+
+    idle = worker()
+    logger = _RecordingLogger()
+    idle.logger = logger
+    idle.start()
+    await asyncio.sleep(0)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(idle.stop(), timeout=2)
+
+    assert loop.time() - started < 0.5, "an idle worker waits for nothing"
+    assert logger.names() == []
 
 
 # --- 9.5 The periodic status line -------------------------------------------

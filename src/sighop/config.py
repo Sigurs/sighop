@@ -73,6 +73,7 @@ DEFAULT_MAX_OVERFLOW = 5
 DEFAULT_POOL_TIMEOUT = 10.0
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_STATEMENT_TIMEOUT = 5.0
+DEFAULT_SHUTDOWN_BUDGET = 5.0
 
 ROLE_CONNECTION_LIMIT = 30
 """Measured on the development role (`rolconnlimit`), not assumed. The default
@@ -113,6 +114,18 @@ class DatabaseConfig:
     connect_timeout: float = DEFAULT_CONNECT_TIMEOUT
     statement_timeout: float = DEFAULT_STATEMENT_TIMEOUT
 
+    shutdown_budget: float = DEFAULT_SHUTDOWN_BUDGET
+    """What the write lanes together may spend draining at shutdown.
+
+    The default comes from the deployment's grace period rather than from taste:
+    `stop_grace_period: 20s` in compose, minus the web server's 5 s graceful
+    shutdown, minus the bot drain's 2 s, minus the modem close, leaves 5 s for
+    the writers with margin. It is deliberately below one `operation_timeout`
+    (`connect_timeout + statement_timeout`), so a genuinely hung database has
+    its in-flight batch cancelled, returned to the buffer and counted as failed
+    rather than being waited out (design D4). One budget covers all the lanes
+    together, so this does not multiply by the number of writers."""
+
     schema: str | None = None
     """The schema every connection's search path is set to, when one is named.
 
@@ -145,6 +158,7 @@ class DatabaseConfig:
             ("pool_timeout", self.pool_timeout),
             ("connect_timeout", self.connect_timeout),
             ("statement_timeout", self.statement_timeout),
+            ("shutdown_budget", self.shutdown_budget),
         ):
             if seconds <= 0:
                 raise ConfigError(
@@ -190,7 +204,8 @@ class DatabaseConfig:
             f"max_overflow={self.max_overflow}, pool_timeout={self.pool_timeout}, "
             f"pool_pre_ping={self.pool_pre_ping}, "
             f"connect_timeout={self.connect_timeout}, "
-            f"statement_timeout={self.statement_timeout})"
+            f"statement_timeout={self.statement_timeout}, "
+            f"shutdown_budget={self.shutdown_budget})"
         )
 
     def as_json(self) -> dict[str, object]:
@@ -206,6 +221,7 @@ class DatabaseConfig:
             "pool_timeout": self.pool_timeout,
             "connect_timeout": self.connect_timeout,
             "statement_timeout": self.statement_timeout,
+            "shutdown_budget": self.shutdown_budget,
         }
 
     # --- What the driver is handed -----------------------------------------

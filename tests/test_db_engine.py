@@ -10,10 +10,11 @@ one thing that will not misbehave on demand.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import asyncpg
 import pytest
@@ -32,12 +33,29 @@ from sighop.db.engine import (
     classify,
 )
 from sighop.db.models import PacketLog
+from sighop.db.persistence import Persistence
 from sighop.db.times import NaiveDatetimeError, ensure_utc
 from sighop.db.writer import WriteBehind
 from tests.dbfixtures import _connect, _create_schema, _drop_schema
 
 URL = "postgresql+asyncpg://role:secret@db.example:5432/sighop"
 CONFIG = DatabaseConfig(url=URL)
+
+
+class RecordingLogger:
+    """Captures events at the two levels the wide-event contract allows."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, dict[str, object]]] = []
+
+    def info(self, event: str, **fields: object) -> None:
+        self.events.append(("info", event, fields))
+
+    def error(self, event: str, **fields: object) -> None:
+        self.events.append(("error", event, fields))
+
+    def names(self) -> list[str]:
+        return [name for _level, name, _fields in self.events]
 
 
 # --- 3.1 Engine and session lifecycle ---------------------------------------
@@ -536,6 +554,162 @@ async def test_shutdown_flushes_what_is_buffered() -> None:
     await writer.stop()
     assert written == list(range(20))
     assert writer.written == 20
+
+
+async def test_a_stop_does_not_lose_the_batch_it_was_writing() -> None:
+    """The batch already taken off the buffer is written, not cancelled away."""
+    written: list[int] = []
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def sink(batch: list[int]) -> bool:
+        entered.set()
+        await gate.wait()
+        written.extend(batch)
+        return True
+
+    writer = WriteBehind("dm", sink, capacity=64, batch_size=32)
+    writer.start()
+    for value in range(33):
+        assert writer.offer(value) is True
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    stopping = asyncio.ensure_future(writer.stop())
+    await asyncio.sleep(0)
+    gate.set()
+    await asyncio.wait_for(stopping, timeout=2)
+
+    assert written == list(range(33))
+    assert writer.written == 33
+    assert writer.discarded == 0
+
+
+async def test_a_cancelled_flush_returns_its_batch() -> None:
+    """Any cancellation, not just a stop: the rows are back in the buffer."""
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def sink(batch: list[int]) -> bool:
+        entered.set()
+        await gate.wait()
+        return True
+
+    writer = WriteBehind("dm", sink, capacity=64, batch_size=4)
+    writer.start()
+    for value in range(4):
+        writer.offer(value)
+    await asyncio.wait_for(entered.wait(), timeout=2)
+
+    task = writer._task
+    assert task is not None
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert writer.written == 0
+    assert writer.failed == 0
+    assert writer.pending == 4, "the in-flight batch is back in the buffer"
+
+
+async def test_a_stop_against_a_sink_that_never_answers_counts_what_it_lost() -> None:
+    """The budget expires, the rows are counted as failed, the loss is said once."""
+
+    async def never_answers(batch: list[int]) -> bool:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    logger = RecordingLogger()
+    writer = WriteBehind("dm", never_answers, capacity=64, batch_size=4, logger=logger)
+    writer.start()
+    for value in range(6):
+        writer.offer(value)
+
+    loop = asyncio.get_running_loop()
+    await asyncio.wait_for(writer.stop(deadline=loop.time() + 0.1), timeout=2)
+
+    assert writer.written == 0
+    assert writer.failed == 6
+    assert writer.discarded == 6
+    assert writer.pending == 0
+    incomplete = [
+        fields
+        for level, name, fields in logger.events
+        if name == "write_behind_shutdown_incomplete" and level == "error"
+    ]
+    assert len(incomplete) == 1
+    assert incomplete[0]["rows"] == 6
+    assert incomplete[0]["writer"] == "dm"
+
+
+async def test_a_clean_stop_reports_no_loss() -> None:
+    async def sink(batch: list[int]) -> bool:
+        return True
+
+    logger = RecordingLogger()
+    writer = WriteBehind("dm", sink, capacity=64, batch_size=4, logger=logger)
+    writer.start()
+    for value in range(6):
+        writer.offer(value)
+
+    loop = asyncio.get_running_loop()
+    await asyncio.wait_for(writer.stop(deadline=loop.time() + 2), timeout=5)
+
+    assert writer.written == 6
+    assert writer.discarded == 0
+    assert logger.names() == []
+
+
+async def test_the_lanes_drain_under_one_budget_rather_than_one_each() -> None:
+    """Design D3: five writers, one absolute deadline, drained concurrently."""
+    budget = 0.2
+    persistence = Persistence(
+        database=Database(config=DatabaseConfig(url=URL, shutdown_budget=budget))
+    )
+    lanes = (
+        persistence.contact_writer,
+        persistence.path_writer,
+        persistence.packet_log_writer,
+        persistence.dm_writer,
+        persistence.channel_writer,
+    )
+
+    async def never_answers(batch: list[Any]) -> bool:
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    for lane in lanes:
+        lane._flush = never_answers
+        lane.start()
+        assert lane.offer(cast(Any, object())) is True
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(persistence.stop(), timeout=5)
+    elapsed = loop.time() - started
+
+    assert elapsed >= budget
+    assert elapsed < budget * len(lanes), "the budget is shared, not spent per lane"
+    for lane in lanes:
+        assert lane.failed == 1, lane.name
+        assert lane.pending == 0
+
+
+async def test_a_stopped_writer_runs_again_when_started() -> None:
+    written: list[int] = []
+
+    async def sink(batch: list[int]) -> bool:
+        written.extend(batch)
+        return True
+
+    writer = WriteBehind("dm", sink, capacity=64, batch_size=4)
+    writer.start()
+    writer.offer(1)
+    await writer.stop()
+    writer.start()
+    writer.offer(2)
+    await asyncio.wait_for(writer.wait_idle(), timeout=2)
+    await writer.stop()
+    assert written == [1, 2]
 
 
 # --- Reporting --------------------------------------------------------------

@@ -157,7 +157,7 @@ async def _channel_rows(database: Database) -> int:
 
 async def _replay_then_open() -> AsyncIterator[ModemEvent]:
     """The capture, then a source that stays open, so the test decides when the
-    run stops — after the writer has drained, not while a batch is in flight."""
+    run stops rather than the capture ending it mid-decrypt."""
     async for event in _events(PUBLIC_CAPTURE):
         yield event
     await asyncio.Event().wait()
@@ -175,7 +175,8 @@ async def _replay(persistence: Persistence, **config: object) -> Runtime:
         if run.channels.decrypted == 33:
             break
         await asyncio.sleep(0.01)
-    await persistence.channel_writer.wait_idle()
+    # No `wait_idle()` first: the stop drains what the lane still holds, and a
+    # test that waited for the drain would never exercise that.
     run.stop()
     await asyncio.wait_for(task, 30)
     return run

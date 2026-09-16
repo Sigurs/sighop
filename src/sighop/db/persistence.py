@@ -364,19 +364,30 @@ class Persistence:
     async def stop(self) -> None:
         """Flush what is buffered, stop the tasks, and close the pool.
 
+        The five lanes drain *concurrently* under *one* deadline taken from
+        `shutdown_budget` (design D3): one absolute instant shared between them,
+        rather than a duration each, so the time a stop may take does not grow
+        with the number of write lanes. What a lane could not write inside the
+        budget it counts as failed and reports itself.
+
         Best effort by construction: a process killed outright never reaches
         here, which is exactly why contacts are written as they are observed
         rather than at shutdown (design D2).
         """
         await self.pruner.stop()
-        for writer in (
-            self.contact_writer,
-            self.path_writer,
-            self.packet_log_writer,
-            self.dm_writer,
-            self.channel_writer,
-        ):
-            await writer.stop()
+        deadline = asyncio.get_running_loop().time() + self.database.config.shutdown_budget
+        await asyncio.gather(
+            *(
+                writer.stop(deadline=deadline)
+                for writer in (
+                    self.contact_writer,
+                    self.path_writer,
+                    self.packet_log_writer,
+                    self.dm_writer,
+                    self.channel_writer,
+                )
+            )
+        )
         await self.database.dispose()
 
     # --- Writing -----------------------------------------------------------

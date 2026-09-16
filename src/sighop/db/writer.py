@@ -18,12 +18,19 @@ degrades into the mechanism that already exists.
 from the reception path, whose defining property is that replaying a capture
 reproduces every reception exactly, and a database that is slow, unreachable or
 blackholing must not be able to add a millisecond to it.
+
+What `stop()` guarantees: the writer is asked to finish and to drain what it has
+buffered, under a caller-supplied deadline shared with the other lanes, and every
+row taken off the buffer ends up written, counted as failed, or back in the
+buffer — never in none of the three. What it does not guarantee: durability. A
+row still buffered when the deadline expires is counted and reported, not
+written, and a process killed outright never reaches `stop()` at all. That is why
+contacts are written promptly rather than at shutdown (design D2).
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections import deque
 from collections.abc import Awaitable, Callable
 
@@ -61,6 +68,7 @@ class WriteBehind[T]:
         self._task: asyncio.Task[None] | None = None
         self._idle = asyncio.Event()
         self._idle.set()
+        self._stopping = False
 
         self.written = 0
         self.overflowed = 0
@@ -120,6 +128,11 @@ class WriteBehind[T]:
             try:
                 landed = await self._flush(batch)
             except asyncio.CancelledError:
+                # The rows exist only in `batch` while the sink is awaited, so a
+                # cancellation here would destroy them: put them back at the head,
+                # in order, and let the cancellation continue (design D2).
+                self._items.extendleft(reversed(batch))
+                self._idle.clear()
                 raise
             except Exception as exc:
                 # The sink is meant to return an outcome rather than raise; one
@@ -139,29 +152,69 @@ class WriteBehind[T]:
         self._idle.set()
 
     async def run(self) -> None:
-        """The writer task: wake, drain, sleep. Runs until cancelled."""
+        """The writer task: wake, drain, sleep. Ends when asked to stop."""
         while True:
             await self._wake.wait()
             self._wake.clear()
             await self.flush_pending()
+            if self._stopping and not self._items:
+                return
 
     def start(self) -> None:
         if self._task is None:
+            self._stopping = False
             self._task = asyncio.create_task(self.run(), name=f"db-writer-{self.name}")
 
-    async def stop(self) -> None:
-        """Stop the writer and flush what is buffered.
+    async def stop(self, deadline: float | None = None) -> None:
+        """Ask the writer to finish, and wait for it until `deadline`.
 
-        Flush-on-shutdown is best effort by construction: a process killed
+        `deadline` is an absolute event-loop instant (`loop.time()`), not a
+        duration, so several writers stopped together share one budget rather
+        than taking one each (design D3). Without one the drain is unbounded.
+
+        The writer is asked to drain rather than cancelled where it stands, so
+        the batch it had already taken off the buffer is written. What the
+        deadline leaves unwritten is counted as `failed` and reported, so the
+        discarded totals stay truthful (design D5).
+
+        Flush-on-shutdown is still best effort by construction: a process killed
         outright never reaches here, which is exactly why contacts are written
         promptly rather than at shutdown (design D2).
         """
+        self._stopping = True
+        self._wake.set()
         task, self._task = self._task, None
         if task is not None:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await self.flush_pending()
+            timeout = None
+            if deadline is not None:
+                timeout = max(0.0, deadline - asyncio.get_running_loop().time())
+            try:
+                # On timeout `wait_for` cancels the task and waits for it, which
+                # is where the in-flight batch returns to the buffer (design D2).
+                await asyncio.wait_for(task, timeout)
+            except TimeoutError:
+                self._abandon_buffered()
+            except asyncio.CancelledError:
+                self._abandon_buffered()
+                raise
+        else:
+            # A writer that was never started still holds whatever was offered.
+            await self.flush_pending()
+
+    def _abandon_buffered(self) -> None:
+        """Count what the budget could not write, and say so once (design D5)."""
+        rows = len(self._items)
+        if not rows:
+            return
+        self._items.clear()
+        self.failed += rows
+        self._idle.set()
+        self._log.error(
+            "write_behind_shutdown_incomplete",
+            outcome="error",
+            writer=self.name,
+            rows=rows,
+        )
 
     async def wait_idle(self) -> None:
         """Block until the buffer has drained. For tests and for shutdown."""
