@@ -8,6 +8,14 @@ never re-hashing or re-clamping it (`Identity.cpp::LocalIdentity`). The shared
 secret derivation in `crypto.py` uses that pre-clamped scalar directly, which
 is the single fiddliest detail in the milestone.
 
+That 64-byte buffer is what a `LocalIdentity` holds, because it is the only
+representation an operator can bring in from elsewhere: a device exports it,
+and the seed it came from is behind a SHA-512 nobody can walk backwards. It is
+also sufficient — the clamped scalar is its first half and the signing nonce
+prefix its second, which is everything RFC 8032 consumes, so `sign` below needs
+no seed. A seed remains a way to *produce* a keypair, which is what
+`generate_identity` uses it for and why `from_seed` expands one and lets it go.
+
 A node hash is the first byte of the public key, so it collides at 1 in 256:
 it identifies a candidate, never a node.
 """
@@ -37,6 +45,16 @@ DEFAULT_MAX_GENERATION_ATTEMPTS = 1024
 
 class IdentityGenerationError(RuntimeError):
     """Keypair generation could not find an acceptable node hash in time."""
+
+
+class PrivateKeyError(ValueError):
+    """A supplied private key this system will not build an identity from.
+
+    One type for every reason, because every caller does the same thing with
+    it: print it and create nothing. The *message* is what differs, and the
+    command line and the panel both show the one raised here rather than each
+    writing their own (design D6).
+    """
 
 
 def _expand_seed(seed: bytes) -> bytes:
@@ -75,29 +93,47 @@ class Identity:
 
 @dataclass(frozen=True, slots=True)
 class LocalIdentity:
-    """A local entity's keypair, held as the seed MeshCore expands from.
+    """A local entity's keypair, held as the 64-byte key MeshCore stores.
 
-    The seed is the canonical private material: signing needs it, and MeshCore's
-    64-byte `prv_key` is recoverable from it via `meshcore_private_key`. The
-    reverse is not true — a foreign 64-byte key imported from MeshCore has no
-    recoverable seed, so it can derive shared secrets and verify but not sign.
-    Nothing in this milestone needs that direction; milestone 5's persistence is
-    where it would come up.
+    No seed. The private key is `prv_key` exactly as the firmware exports it, so
+    an identity that came from a device and one generated here are the same
+    thing, and nothing in the system has to ask which it is holding.
     """
 
-    seed: bytes
+    private_key: bytes
     public_key: bytes
 
     def __post_init__(self) -> None:
-        if len(self.seed) != SEED_SIZE:
-            raise ValueError(f"seed must be {SEED_SIZE} bytes")
+        if len(self.private_key) != PRV_KEY_SIZE:
+            raise ValueError(f"private key must be {PRV_KEY_SIZE} bytes")
         if len(self.public_key) != PUB_KEY_SIZE:
             raise ValueError(f"public key must be {PUB_KEY_SIZE} bytes")
 
     @classmethod
     def from_seed(cls, seed: bytes) -> LocalIdentity:
-        public_key, _ = bindings.crypto_sign_seed_keypair(seed)
-        return cls(seed=seed, public_key=public_key)
+        """Expand a seed into a keypair and keep only the expansion.
+
+        `generate_identity` makes keys this way because a seed is how you roll
+        one. The seed is not returned and not stored: see the module docstring.
+        """
+        if len(seed) != SEED_SIZE:
+            raise ValueError(f"seed must be {SEED_SIZE} bytes")
+        return cls.from_private_key(_expand_seed(seed))
+
+    @classmethod
+    def from_private_key(cls, private_key: bytes) -> LocalIdentity:
+        """A keypair from MeshCore's 64-byte `prv_key`, public key derived.
+
+        The public key is never taken as an input beside the private one. Two
+        values that can disagree mean deciding which to believe, and
+        `Identity.cpp` does not: it derives.
+        """
+        if len(private_key) != PRV_KEY_SIZE:
+            raise ValueError(f"private key must be {PRV_KEY_SIZE} bytes")
+        public_key = bindings.crypto_scalarmult_ed25519_base_noclamp(
+            private_key[:PUB_KEY_SIZE]
+        )
+        return cls(private_key=private_key, public_key=public_key)
 
     @property
     def identity(self) -> Identity:
@@ -110,19 +146,119 @@ class LocalIdentity:
     @property
     def meshcore_private_key(self) -> bytes:
         """The 64-byte `prv_key` MeshCore stores and exports."""
-        return _expand_seed(self.seed)
+        return self.private_key
 
     @property
     def private_scalar(self) -> bytes:
         """The pre-clamped 32-byte scalar `calcSharedSecret` multiplies with."""
-        return self.meshcore_private_key[:PUB_KEY_SIZE]
+        return self.private_key[:PUB_KEY_SIZE]
 
     def sign(self, message: bytes) -> bytes:
-        """Sign `message`, producing a signature MeshCore's `Identity::verify` accepts."""
-        signed = bindings.crypto_sign(
-            message, self.seed + self.public_key
+        """Sign `message`, producing a signature MeshCore's `Identity::verify` accepts.
+
+        RFC 8032 signing written out, because libsodium's `crypto_sign` takes a
+        seed and we do not keep one. The two halves of `prv_key` are precisely
+        what the construction needs — the clamped scalar `a`, and the prefix the
+        nonce is derived from — so this is the standard algorithm on standard
+        primitives, not a variant. `tests/protocol/test_crypto.py` pins it to a
+        firmware keypair and to `crypto_sign` itself for every key with a seed.
+        """
+        scalar, prefix = self.private_key[:PUB_KEY_SIZE], self.private_key[PUB_KEY_SIZE:]
+        nonce = bindings.crypto_core_ed25519_scalar_reduce(
+            hashlib.sha512(prefix + message).digest()
         )
-        return signed[:SIGNATURE_SIZE]
+        commitment = bindings.crypto_scalarmult_ed25519_base_noclamp(nonce)
+        challenge = bindings.crypto_core_ed25519_scalar_reduce(
+            hashlib.sha512(commitment + self.public_key + message).digest()
+        )
+        signature_scalar = bindings.crypto_core_ed25519_scalar_add(
+            nonce, bindings.crypto_core_ed25519_scalar_mul(challenge, scalar)
+        )
+        return commitment + signature_scalar
+
+
+def _is_clamped(scalar: bytes) -> bool:
+    """The clamping `ed25519_create_keypair` applies, checked and never applied.
+
+    Clamping a key that arrived unclamped would derive a *different* public key
+    from the one the operator's other device is advertising — the same name for
+    a different identity, discovered later by a peer that cannot reach them.
+    Refusing says so now.
+    """
+    return (
+        scalar[0] & 0b0000_0111 == 0
+        and scalar[31] & 0b0100_0000 == 0b0100_0000
+        and scalar[31] & 0b1000_0000 == 0
+    )
+
+
+def private_key_from_hex(text: str) -> LocalIdentity:
+    """A supplied `prv_key` as an identity, or `PrivateKeyError` saying why not.
+
+    The one place a private key enters the system from an operator: the command
+    line and the panel both come through here, so they refuse the same input for
+    the same reason in the same words (design D6).
+    """
+    cleaned = "".join(text.split()).removeprefix("0x").removeprefix("0X")
+    if not cleaned:
+        raise PrivateKeyError(
+            f"no private key was supplied; expected {PRV_KEY_SIZE * 2} hex "
+            f"characters ({PRV_KEY_SIZE} bytes)"
+        )
+    try:
+        private_key = bytes.fromhex(cleaned)
+    except ValueError as exc:
+        raise PrivateKeyError(
+            f"the private key is not hexadecimal: {exc}"
+        ) from exc
+
+    if len(private_key) != PRV_KEY_SIZE:
+        detail = (
+            f"the private key is {len(private_key)} bytes, expected {PRV_KEY_SIZE} "
+            f"({PRV_KEY_SIZE * 2} hex characters)"
+        )
+        if len(private_key) == SEED_SIZE:
+            # Overwhelmingly the mistake this will be: a 32-byte seed, from an
+            # old keyfile or another tool. Naming it saves the operator working
+            # out why a key they believe is theirs is the wrong size.
+            detail += (
+                "; a 32-byte value is a seed, which this system does not accept — "
+                "supply the 64-byte private key the device stores"
+            )
+        raise PrivateKeyError(detail)
+
+    if not _is_clamped(private_key[:PUB_KEY_SIZE]):
+        raise PrivateKeyError(
+            "the private key is not in the representation MeshCore stores: its "
+            "scalar is not clamped. Refusing to clamp it, because that would "
+            "derive a different public key from the one this identity has "
+            "elsewhere"
+        )
+    return LocalIdentity.from_private_key(private_key)
+
+
+def refuse_unusable_node_hash(
+    identity: LocalIdentity, *, avoid_node_hashes: Container[int] = frozenset()
+) -> None:
+    """The two conditions `generate_identity` retries past, as refusals.
+
+    A generated key that lands on a reserved or taken hash is thrown away and
+    rolled again. A supplied key is the one the operator has, so there is
+    nothing to roll: the same two conditions have to be said out loud
+    (design D7).
+    """
+    if identity.node_hash in RESERVED_NODE_HASHES:
+        raise PrivateKeyError(
+            f"the private key derives the public key {identity.public_key.hex()}, "
+            f"whose node hash 0x{identity.node_hash:02x} is a prefix "
+            "`Identity.cpp::validatePrivateKey` rejects outright; no MeshCore node "
+            "will accept this identity"
+        )
+    if identity.node_hash in avoid_node_hashes:
+        raise PrivateKeyError(
+            f"node hash 0x{identity.node_hash:02x} is already held by another local "
+            "entity, which would make inbound packets ambiguous between them"
+        )
 
 
 def generate_identity(

@@ -345,7 +345,7 @@ def test_the_public_set_is_exactly_the_sign_in_and_setup_forms() -> None:
 def test_every_static_file_is_public_and_carries_no_state() -> None:
     state = stub_state(stub_names=("dev-panel-identity",))
     app = _app(state)
-    seed = state.adverts.stubs[0].identity.seed.hex()
+    private_key = state.adverts.stubs[0].identity.private_key.hex()
     files = sorted(path for path in STATIC_DIR.rglob("*") if path.is_file())
     assert files, "no static files to sweep"
     with _anonymous(app) as client:
@@ -354,7 +354,9 @@ def test_every_static_file_is_public_and_carries_no_state() -> None:
             response = client.get(f"/static/{relative}")
             assert response.status_code == 200, relative
             body = response.text
-            for marker in ("{{", "{%", app.state.auth.login_token, seed, SESSION_COOKIE):
+            for marker in (
+                "{{", "{%", app.state.auth.login_token, private_key, SESSION_COOKIE,
+            ):
                 assert marker not in body, f"{relative} carries {marker!r}"
 
 
@@ -489,7 +491,7 @@ def _guarded_paths(state: StubState, action: str) -> tuple[str, dict[str, str]]:
 
 def _effect(state: StubState, action: str, response: object) -> bool:
     if action == REVEAL_KEY:
-        return state.adverts.stubs[0].identity.seed.hex() in response.text  # type: ignore[attr-defined]
+        return state.adverts.stubs[0].identity.private_key.hex() in response.text  # type: ignore[attr-defined]
     if action == ENABLE_TRANSMIT:
         return state.scheduler.transmit_enabled
     return state.scheduler.budget.ceiling_fraction == 0.2
@@ -594,6 +596,7 @@ async def test_an_export_needs_the_acting_users_password(database: object) -> No
         if outcome == "refused":
             assert response.status_code == 403
             assert event["reason"] == "bad_password"
+            assert "private_key_hex" not in response.text
             assert "seed_hex" not in response.text
 
 

@@ -58,7 +58,141 @@ def test_keys_new_refuses_to_overwrite(tmp_path, capsys) -> None:
     assert "will not be overwritten" in capsys.readouterr().err
 
 
-def test_keys_show_prints_the_identity_and_never_the_seed(tmp_path) -> None:
+def test_keys_new_writes_a_keyfile_for_a_supplied_private_key(tmp_path) -> None:
+    """An identity the operator already holds, not a new one."""
+    held = generate_identity()
+    path = tmp_path / "from-a-device.json"
+    out = io.StringIO()
+
+    code = main(
+        [
+            "keys", "new",
+            "--name", "from-a-device",
+            "--out", str(path),
+            "--private-key", held.private_key.hex(),
+        ],
+        out=out,
+    )
+
+    printed = out.getvalue()
+    assert code == 0, printed
+    assert held.public_key.hex() in printed
+    assert held.private_key.hex() not in printed
+    document = json.loads(path.read_text())
+    assert document["private_key_hex"] == held.private_key.hex()
+    assert document["public_key_hex"] == held.public_key.hex()
+    assert document["version"] == 2
+
+
+def test_a_supplied_key_survives_a_write_and_a_read(tmp_path) -> None:
+    held = generate_identity()
+    path = tmp_path / "held.json"
+    main(
+        ["keys", "new", "--name", "held", "--out", str(path),
+         "--private-key", held.private_key.hex()],
+        out=io.StringIO(),
+    )
+    shown = io.StringIO()
+
+    assert main(["keys", "show", str(path)], out=shown) == 0
+
+    assert held.public_key.hex() in shown.getvalue()
+    assert f"0x{held.node_hash:02x}" in shown.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("supplied", "expected"),
+    [
+        ("zz" * 64, "not hexadecimal"),
+        ("ab" * 32, "a seed, which this system does not accept"),
+        ("ab" * 63, "is 63 bytes, expected 64"),
+        ("ab" * 65, "is 65 bytes, expected 64"),
+    ],
+)
+def test_keys_new_refuses_a_private_key_it_cannot_use(
+    tmp_path, capsys, supplied: str, expected: str
+) -> None:
+    path = tmp_path / "never-written.json"
+
+    code = main(
+        ["keys", "new", "--name", "x", "--out", str(path), "--private-key", supplied],
+        out=io.StringIO(),
+    )
+
+    assert code == 2
+    assert expected in capsys.readouterr().err
+    assert not path.exists(), "a refused key must leave no file, not even an empty one"
+
+
+def test_keys_new_refuses_an_unclamped_private_key(tmp_path, capsys) -> None:
+    broken = bytearray(generate_identity().private_key)
+    broken[0] |= 0b0000_0001
+    path = tmp_path / "never-written.json"
+
+    code = main(
+        ["keys", "new", "--name", "x", "--out", str(path),
+         "--private-key", bytes(broken).hex()],
+        out=io.StringIO(),
+    )
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "not clamped" in error
+    assert "different public key" in error
+    assert not path.exists()
+
+
+def test_keys_new_refuses_a_key_deriving_a_reserved_node_hash(tmp_path, capsys) -> None:
+    """`validatePrivateKey` rejects these outright, so no peer would accept it."""
+    from sighop.protocol.identity import RESERVED_NODE_HASHES, LocalIdentity
+
+    reserved = None
+    for index in range(20000):
+        candidate = LocalIdentity.from_seed(index.to_bytes(32, "big"))
+        if candidate.node_hash in RESERVED_NODE_HASHES:
+            reserved = candidate
+            break
+    assert reserved is not None, "no key with a reserved prefix was found"
+    path = tmp_path / "never-written.json"
+
+    code = main(
+        ["keys", "new", "--name", "x", "--out", str(path),
+         "--private-key", reserved.private_key.hex()],
+        out=io.StringIO(),
+    )
+
+    assert code == 2
+    assert "validatePrivateKey" in capsys.readouterr().err
+    assert not path.exists()
+
+
+def test_keys_new_with_a_supplied_key_still_refuses_an_existing_file(tmp_path) -> None:
+    path = tmp_path / "taken.json"
+    create_keyfile(path, "already-here")
+    before = path.read_text()
+
+    code = main(
+        ["keys", "new", "--name", "x", "--out", str(path),
+         "--private-key", generate_identity().private_key.hex()],
+        out=io.StringIO(),
+    )
+
+    assert code == 2
+    assert path.read_text() == before
+
+
+def test_there_is_no_seed_flag_on_any_key_command() -> None:
+    """The representation is gone, and so is every way to supply one."""
+    parser = build_parser()
+    for argv in (
+        ["keys", "new", "--name", "x", "--out", "k.json", "--seed", "00" * 32],
+        ["keys", "import", "--seed", "00" * 32, "--name", "x"],
+    ):
+        with pytest.raises(SystemExit):
+            parser.parse_args(argv)
+
+
+def test_keys_show_prints_the_identity_and_never_the_private_key(tmp_path) -> None:
     path = tmp_path / "entity.json"
     keyfile = create_keyfile(path, "skogen")
     out = io.StringIO()
@@ -69,7 +203,8 @@ def test_keys_show_prints_the_identity_and_never_the_seed(tmp_path) -> None:
     assert code == 0
     assert keyfile.public_key.hex() in text
     assert f"0x{keyfile.node_hash:02x}" in text
-    assert keyfile.identity.seed.hex() not in text
+    assert keyfile.identity.private_key.hex() not in text
+    assert keyfile.identity.private_scalar.hex() not in text
     assert "seed" not in text.lower()
 
 

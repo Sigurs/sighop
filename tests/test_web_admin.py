@@ -111,13 +111,13 @@ def test_the_identities_page_lists_what_this_run_loaded_in_full() -> None:
 
 
 def test_the_page_states_what_an_exported_keyfile_is() -> None:
-    """12.1, `web-admin`: an unencrypted seed, protected only by permissions."""
+    """12.1, `web-admin`: an unencrypted private key, protected only by permissions."""
     app, _state, _log = _built()
 
     with _client(app) as client:
         body = client.get("/admin/identities").text
 
-    assert "unencrypted seed" in body
+    assert "unencrypted private key" in body
     assert "file permissions" in body
     assert "SIGHOP_SECRET_KEY" in body, "the store's own protection is not contrasted"
 
@@ -545,7 +545,7 @@ def test_a_post_without_the_nonce_is_refused_and_audited() -> None:
         response = _post(client, app, f"/admin/reveal/{stub.entity_id}")
 
     assert response.status_code == 403
-    assert stub.identity.seed.hex() not in response.text
+    assert stub.identity.private_key.hex() not in response.text
 
     audited = log.named("web_guarded_action")
     assert len(audited) == 1
@@ -579,10 +579,10 @@ def test_the_confirmation_page_contains_no_key_material() -> None:
     with _client(app) as client:
         body = client.get(f"/admin/reveal/{stub.entity_id}").text
 
-    assert stub.identity.seed.hex() not in body
+    assert stub.identity.private_key.hex() not in body
     # Apostrophes are escaped in the rendered page, so the assertion is on a
     # stretch of the sentence that survives escaping and wrapping.
-    assert "private seed in the next response" in body, (
+    assert "private key in the next response" in body, (
         "the confirmation does not say what the action does"
     )
 
@@ -599,9 +599,9 @@ def test_the_reveal_is_one_response_body_and_its_own_event() -> None:
         again = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
 
     assert revealed.status_code == 200
-    assert stub.identity.seed.hex() in revealed.text
+    assert stub.identity.private_key.hex() in revealed.text
     assert again.status_code == 403
-    assert stub.identity.seed.hex() not in again.text
+    assert stub.identity.private_key.hex() not in again.text
 
     audited = [
         event for event in log.named("web_guarded_action") if event["outcome"] == "success"
@@ -610,7 +610,7 @@ def test_the_reveal_is_one_response_body_and_its_own_event() -> None:
     assert audited[0]["action"] == REVEAL_KEY
     assert audited[0]["entity_name"] == stub.name
     assert audited[0]["public_key"] == stub.identity.public_key.hex()
-    assert stub.identity.seed.hex() not in repr(audited[0]), "the event carries the seed"
+    assert stub.identity.private_key.hex() not in repr(audited[0]), "the event carries the private key"
 
 
 def test_no_other_route_reveals_key_material() -> None:
@@ -618,15 +618,17 @@ def test_no_other_route_reveals_key_material() -> None:
     from tests.webfixtures import safe_pages
 
     app, state, _log = _built()
-    seeds = [stub.identity.seed for stub in state.adverts.stubs]
+    private_keys = [stub.identity.private_key for stub in state.adverts.stubs]
     pages = safe_pages(app)
     assert len(pages) > 5, f"only {pages} were swept; the router walk is broken"
 
     with _client(app) as client:
         for path in pages:
             body = client.get(path).text
-            for seed in seeds:
-                assert seed.hex() not in body, f"{path} leaked a seed"
+            for private_key in private_keys:
+                assert private_key.hex() not in body, (
+                    f"{path} leaked a private key"
+                )
 
 
 # --- 13.3 Enabling transmission ---------------------------------------------

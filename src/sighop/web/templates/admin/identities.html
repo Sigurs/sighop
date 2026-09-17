@@ -111,6 +111,10 @@
   The generated node hash avoids every one this run knows about, because two
   local identities sharing a hash make an inbound packet ambiguous between our
   own identities. Export below if you want the file.
+  To bring in an identity you already hold rather than generating one, give its
+  private key below; a supplied key is checked against the same node hash rules,
+  which it cannot be rolled past, so a reserved or already-taken hash is refused
+  rather than worked around.
 </p>
 <form method="post" action="/admin/identities/create">
   <input type="hidden" name="_token" value="{{ token }}">
@@ -141,6 +145,21 @@
       stored role tells them apart, and it is set here rather than inferred.
     </span>
   </p>
+  <p>
+    <label>private key <span class="note">optional</span>
+      <input type="text" name="private_key" autocomplete="off" spellcheck="false"
+             placeholder="leave empty to generate a new identity">
+    </label>
+    <span class="note">
+      To bring in an identity you already hold — the 64-byte private key a
+      MeshCore device stores, as 128 hex characters. Its public key and node hash
+      are derived from it, so the identity arrives here as the same one it is
+      elsewhere and no peer has to re-add it. A 32-byte seed is not accepted.
+      Leave this empty and a new key is generated.
+      <strong>This field is not filled back in if the form is refused</strong>,
+      because a private key does not belong in a re-rendered page.
+    </span>
+  </p>
   <button type="submit">create identity</button>
 </form>
 {% endif %}
@@ -151,8 +170,8 @@
 {% else %}
 <p class="note">
   Paste the contents of a keyfile. It is checked by the same parser
-  <span class="mono">sighop keys import</span> uses — version, seed length, and
-  whether the stored public key is the one the seed derives — and a document
+  <span class="mono">sighop keys import</span> uses — version, private key length, and
+  whether the stored public key is the one the key derives — and a document
   that fails any of those stores nothing.
 </p>
 <form method="post" action="/admin/identities/import">
@@ -176,12 +195,15 @@
 
 <h2>exporting an identity</h2>
 <p class="note">
-  An exported keyfile is an <strong>unencrypted seed</strong> protected only by
+  An exported keyfile is an <strong>unencrypted private key</strong> protected only by
   its file permissions. That is different protection from the entity store's,
-  where the seed is sealed under <span class="mono">SIGHOP_SECRET_KEY</span> and
+  where the key is sealed under <span class="mono">SIGHOP_SECRET_KEY</span> and
   a database dump alone does not yield it.
 </p>
 <p class="note">{{ download_note }}</p>
+
+<h2>removing an identity</h2>
+<p class="note">{{ removal_note }}</p>
 
 <h2>the sealing secret</h2>
 <p class="note">{{ secret_note }}</p>

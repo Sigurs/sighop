@@ -4,26 +4,33 @@ Milestone 3's advert stubs generate a keypair per process, which is right for a
 receive-only dry run and wrong the moment another node stores our public key: a
 peer whose contact list is full of one-run identities makes an exercise
 unrepeatable. This module is the deliberate, minimal exception to "no
-persistence before milestone 5" — one JSON file per entity, holding the 32-byte
-seed and nothing a database would give us.
+persistence before milestone 5" — one JSON file per entity, holding the 64-byte
+private key and nothing a database would give us.
 
 It lives outside `protocol/` on purpose. `protocol/` is pure functions over
 bytes with no I/O (DESIGN.md §11, enforced by
 `tests/protocol/test_import_boundary.py`), and reading a file is I/O; the
-seed → identity step stays in `protocol/identity.py`, where it already was.
+document → identity step stays in `protocol/identity.py`, where it already was.
 
 The file format is deliberately boring, because milestone 5 has to import it in
 one function and then encrypt it at rest per §6:
 
     {
-      "version": 1,
+      "version": 2,
       "name": "sighop-test",
       "node_type": 1,
-      "seed_hex": "<64 hex chars>",
+      "private_key_hex": "<128 hex chars>",
       "public_key_hex": "<64 hex chars>",
       "created_at": "2026-09-05T12:00:00+00:00",
       "burned": false
     }
+
+Version 1 recorded `seed_hex` instead, and is refused rather than read: a seed
+is not a representation this system holds any more, and rewriting an operator's
+file on their behalf is not this module's call to make (change
+`create-entity-with-known-key`, design D3). The refusal says which version it
+found and what to do, because "version 1 is not version 2" reads like corruption
+for a file we ourselves wrote.
 
 `burned` marks a keypair that has been published — committed to this repository
 as a test vector (design D11). It is not a real identity and must never be used
@@ -43,14 +50,18 @@ from pathlib import Path
 
 from sighop.logging import Logger, get_logger
 from sighop.protocol.identity import (
+    PRV_KEY_SIZE,
     PUB_KEY_SIZE,
-    SEED_SIZE,
     LocalIdentity,
     generate_identity,
 )
 from sighop.protocol.payloads import NodeType
 
-KEYFILE_VERSION = 1
+KEYFILE_VERSION = 2
+
+REMOVED_SEED_VERSION = 1
+"""The version that recorded a seed. Written by builds before the private key
+became the one representation; read by none, and named in its own refusal."""
 
 KEYFILE_MODE = 0o600
 """Owner read/write and nothing else. Applied at creation, not afterwards."""
@@ -60,15 +71,15 @@ BURNED_WARNING = (
     "on air; generate a new one with `sighop keys new`"
 )
 
-PLAINTEXT_SEED_NOTICE = (
-    "this file holds an UNENCRYPTED 32-byte private seed, protected only by its "
-    f"filesystem permissions ({KEYFILE_MODE:04o}); the same seed inside the entity "
+PLAINTEXT_KEY_NOTICE = (
+    "this file holds an UNENCRYPTED 64-byte private key, protected only by its "
+    f"filesystem permissions ({KEYFILE_MODE:04o}); the same key inside the entity "
     "store is sealed under SIGHOP_SECRET_KEY, and the two do not offer the same "
     "protection"
 )
 """Printed wherever a keyfile is created or exported (milestone 5, `local-identity`).
 
-Milestone 5 encrypts the seed at rest, which makes the keyfile the *weaker* of
+Milestone 5 encrypts the key at rest, which makes the keyfile the *weaker* of
 the two stores rather than the only one. An operator who has stopped thinking
 about keyfile permissions because "sighop encrypts keys now" is the failure this
 sentence exists to prevent, and it has to appear at the moment the file is
@@ -84,7 +95,16 @@ class KeyfileExistsError(KeyfileError):
 
 
 class KeyfileMismatchError(KeyfileError):
-    """The stored public key is not the one the stored seed derives."""
+    """The stored public key is not the one the stored private key derives."""
+
+
+class KeyfileRemovedFormatError(KeyfileError):
+    """The file is a version 1 keyfile, which recorded a seed.
+
+    Its own type, because the caller may want to say something different about a
+    file this system wrote under a format it has since dropped than about a file
+    it cannot make sense of at all.
+    """
 
 
 class NodeHashCollisionError(KeyfileError):
@@ -142,7 +162,7 @@ def keyfile_document(
         "version": KEYFILE_VERSION,
         "name": name,
         "node_type": int(node_type),
-        "seed_hex": identity.seed.hex(),
+        "private_key_hex": identity.private_key.hex(),
         "public_key_hex": identity.public_key.hex(),
         "created_at": created_at or dt.datetime.now(dt.UTC).isoformat(),
         "burned": burned,
@@ -163,7 +183,7 @@ def keyfile_bytes(document: dict[str, object]) -> bytes:
 
 
 def identity_from_document(document: dict, path: Path | str = "<memory>") -> LocalIdentity:
-    """The seed → identity step, with the stored public key checked against it.
+    """The document → identity step, with the stored public key checked against it.
 
     Milestone 5 imports a keyfile through this function: it is the one place
     that turns the stored format into a `LocalIdentity`, and the one place the
@@ -172,25 +192,27 @@ def identity_from_document(document: dict, path: Path | str = "<memory>") -> Loc
     guessing which would produce an identity nobody holds.
     """
     try:
-        seed = bytes.fromhex(str(document["seed_hex"]))
+        private_key = bytes.fromhex(str(document["private_key_hex"]))
         stored_public_key = bytes.fromhex(str(document["public_key_hex"]))
     except KeyError as exc:
         raise KeyfileError(f"{path}: keyfile is missing the {exc} field") from exc
     except ValueError as exc:
         raise KeyfileError(f"{path}: keyfile holds a field that is not hex: {exc}") from exc
 
-    if len(seed) != SEED_SIZE:
-        raise KeyfileError(f"{path}: seed is {len(seed)} bytes, expected {SEED_SIZE}")
+    if len(private_key) != PRV_KEY_SIZE:
+        raise KeyfileError(
+            f"{path}: private key is {len(private_key)} bytes, expected {PRV_KEY_SIZE}"
+        )
     if len(stored_public_key) != PUB_KEY_SIZE:
         raise KeyfileError(
             f"{path}: public key is {len(stored_public_key)} bytes, expected {PUB_KEY_SIZE}"
         )
 
-    identity = LocalIdentity.from_seed(seed)
+    identity = LocalIdentity.from_private_key(private_key)
     if identity.public_key != stored_public_key:
         raise KeyfileMismatchError(
             f"{path}: the stored public key {stored_public_key.hex()} is not the one "
-            f"the stored seed derives ({identity.public_key.hex()}); refusing to "
+            f"the stored private key derives ({identity.public_key.hex()}); refusing to "
             "prefer either value"
         )
     return identity
@@ -294,6 +316,16 @@ def keyfile_from_document(
         version = int(document.get("version", 0))
     except (TypeError, ValueError) as exc:
         raise KeyfileError(f"{source}: keyfile version is not a number") from exc
+    if version == REMOVED_SEED_VERSION:
+        # A version we wrote ourselves, so the operator is owed more than "not
+        # the supported version": what the file is, and what is left to do with
+        # it. There is no conversion command, and saying so stops the search.
+        raise KeyfileRemovedFormatError(
+            f"{source}: this is a version {REMOVED_SEED_VERSION} keyfile, which "
+            "records a 32-byte seed. Seeds are no longer supported and there is no "
+            "command that converts one: supply the identity's 64-byte private key "
+            "with `--private-key`, or create a new identity and have peers re-add it"
+        )
     if version != KEYFILE_VERSION:
         raise KeyfileError(
             f"{source}: keyfile version {version} is not the supported version "

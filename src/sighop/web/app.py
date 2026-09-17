@@ -129,7 +129,7 @@ def create_app(
 
     `sealing_secret` is `SIGHOP_SECRET_KEY`, which `cli.py` already reads and is
     the one module that composes both sides (design D1). It is needed only to
-    open a stored seed for an export; `None` is the default and every page that
+    open a stored key for an export; `None` is the default and every page that
     would need it says so instead of failing.
 
     `hosts` is the set of `Host` header values this application will answer to.

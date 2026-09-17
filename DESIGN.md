@@ -81,7 +81,11 @@ whole outgoing-path design (§4.3).
 
 A **virtual entity** is an addressable MeshCore node hosted by sighop. Every entity owns:
 
-- an Ed25519 keypair (its identity; its **node hash** is the first byte of the public key)
+- an Ed25519 keypair (its identity; its **node hash** is the first byte of the public key),
+  held as MeshCore's 64-byte `prv_key` — the clamped SHA-512 expansion the firmware stores,
+  not the 32-byte seed behind it. That expansion is the only form an operator can bring in
+  from a device, and it is sufficient: its two halves are the signing scalar and the nonce
+  prefix, so nothing in sighop needs a seed (`create-entity-with-known-key`)
 - a name, advert flags, optional location
 - an advert schedule
 - type-specific state and configuration
@@ -119,6 +123,8 @@ Consequences the implementation must handle:
    never treat a MAC match as proof of anything security-critical.
 3. **Key generation:** when creating an entity, reject a keypair whose node hash collides
    with an existing local entity. Regenerate. Cheap, and it removes self-inflicted ambiguity.
+   A key the operator *supplies* cannot be regenerated, so the same rule becomes a refusal
+   there — along with the `0x00`/`0xFF` prefixes `Identity.cpp::validatePrivateKey` rejects.
 
 ---
 
@@ -402,7 +408,8 @@ about the ACK construction until it was checked against `BaseChatMesh.cpp`.
 
 **DM shared secret.** ECDH over X25519. Ed25519 identity keys are converted to Montgomery
 form (`crypto_sign_ed25519_pk_to_curve25519` for the peer's public key); MeshCore private
-keys already carry a pre-clamped scalar, so the usual Ed25519 hashing step is skipped.
+keys already carry a pre-clamped scalar, so the usual Ed25519 hashing step is skipped — it is
+the first 32 bytes of the stored `prv_key`, used as-is and never re-hashed or re-clamped.
 Cache derived secrets per (local entity, peer) — scalar multiplication per packet is
 wasteful given the fan-out.
 
@@ -436,7 +443,11 @@ opens. Hashtag-derived keys have a small keyspace and are brute-forceable — su
 WebUI when a user creates a hashtag channel.
 
 **Adverts** are unencrypted but Ed25519-signed over `public key ‖ timestamp ‖ appdata`, in
-that order (`Mesh.cpp::createAdvert`). **Always verify the signature before trusting any
+that order (`Mesh.cpp::createAdvert`). Signing is written out rather than delegated to
+libsodium's `crypto_sign`, which takes a seed sighop no longer keeps: the standard RFC 8032
+construction over the stored `prv_key`'s scalar and nonce prefix, pinned by a fixed vector on
+the firmware's own keypair and by equality with `crypto_sign` for every key whose seed is
+known. **Always verify the signature before trusting any
 advert content**, including the name shown in the UI. An unsigned or badly-signed advert is a
 discard, not a warning. The firmware additionally rejects an advert whose timestamp is not
 newer than the last one seen from that identity, as a replay check — worth matching once
@@ -484,7 +495,7 @@ fourteenth.
 
 **Built (milestone 5, migration `0001`):**
 
-- **entity** — id, type, name, public key, **sealed** seed, advert config (JSONB), enabled,
+- **entity** — id, type, name, public key, **sealed** private key, advert config (JSONB), enabled,
   created_at
 - **contact** — public key (PK), node hash, name, node type, flags, `advert_verified`,
   first/last heard
@@ -589,7 +600,7 @@ Ordering is by `handled_at` and never by `wire_timestamp`: a peer with a wrong c
 be able to reorder a conversation.
 
 **Stored direct message text is not encrypted at rest.** §6 is careful that a database dump
-must not be sufficient to *impersonate* a room server — `entity.sealed_seed` is ciphertext
+must not be sufficient to *impersonate* a room server — `entity.sealed_private_key` is ciphertext
 under a key held only in the environment — and it makes no equivalent promise about content.
 A dump of `direct_message` exposes conversation content in the clear. That is a deliberate
 trade rather than an oversight: the key that would encrypt it is one the interface reading
@@ -698,14 +709,25 @@ A DB dump must not be sufficient to impersonate a room server. Provide `sighop k
 / `import` so operators can back identities up deliberately, and make the WebUI's key
 display an explicit, audited action.
 
-**How, as of milestone 5.** The seed is sealed with **XSalsa20-Poly1305 secretbox**
+**How, as of milestone 5.** The private key is sealed with **XSalsa20-Poly1305 secretbox**
 (PyNaCl's `SecretBox`, already a dependency because the identity code uses libsodium), and
 the stored value is a **version byte followed by the sealed box** so a future re-key has
 somewhere to declare itself. The box generates its own nonce, which is the one thing most
 likely to be got wrong by hand, and Poly1305 supplies the authentication tag — a tampered
-`sealed_seed` fails loudly instead of yielding some other key. On load the public key
-derived from the decrypted seed is compared against the `public_key` column stored beside
-it, and a mismatch names the entity rather than preferring either value.
+`sealed_private_key` fails loudly instead of yielding some other key. On load the public key
+derived from the decrypted private key is compared against the `public_key` column stored
+beside it, and a mismatch names the entity rather than preferring either value.
+
+**What is sealed changed in `create-entity-with-known-key`.** Until then the column held the
+32-byte seed. It now holds MeshCore's 64-byte `prv_key`, because that is the only
+representation an operator can bring in from a device — the seed behind one is behind a
+SHA-512 nobody can walk backwards, while the expansion is everything signing needs. Migration
+`0008` renames the column to `sealed_private_key` and reads no key material, so it still runs
+without the secret; it reports how many rows it strands. A row still holding a seed decrypts
+but is **refused by name**, not reported as corrupt: the row is intact and the secret is
+right, and only the format is gone. `sighop keys delete` removes such a row so the same
+identity can be imported again from its private key — without it the stranded row blocks its
+own replacement, because it still holds the public key.
 
 `SIGHOP_SECRET_KEY` is base64 of **exactly 32 bytes**, generated by `sighop keys secret`
 from the system CSPRNG. A value of the wrong length or encoding is a startup failure that
@@ -718,8 +740,15 @@ the mitigation §6 already asked for.
 Keyfiles remain, demoted to what §6 wanted: an interchange format. `sighop keys import`
 seals one into the store and `sighop keys export` writes one back out, owner-only, refusing
 an existing path. Both say — as does `sighop keys new` — that a keyfile holds an
-*unencrypted* seed protected only by its permissions, because the same seed inside the store
-is encrypted and an operator must not conclude the two offer the same protection.
+*unencrypted* private key protected only by its permissions, because the same key inside the
+store is encrypted and an operator must not conclude the two offer the same protection.
+
+Keyfiles are at **version 2**, recording `private_key_hex`. Version 1 recorded `seed_hex` and
+is refused with its own message rather than read or converted: a keyfile is material this
+system does not own, and rewriting an operator's file on their behalf is not its call. Both
+`keys new` and `keys import` take `--private-key` — 128 hex characters, the clamping checked
+and never applied, since clamping a key that arrived unclamped would derive a *different*
+public key from the one that identity advertises elsewhere. There is no way to supply a seed.
 
 ---
 
@@ -1284,7 +1313,7 @@ safe direction.
 
 ### What the interface deliberately does not expose
 
-The browser reaches every `sighop` capability an operator administers a node with, with four
+The browser reaches every `sighop` capability an operator administers a node with, with five
 exceptions. All are deliberate, all are stated *in the interface* at the point an operator
 would look for them rather than only here, and none is a gap waiting to be closed by
 whoever notices it first.
@@ -1312,6 +1341,12 @@ whoever notices it first.
   cannot be revoked from the people who already have it. The pre-shared key is entered in a
   password field, never re-filled after a refusal and never rendered; the channels page names the
   command and says why.
+- **Removing a stored identity** (change `create-entity-with-known-key`). `sighop keys delete`
+  has no browser equivalent. Disabling is the reversible action the panel offers and it covers
+  the ordinary case; removal cannot be undone, and it is refused outright for an identity a room
+  or a bot is bound to because `room.entity_id` and `bot.entity_id` cascade — deleting the
+  identity would take that room's members and its whole history with it. An irreversible act
+  belongs where the other one already lives. The identities page names the command and says why.
 
 `capture`, `monitor` and `run` are not candidates at all and the reasoning is worth
 recording: `run` *is* the process serving the panel, and `capture` and `monitor` are
@@ -1542,6 +1577,37 @@ gitignored `.env` — never baked into the image or committed.
 The build script (`build.sh`) covers: lint, typecheck, test, image build, and a
 vulnerability scan of the result.
 
+### Upgrading past `0008` (the private key format)
+
+The one upgrade in this project's history that is not "deploy the new image". Migration
+`0008` renames `entity.sealed_seed` to `sealed_private_key`, and **every identity stored
+before it stops opening**: the ciphertext holds a 32-byte seed, which is no longer a format
+this system reads (§6, change `create-entity-with-known-key`). Nothing is deleted — the rows
+and any keyfiles stay exactly as they are — but a run will refuse the identities it finds.
+
+**Step 1 happens before the upgrade and cannot be done afterwards.** On the *current* build,
+`sighop keys export` every identity worth keeping. What that writes is a version 1 keyfile
+holding a seed, which the new build will not read; save it anyway, because step 3 needs it.
+
+**Step 2, deploy.** `0008` runs without `SIGHOP_SECRET_KEY` — it reads no key material — and
+reports how many rows it strands. Expect that to be every row that existed.
+
+**Step 3, carry each identity forward.** Expand its saved seed into a private key *outside
+sighop*: `sha512(seed)`, then `[0] &= 248; [31] &= 63; [31] |= 64`. Feed the resulting 128
+hex characters to `sighop keys import --private-key`. The public key and node hash come out
+unchanged, so no peer has to be told anything and no contact list needs editing. The
+stranded row holds that public key, so remove it first with `sighop keys delete`.
+
+That expansion is deliberately not a command. An operator performing it once, knowingly, on
+material they already hold is a different thing from this system reading seeds — which it
+does not, anywhere. An identity whose seed was not saved in step 1 cannot be carried forward
+at all: recreate it, and every peer re-adds it under a new public key.
+
+**Rolling back.** `alembic downgrade` reverses the rename and nothing else. Identities
+created *after* the upgrade are unreadable by the previous build, and identities stranded by
+step 2 become readable again — so a rollback taken before step 3 loses nothing, and after it
+is a roll-forward or a restore.
+
 ---
 
 ## 11. Repository layout
@@ -1569,7 +1635,7 @@ sighop/
 │   │                   retries, sample sends)
 │   ├── db/             models.py (the fourteen tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
-│   │                   writer.py (bounded write-behind), sealing.py (seeds and
+│   │                   writer.py (bounded write-behind), sealing.py (keys and
 │   │                   webhook URLs at rest), packetlog.py (feed rows, pruner),
 │   │                   persistence.py (the wiring), migrations.py (alembic)
 │   ├── web/            state.py (the read seam as Protocols), app.py (the
@@ -1615,7 +1681,7 @@ raises, which is what keeps the persistent path a thin adapter rather than a rew
 keeps every existing test running with no database.
 
 `keystore.py` sits at the top level rather than in `protocol/` for the same reason: reading a
-keyfile is I/O, and `protocol/` has none. The seed → identity step stays in
+keyfile is I/O, and `protocol/` has none. The document → identity step stays in
 `protocol/identity.py`, so the boundary test keeps passing and the split is the one the layer
 rule already implies.
 

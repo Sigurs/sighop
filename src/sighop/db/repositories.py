@@ -44,7 +44,14 @@ from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
 from sighop.db.models import Webhook as WebhookRow
 from sighop.db.models import WebUser as WebUserRow
-from sighop.db.sealing import SealError, open_seed, open_value, seal_seed, seal_value
+from sighop.db.sealing import (
+    SealError,
+    SealRemovedFormatError,
+    open_private_key,
+    open_value,
+    seal_private_key,
+    seal_value,
+)
 from sighop.db.times import ensure_utc
 from sighop.net.channels import (
     ChannelKind,
@@ -190,6 +197,21 @@ class LoadedEntity:
         return self.record.node_hash
 
 
+@dataclass(frozen=True, slots=True)
+class OpenedEntities:
+    """What `load_openable` found: the identities it opened, and what it could not.
+
+    `stranded` holds one already-worded refusal per row under the removed seed
+    format — the message `open_private_key` raised, which names the entity. It
+    is a returned value rather than a log line for the reason `Keyfile.warnings`
+    is: a fact an operator needs has to reach the terminal, not only a stream
+    nobody reads.
+    """
+
+    opened: tuple[LoadedEntity, ...] = ()
+    stranded: tuple[str, ...] = ()
+
+
 def advert_config_for(
     node_type: NodeType | int,
     *,
@@ -267,7 +289,7 @@ class EntityRepository:
                 f"entity {existing.value.name!r} ({existing.value.id}); the "
                 "stored row is unchanged"
             )
-        sealed = seal_seed(identity.seed, secret)
+        sealed = seal_private_key(identity.private_key, secret)
         record = EntityRecord(
             id=uuid.uuid4(),
             type=entity_type or entity_type_for(node_type),
@@ -287,7 +309,7 @@ class EntityRepository:
                     name=record.name,
                     public_key=record.public_key,
                     node_hash=record.node_hash,
-                    sealed_seed=sealed,
+                    sealed_private_key=sealed,
                     advert_config=record.advert_config,
                     enabled=record.enabled,
                     created_at=record.created_at,
@@ -342,11 +364,12 @@ class EntityRepository:
     async def load_all(
         self, secret: bytes, *, enabled_only: bool = False
     ) -> Outcome[list[LoadedEntity]]:
-        """Read every stored identity and open its seed.
+        """Read every stored identity and open its private key.
 
         The read is a database operation and returns an outcome; the opening is
-        not, and a wrong secret, an altered row or a public key that disagrees
-        with its seed raises rather than being reported as a database fault.
+        not, and a wrong secret, an altered row, a row still holding a seed or a
+        public key that disagrees with its private key raises rather than being
+        reported as a database fault.
         """
 
         async def work(session: object) -> list[tuple[EntityRecord, bytes]]:
@@ -354,12 +377,49 @@ class EntityRepository:
             if enabled_only:
                 statement = statement.where(EntityRow.enabled.is_(True))
             rows = (await session.execute(statement)).scalars()  # type: ignore[attr-defined]
-            return [(_record(row), row.sealed_seed) for row in rows]
+            return [(_record(row), row.sealed_private_key) for row in rows]
 
         outcome = await self.database.run("load_entities", work)
         if isinstance(outcome, Failed):
             return outcome
         return Succeeded(value=[_open(record, sealed, secret) for record, sealed in outcome.value])
+
+    async def load_openable(
+        self, secret: bytes, *, enabled_only: bool = False
+    ) -> Outcome[OpenedEntities]:
+        """`load_all`, except that a row under the removed seed format is set aside.
+
+        A run has to start. An operator part-way through re-importing identities
+        after migration 0008 holds a store with some rows carrying a 64-byte
+        private key and some still carrying a seed, and refusing to load *any*
+        identity because one is stranded would make the recovery order matter —
+        clean up first, or stay down. The identities that open are loaded and
+        each stranded row is handed back by name for the caller to print.
+
+        Only that one failure is set aside. A wrong secret, an altered row and a
+        public key that disagrees with its private key still raise: those are
+        problems with the store, and starting anyway would hide them.
+        """
+
+        async def work(session: object) -> list[tuple[EntityRecord, bytes]]:
+            statement = select(EntityRow).order_by(EntityRow.created_at)
+            if enabled_only:
+                statement = statement.where(EntityRow.enabled.is_(True))
+            rows = (await session.execute(statement)).scalars()  # type: ignore[attr-defined]
+            return [(_record(row), row.sealed_private_key) for row in rows]
+
+        outcome = await self.database.run("load_entities", work)
+        if isinstance(outcome, Failed):
+            return outcome
+
+        opened: list[LoadedEntity] = []
+        stranded: list[str] = []
+        for record, sealed in outcome.value:
+            try:
+                opened.append(_open(record, sealed, secret))
+            except SealRemovedFormatError as exc:
+                stranded.append(str(exc))
+        return Succeeded(value=OpenedEntities(opened=tuple(opened), stranded=tuple(stranded)))
 
     async def set_enabled(self, public_key: bytes, enabled: bool) -> Outcome[bool]:
         async def work(session: object) -> bool:
@@ -374,6 +434,54 @@ class EntityRepository:
             return True
 
         return await self.database.run("set_entity_enabled", work)
+
+    async def remove(self, public_key: bytes) -> Outcome[bool]:
+        """Delete one stored identity, reporting whether a row went.
+
+        Deliberately blunt: the *decision* not to delete an identity a room or a
+        bot is bound to belongs to the caller, which is the only place that can
+        say what it serves. `room.entity_id` and `bot.entity_id` are
+        `ON DELETE CASCADE`, so calling this on a bound identity takes that
+        room's members and history with it — see `bound_to` and design D10.
+        """
+
+        async def work(session: object) -> bool:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(EntityRow).where(EntityRow.public_key == public_key)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            await session.delete(row)  # type: ignore[attr-defined]
+            return True
+
+        return await self.database.run("remove_entity", work)
+
+    async def bound_to(self, entity_id: uuid.UUID) -> Outcome[list[str]]:
+        """What this identity serves, as phrases an operator reads.
+
+        The rows that would be deleted with it. Empty means nothing is bound,
+        which is the only state in which removing an identity costs only that
+        identity.
+        """
+
+        async def work(session: object) -> list[str]:
+            rooms = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow.name).where(RoomRow.entity_id == entity_id)
+                )
+            ).scalars()
+            bots = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotRow.driver).where(BotRow.entity_id == entity_id)
+                )
+            ).scalars()
+            return [f"room {name!r}" for name in rooms] + [
+                f"bot {driver!r}" for driver in bots
+            ]
+
+        return await self.database.run("entity_bindings", work)
 
 
 def _record(row: EntityRow) -> EntityRecord:
@@ -390,20 +498,20 @@ def _record(row: EntityRow) -> EntityRecord:
 
 
 def _open(record: EntityRecord, sealed: bytes, secret: bytes) -> LoadedEntity:
-    """Open one seed and check it against the public key stored beside it.
+    """Open one private key and check it against the public key stored beside it.
 
     The check is the last thing standing between a wrong row and an identity
     nobody holds: the box authenticating proves the secret, not that the row is
     internally consistent.
     """
     label = f"entity {record.name!r} ({record.public_key.hex()[:16]})"
-    seed = open_seed(bytes(sealed), secret, entity=label)
-    identity = LocalIdentity.from_seed(seed)
+    private_key = open_private_key(bytes(sealed), secret, entity=label)
+    identity = LocalIdentity.from_private_key(private_key)
     if identity.public_key != record.public_key:
         raise EntityKeyMismatchError(
-            f"{label}: the stored public key is not the one the stored seed derives "
-            f"({identity.public_key.hex()}); refusing to prefer either value, and no "
-            "key was produced"
+            f"{label}: the stored public key is not the one the stored private key "
+            f"derives ({identity.public_key.hex()}); refusing to prefer either value, "
+            "and no key was produced"
         )
     return LoadedEntity(record=record, identity=identity)
 

@@ -15,7 +15,7 @@ subcommand makes:
 * **show** — `keys show` for a stored identity rather than for a file.
 * **import** — the document a keyfile holds, parsed by the keystore's own
   parser and sealed through the same repository call.
-* **export** — a **guarded action** (design D2). An unencrypted seed leaving
+* **export** — a **guarded action** (design D2). An unencrypted private key leaving
   the platform is the same kind of act as revealing one, and the difference in
   protection between a file the command line creates and a browser download is
   stated at the point of export rather than in a document.
@@ -53,7 +53,13 @@ from sighop.keystore import (
     keyfile_document,
     keyfile_from_text,
 )
-from sighop.protocol.identity import IdentityGenerationError, generate_identity
+from sighop.protocol.identity import (
+    IdentityGenerationError,
+    PrivateKeyError,
+    generate_identity,
+    private_key_from_hex,
+    refuse_unusable_node_hash,
+)
 from sighop.protocol.payloads import NodeType
 from sighop.web.deps import Panel, panel
 from sighop.web.guarded import ACTION_DESCRIPTIONS, EXPORT_KEY, audit
@@ -71,7 +77,7 @@ router = APIRouter(prefix="/admin/identities")
 SEE_OTHER = 303
 
 NO_SEALING_SECRET = (
-    "this run holds no sealing secret, so a seed can be neither sealed nor "
+    "this run holds no sealing secret, so a private key can be neither sealed nor "
     "opened here. It is SIGHOP_SECRET_KEY, and a run with a database has it"
 )
 """Not a failure and not a bug: a run with no database seals nothing. Saying
@@ -81,11 +87,23 @@ DOWNLOAD_IS_NOT_OWNER_ONLY = (
     "The command line creates a keyfile owner-only (mode 0600) in the same call "
     "that creates it, with no window in which it is broader. A file delivered to "
     "a browser has whatever protection the download directory gives it, which is "
-    "usually the same as everything else there. The seed inside is identical; "
+    "usually the same as everything else there. The private key inside is identical; "
     "the protection around it is not."
 )
 """Design D2. Stated at the point of export and on the identities page, because
 it is the one respect in which the two surfaces genuinely differ."""
+
+REMOVAL_IS_A_TERMINAL_COMMAND = (
+    "Removing a stored identity is not offered here. Disabling one is the "
+    "reversible action this page gives you: it stops the identity being loaded "
+    "and can be undone. Removal cannot — the identity is gone unless you hold "
+    "its private key elsewhere, and it is refused outright for an identity a "
+    "room or a bot is bound to, because those are deleted with it. It lives "
+    "where the other irreversible act does: `sighop keys delete`."
+)
+"""`web-admin`: named where an operator would look for it, next to the other
+capabilities this build deliberately keeps in a terminal. Added with
+`keys delete` itself (create-entity-with-known-key, design D10)."""
 
 SECRET_IS_A_TERMINAL_COMMAND = (
     "The secret that seals stored identities is not generated here. It is "
@@ -137,6 +155,7 @@ async def identities(
         no_sealing_secret=NO_SEALING_SECRET,
         download_note=DOWNLOAD_IS_NOT_OWNER_ONLY,
         secret_note=SECRET_IS_A_TERMINAL_COMMAND,
+        removal_note=REMOVAL_IS_A_TERMINAL_COMMAND,
         status_code=status_code,
     )
 
@@ -186,6 +205,7 @@ async def create_identity(
     name: Annotated[str, Form()] = "",
     node_type: Annotated[str, Form()] = "CHAT",
     role: Annotated[str, Form()] = "node",
+    private_key: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
     """Generate an identity and seal it, in the process that stores it (D3).
 
@@ -197,6 +217,12 @@ async def create_identity(
     `create_keyfile` does: §3 rule 3 refuses two local identities sharing one,
     and a panel-created identity must not be what makes a later run fail to
     start.
+
+    `private_key` supplies an identity the operator already holds instead of
+    generating one. It goes through the command line's own validation, so the
+    same key is refused here for the same reason in the same words, and it is
+    deliberately absent from `submitted`: every other field is echoed back into
+    the form on a refusal, and key material must not be.
     """
     submitted = {"name": name, "node_type": node_type, "role": role}
     if page.persistence is None:
@@ -215,10 +241,20 @@ async def create_identity(
             **submitted,
         )
 
-    try:
-        identity = generate_identity(avoid_node_hashes=await _taken_hashes(page))
-    except IdentityGenerationError as exc:
-        return await _refuse(request, page, str(exc), **submitted)
+    taken = await _taken_hashes(page)
+    if private_key.strip():
+        try:
+            identity = private_key_from_hex(private_key)
+            refuse_unusable_node_hash(identity, avoid_node_hashes=taken)
+        except PrivateKeyError as exc:
+            return await _refuse(
+                request, page, str(exc), field="private_key", **submitted
+            )
+    else:
+        try:
+            identity = generate_identity(avoid_node_hashes=taken)
+        except IdentityGenerationError as exc:
+            return await _refuse(request, page, str(exc), **submitted)
 
     as_bot = role == "bot"
     try:
@@ -264,7 +300,7 @@ async def import_identity(
     document: Annotated[str, Form()] = "",
     role: Annotated[str, Form()] = "node",
 ) -> RedirectResponse | HTMLResponse:
-    """Seal a keyfile's seed into the store — `sighop keys import`'s own call.
+    """Seal a keyfile's private key into the store — `sighop keys import`'s own call.
 
     The document is parsed by the keystore's own parser, so a file the command
     line refuses is refused here for the same reason in the same words, and
@@ -318,7 +354,7 @@ async def _refuse(
 async def identity(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """`sighop keys show`, for a stored identity rather than for a file.
 
-    No seed and no ciphertext: `EntityRecord` holds neither, so there is no
+    No private key and no ciphertext: `EntityRecord` holds neither, so there is no
     rendering path along which either could escape.
     """
     record = await _entity(page, entity_id)
@@ -458,7 +494,7 @@ async def export_identity(
             target=entity_id,
             outcome="refused",
             actor=actor,
-            reason="the stored seed could not be opened",
+            reason="the stored private key could not be opened",
             entity_name=record.name,
         )
         return page.page(
@@ -497,7 +533,7 @@ async def export_identity(
 
 
 async def _open(page: Panel, record: EntityRecord) -> LoadedEntity | None:
-    """This one stored identity, with its seed opened. Never logged."""
+    """This one stored identity, with its private key opened. Never logged."""
     assert page.persistence is not None and page.sealing_secret is not None
     try:
         loaded = await page.persistence.entities.load_all(page.sealing_secret)

@@ -57,8 +57,8 @@ def shared_secret_from_scalar(private_scalar: bytes, peer_public_key: bytes) -> 
     already-clamped scalar — the two implementations' clamp masks differ in
     spelling (`&= 63 | 64` against `&= 127 | 64`) but agree in effect.
 
-    Takes the raw scalar so a private key imported from MeshCore's 64-byte
-    `prv_key`, whose seed is unrecoverable, can still derive secrets.
+    Takes the raw scalar because that is the half of MeshCore's 64-byte
+    `prv_key` this step uses — the same key every local identity now holds.
     """
     if len(private_scalar) != PUB_KEY_SIZE:
         raise ValueError(f"private scalar must be {PUB_KEY_SIZE} bytes")

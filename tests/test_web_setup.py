@@ -104,7 +104,7 @@ def test_the_setup_form_is_served_while_setup_is_pending_and_carries_nothing() -
     assert body.count('autocomplete="new-password"') == 2
     assert "sighop web user add" in body and "docker compose logs sighop" in body
     assert served.setup.code not in body and served.setup.display not in body
-    assert stub.identity.seed.hex() not in body
+    assert stub.identity.private_key.hex() not in body
     assert stub.identity.public_key.hex() not in body
     assert "dev-panel-identity" not in body
     assert 'aria-label="duty cycle"' not in body and "transmit enabled" not in body

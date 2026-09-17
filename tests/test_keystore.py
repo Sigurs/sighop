@@ -21,6 +21,7 @@ from sighop.keystore import (
     KeyfileError,
     KeyfileExistsError,
     KeyfileMismatchError,
+    KeyfileRemovedFormatError,
     NodeHashCollisionError,
     create_keyfile,
     keyfile_document,
@@ -45,13 +46,37 @@ def test_a_created_keyfile_loads_back_as_the_same_identity(tmp_path) -> None:
     assert loaded.node_type is NodeType.CHAT
 
 
+def test_a_keyfile_round_trips_through_the_current_format(tmp_path) -> None:
+    """Create, re-export, re-load: one identity, and no seed in any file."""
+    created = create_keyfile(tmp_path / "first.json", "skogen", node_type=NodeType.CHAT)
+    exported = create_keyfile(
+        tmp_path / "second.json",
+        created.name,
+        node_type=created.node_type,
+        identity=created.identity,
+    )
+    reloaded = load_keyfile(exported.path)
+
+    assert reloaded.identity == created.identity
+    assert reloaded.public_key == created.public_key
+    assert reloaded.node_hash == created.node_hash
+    assert reloaded.name == "skogen"
+    assert reloaded.node_type is NodeType.CHAT
+    for path in (created.path, exported.path):
+        document = json.loads(path.read_text())
+        assert document["version"] == 2
+        assert "seed_hex" not in document
+        assert len(document["private_key_hex"]) == 128
+
+
 def test_the_document_shape_is_what_milestone_five_will_import() -> None:
     identity = generate_identity()
 
     document = keyfile_document(identity, "skogen", NodeType.CHAT)
 
-    assert document["version"] == 1
-    assert document["seed_hex"] == identity.seed.hex()
+    assert document["version"] == 2
+    assert document["private_key_hex"] == identity.private_key.hex()
+    assert "seed_hex" not in document
     assert document["public_key_hex"] == identity.public_key.hex()
     assert document["node_type"] == int(NodeType.CHAT)
     assert document["burned"] is False
@@ -97,7 +122,9 @@ def test_loading_a_world_readable_keyfile_warns_and_still_loads(tmp_path) -> Non
 # --- The two halves must agree ---------------------------------------------
 
 
-def test_a_seed_that_does_not_derive_the_stored_public_key_is_refused(tmp_path) -> None:
+def test_a_private_key_that_does_not_derive_the_stored_public_key_is_refused(
+    tmp_path,
+) -> None:
     path = tmp_path / "entity.json"
     create_keyfile(path, "skogen")
     document = json.loads(path.read_text())
@@ -120,6 +147,88 @@ def test_a_keyfile_from_a_future_version_is_refused(tmp_path) -> None:
 
     with pytest.raises(KeyfileError, match="version 99"):
         load_keyfile(path)
+
+
+# --- The removed seed format ------------------------------------------------
+#
+# Version 1 is the one version this system wrote and no longer reads. It is
+# refused by its own type and its own words, because an operator meeting a file
+# sighop itself produced is owed more than "not the supported version".
+
+
+def _version_one_document(identity: LocalIdentity, name: str = "skogen") -> dict:
+    """A version 1 keyfile, written out here rather than committed as a fixture.
+
+    Inline because nothing in the tree should be a loadable seed keyfile any
+    more — this is the shape, not an artefact anyone could mistake for a key
+    that still works.
+    """
+    return {
+        "version": 1,
+        "name": name,
+        "node_type": int(NodeType.CHAT),
+        "seed_hex": "00" * 32,
+        "public_key_hex": identity.public_key.hex(),
+        "created_at": "2026-09-05T12:00:00+00:00",
+        "burned": False,
+    }
+
+
+def test_a_version_one_keyfile_is_refused_as_the_removed_format(tmp_path) -> None:
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(_version_one_document(generate_identity())))
+
+    with pytest.raises(KeyfileRemovedFormatError) as excinfo:
+        load_keyfile(path)
+
+    message = str(excinfo.value)
+    assert str(path) in message
+    assert "32-byte seed" in message
+    assert "no longer supported" in message
+
+
+def test_the_removed_format_refusal_says_what_is_left_to_do(tmp_path) -> None:
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(_version_one_document(generate_identity())))
+
+    with pytest.raises(KeyfileRemovedFormatError) as excinfo:
+        load_keyfile(path)
+
+    message = str(excinfo.value)
+    assert "--private-key" in message
+    assert "no command that converts" in message, "an operator must stop looking"
+
+
+def test_the_removed_format_is_not_reported_as_an_unknown_version(tmp_path) -> None:
+    """The two refusals are different problems and must not read alike."""
+    removed = tmp_path / "old.json"
+    removed.write_text(json.dumps(_version_one_document(generate_identity())))
+    future = tmp_path / "future.json"
+    create_keyfile(future, "skogen")
+    document = json.loads(future.read_text())
+    document["version"] = 99
+    future.write_text(json.dumps(document))
+
+    with pytest.raises(KeyfileError) as removed_error:
+        load_keyfile(removed)
+    with pytest.raises(KeyfileError) as future_error:
+        load_keyfile(future)
+
+    assert "is not the supported version" not in str(removed_error.value)
+    assert "seed" not in str(future_error.value)
+    assert not isinstance(future_error.value, KeyfileRemovedFormatError)
+
+
+def test_a_version_one_keyfile_yields_no_identity(tmp_path) -> None:
+    """Refused before the seed is touched: nothing expands it on the way out."""
+    path = tmp_path / "old.json"
+    document = _version_one_document(generate_identity())
+    path.write_text(json.dumps(document))
+
+    with pytest.raises(KeyfileRemovedFormatError):
+        load_keyfile(path)
+
+    assert json.loads(path.read_text()) == document, "the file was rewritten"
 
 
 # --- Node hash collisions (§3 rule 3) --------------------------------------
@@ -177,13 +286,14 @@ def test_a_burned_keyfile_says_so_in_the_file_and_on_load(tmp_path) -> None:
     assert BURNED_WARNING in load_keyfile(path).warnings
 
 
-# --- The seed is not in the inspection view --------------------------------
+# --- The private key is not in the inspection view --------------------------
 
 
-def test_the_json_view_of_an_identity_carries_no_seed(tmp_path) -> None:
+def test_the_json_view_of_an_identity_carries_no_private_key(tmp_path) -> None:
     keyfile = create_keyfile(tmp_path / "entity.json", "skogen")
 
     rendered = json.dumps(keyfile.as_json())
 
     assert keyfile.public_key.hex() in rendered
-    assert keyfile.identity.seed.hex() not in rendered
+    assert keyfile.identity.private_key.hex() not in rendered
+    assert keyfile.identity.private_scalar.hex() not in rendered

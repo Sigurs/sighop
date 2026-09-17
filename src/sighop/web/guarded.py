@@ -71,7 +71,7 @@ REAUTHENTICATED_ACTIONS = frozenset({REVEAL_KEY, EXPORT_KEY, ENABLE_TRANSMIT, RA
 
 ACTION_DESCRIPTIONS = {
     REVEAL_KEY: (
-        "shows this identity's private seed in the next response. A seed is the "
+        "shows this identity's private key in the next response. A private key is the "
         "identity: anyone holding it can transmit as this node and read every "
         "direct message sent to it."
     ),
@@ -86,7 +86,7 @@ ACTION_DESCRIPTIONS = {
         "decision about what this station is permitted to do, not a preference."
     ),
     EXPORT_KEY: (
-        "writes this identity's private seed out of the platform as a keyfile. "
+        "writes this identity's private key out of the platform as a keyfile. "
         "The file is the identity: anyone holding it can transmit as this node "
         "and read every direct message sent to it."
     ),

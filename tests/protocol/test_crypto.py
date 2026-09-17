@@ -40,10 +40,14 @@ from sighop.protocol.crypto import (
 )
 from sighop.protocol.identity import (
     RESERVED_NODE_HASHES,
+    SIGNATURE_SIZE,
     Identity,
     IdentityGenerationError,
     LocalIdentity,
+    PrivateKeyError,
     generate_identity,
+    private_key_from_hex,
+    refuse_unusable_node_hash,
 )
 from sighop.protocol.payloads import (
     Advert,
@@ -67,7 +71,24 @@ FIRMWARE_TEST_PUB = bytes.fromhex(
     "1ec77175b0918ed206f9ae04ec136d6d5d4315bb26305427f645b492e9350c10"
 )
 
-ALICE = LocalIdentity.from_seed(bytes(range(32)))
+# The signature `FIRMWARE_TEST_PRV` produces over `FIRMWARE_SIGNED_MESSAGE`,
+# computed once by the reference Ed25519 in RFC 8032 appendix A — not by this
+# codebase, and not by libsodium, whose signing API cannot accept an expanded
+# key at all. That is the point of the vector: the firmware keypair has no
+# recoverable seed, so `crypto_sign` can never check our signing of it, and a
+# vector we recomputed ourselves would only prove we are self-consistent.
+#
+# It is independently falsifiable: `Identity.verify` and libsodium's
+# `crypto_sign_open` both accept it against `FIRMWARE_TEST_PUB`, which is the
+# firmware's own public key for this private key.
+FIRMWARE_SIGNED_MESSAGE = b"sighop signing known-answer vector"
+FIRMWARE_TEST_SIGNATURE = bytes.fromhex(
+    "59595983573a456794f0d206bb22c90af0e591e4fce806f4994ded796b0e652f"
+    "5a0091a8c62a428ab0e5ccc89713f1273bffd3306d4f9ee1e06fd3e175d73601"
+)
+
+ALICE_SEED = bytes(range(32))
+ALICE = LocalIdentity.from_seed(ALICE_SEED)
 BOB = LocalIdentity.from_seed(bytes(range(100, 132)))
 
 
@@ -80,13 +101,19 @@ def test_node_hash_is_the_first_byte_of_the_public_key() -> None:
 
 
 def test_meshcore_private_key_is_the_clamped_sha512_expansion() -> None:
-    """`ed25519_create_keypair`: sha512(seed), then clamp."""
-    expanded = bytearray(hashlib.sha512(ALICE.seed).digest())
+    """`ed25519_create_keypair`: sha512(seed), then clamp.
+
+    Still the rule `from_seed` follows, though the seed it followed it from is
+    not kept: what the identity holds is the expansion itself.
+    """
+    expanded = bytearray(hashlib.sha512(ALICE_SEED).digest())
     expanded[0] &= 248
     expanded[31] &= 63
     expanded[31] |= 64
+    assert ALICE.private_key == bytes(expanded)
     assert ALICE.meshcore_private_key == bytes(expanded)
     assert ALICE.private_scalar == bytes(expanded)[:32]
+    assert not hasattr(ALICE, "seed")
 
 
 def test_the_firmware_test_scalar_is_already_clamped() -> None:
@@ -95,6 +122,102 @@ def test_the_firmware_test_scalar_is_already_clamped() -> None:
     assert scalar[0] & 0b111 == 0
     assert scalar[31] & 0b1000_0000 == 0
     assert scalar[31] & 0b0100_0000 == 0b0100_0000
+
+
+# --- A supplied private key ------------------------------------------------
+
+
+def test_a_supplied_private_key_becomes_the_identity_it_names() -> None:
+    supplied = private_key_from_hex(FIRMWARE_TEST_PRV.hex())
+    assert supplied.public_key == FIRMWARE_TEST_PUB
+    assert supplied.node_hash == 0x1E
+    assert supplied.private_key == FIRMWARE_TEST_PRV
+
+
+def test_a_supplied_private_key_tolerates_spacing_and_case() -> None:
+    spaced = " ".join(
+        FIRMWARE_TEST_PRV.hex().upper()[index : index + 8] for index in range(0, 128, 8)
+    )
+    assert private_key_from_hex(spaced).public_key == FIRMWARE_TEST_PUB
+    assert private_key_from_hex("0x" + FIRMWARE_TEST_PRV.hex()).public_key == (
+        FIRMWARE_TEST_PUB
+    )
+
+
+def test_a_private_key_that_is_not_hexadecimal_is_refused() -> None:
+    with pytest.raises(PrivateKeyError, match="not hexadecimal"):
+        private_key_from_hex("z" * 128)
+
+
+def test_an_empty_private_key_is_refused() -> None:
+    with pytest.raises(PrivateKeyError, match="no private key"):
+        private_key_from_hex("   ")
+
+
+@pytest.mark.parametrize("size", [31, 63, 65, 128])
+def test_a_private_key_of_the_wrong_length_is_refused(size: int) -> None:
+    with pytest.raises(PrivateKeyError, match=f"is {size} bytes, expected 64"):
+        private_key_from_hex("ab" * size)
+
+
+def test_a_thirty_two_byte_key_is_refused_as_the_seed_it_is() -> None:
+    """The mistake worth naming: an old keyfile's seed, pasted in."""
+    with pytest.raises(PrivateKeyError, match="a seed, which this system does not"):
+        private_key_from_hex(ALICE_SEED.hex())
+
+
+@pytest.mark.parametrize(
+    ("index", "mask", "set_bit"),
+    [(0, 0b0000_0111, True), (31, 0b0100_0000, False), (31, 0b1000_0000, True)],
+)
+def test_an_unclamped_private_key_is_refused(index: int, mask: int, set_bit: bool) -> None:
+    """Each of the three clamped bits, broken one at a time."""
+    broken = bytearray(FIRMWARE_TEST_PRV)
+    broken[index] = (broken[index] | mask) if set_bit else (broken[index] & ~mask)
+    assert bytes(broken) != FIRMWARE_TEST_PRV, "the bit was already in that state"
+    with pytest.raises(PrivateKeyError, match="not clamped"):
+        private_key_from_hex(bytes(broken).hex())
+
+
+def test_the_refusal_to_clamp_says_why() -> None:
+    broken = bytearray(FIRMWARE_TEST_PRV)
+    broken[0] |= 0b0000_0001
+    with pytest.raises(PrivateKeyError, match="different public key"):
+        private_key_from_hex(bytes(broken).hex())
+
+
+def _identity_with_node_hash(wanted: int) -> LocalIdentity:
+    for index in range(20000):
+        candidate = LocalIdentity.from_seed(
+            hashlib.sha256(index.to_bytes(4, "big")).digest()
+        )
+        if candidate.node_hash == wanted:
+            return candidate
+    raise AssertionError(f"no key with node hash 0x{wanted:02x} was found")
+
+
+@pytest.mark.parametrize("reserved", sorted(RESERVED_NODE_HASHES))
+def test_a_supplied_key_deriving_a_reserved_node_hash_is_refused(reserved: int) -> None:
+    identity = _identity_with_node_hash(reserved)
+    with pytest.raises(PrivateKeyError, match="validatePrivateKey"):
+        refuse_unusable_node_hash(identity)
+
+
+def test_a_supplied_key_colliding_with_a_local_entity_is_refused() -> None:
+    with pytest.raises(PrivateKeyError, match=f"0x{ALICE.node_hash:02x} is already held"):
+        refuse_unusable_node_hash(ALICE, avoid_node_hashes={ALICE.node_hash})
+
+
+def test_a_supplied_key_that_collides_with_nothing_passes() -> None:
+    refuse_unusable_node_hash(ALICE, avoid_node_hashes={BOB.node_hash})
+
+
+def test_a_supplied_key_signs_exactly_as_a_generated_one_does() -> None:
+    """The spec's requirement that the two are indistinguishable."""
+    generated = generate_identity()
+    resupplied = private_key_from_hex(generated.private_key.hex())
+    assert resupplied.public_key == generated.public_key
+    assert resupplied.sign(b"same message") == generated.sign(b"same message")
 
 
 def test_keypair_generation_avoids_a_local_hash_collision() -> None:
@@ -112,6 +235,47 @@ def test_keypair_generation_avoids_the_reserved_prefixes() -> None:
 def test_keypair_generation_fails_cleanly_when_every_hash_is_taken() -> None:
     with pytest.raises(IdentityGenerationError, match="every value"):
         generate_identity(avoid_node_hashes=frozenset(range(256)), max_attempts=32)
+
+
+def test_signing_matches_the_firmware_keypair_vector() -> None:
+    """The one vector for a key whose seed nobody has (design D2).
+
+    `crypto_sign` cannot produce this signature: it takes a seed, and this key
+    is the expansion of one that was never recorded. If signing ever goes back
+    to needing a seed, this test cannot be made to pass.
+    """
+    identity = LocalIdentity.from_private_key(FIRMWARE_TEST_PRV)
+    assert identity.public_key == FIRMWARE_TEST_PUB
+    assert identity.sign(FIRMWARE_SIGNED_MESSAGE) == FIRMWARE_TEST_SIGNATURE
+
+
+def test_the_firmware_vector_is_a_signature_the_firmware_would_accept() -> None:
+    """Falsifies the vector independently of how we produced it."""
+    assert Identity(FIRMWARE_TEST_PUB).verify(
+        FIRMWARE_TEST_SIGNATURE, FIRMWARE_SIGNED_MESSAGE
+    )
+    assert not Identity(FIRMWARE_TEST_PUB).verify(
+        FIRMWARE_TEST_SIGNATURE, FIRMWARE_SIGNED_MESSAGE + b"!"
+    )
+
+
+def test_signing_from_a_private_key_matches_libsodium_for_seeded_keys() -> None:
+    """Every key whose seed *is* known must sign as `crypto_sign` does.
+
+    The firmware vector proves one key; this proves the construction, over the
+    lengths that exercise the SHA-512 block boundary and the empty message.
+    """
+    from nacl import bindings
+
+    for index in range(20):
+        seed = hashlib.sha256(index.to_bytes(4, "big")).digest()
+        identity = LocalIdentity.from_seed(seed)
+        for length in (0, 1, 31, 32, 55, 56, 64, 111, 200):
+            message = bytes((index + offset) % 256 for offset in range(length))
+            expected = bindings.crypto_sign(
+                message, seed + identity.public_key
+            )[:SIGNATURE_SIZE]
+            assert identity.sign(message) == expected
 
 
 def test_sign_and_verify_round_trip() -> None:

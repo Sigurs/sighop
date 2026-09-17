@@ -6,7 +6,7 @@
 <h1>private key: {{ entity_name }}</h1>
 
 <p class="unavailable">
-  <strong>This is the identity.</strong> Anyone holding the seed below can
+  <strong>This is the identity.</strong> Anyone holding the private key below can
   transmit as this node and read every direct message sent to it. It is in this
   response and in no other page; reloading will not show it again.
 </p>
@@ -14,11 +14,11 @@
 <h2>public key</h2>
 <p class="mono">{{ public_key }}</p>
 
-<h2>private seed</h2>
-<p class="mono revealed">{{ seed }}</p>
+<h2>private key</h2>
+<p class="mono revealed">{{ private_key }}</p>
 
 <p class="note">
-  An exported keyfile carries this same seed <strong>unencrypted</strong>,
+  An exported keyfile carries this same private key <strong>unencrypted</strong>,
   protected only by its file permissions — which is different protection from
   the entity store's, where it is sealed under
   <span class="mono">SIGHOP_SECRET_KEY</span> and a database dump alone does not

@@ -128,7 +128,7 @@ async def test_0007_upgrade_downgrade_upgrade_leaves_no_leftover_objects(
         await migrations.upgrade_async(config)
         handle = Database(config=config)
         try:
-            assert await handle.read_applied_revision() == "0007"
+            assert await handle.read_applied_revision() == migrations.expected_revision()
         finally:
             await handle.dispose()
     finally:

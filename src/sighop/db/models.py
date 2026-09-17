@@ -84,12 +84,16 @@ class Base(DeclarativeBase):
 
 
 class Entity(Base):
-    """A local identity, with its seed sealed under `SIGHOP_SECRET_KEY`.
+    """A local identity, with its private key sealed under `SIGHOP_SECRET_KEY`.
 
-    `sealed_seed` is ciphertext with an authentication tag and the secret lives
-    only in the environment, which is what makes §6's "a DB dump must not be
-    sufficient to impersonate a room server" a property of the schema rather
+    `sealed_private_key` is ciphertext with an authentication tag and the secret
+    lives only in the environment, which is what makes §6's "a DB dump must not
+    be sufficient to impersonate a room server" a property of the schema rather
     than a hope.
+
+    It was `sealed_seed` until migration 0008, and held a 32-byte seed. A row
+    written then still decrypts under the same secret but is refused by name:
+    the column name changed because what it holds did.
     """
 
     __tablename__ = "entity"
@@ -102,7 +106,7 @@ class Entity(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False, unique=True)
     node_hash: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    sealed_seed: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    sealed_private_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     advert_config: Mapped[dict] = mapped_column(JSONB, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)

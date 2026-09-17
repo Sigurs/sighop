@@ -1,7 +1,7 @@
 """Who may use the panel: accounts, sessions, throttling, sign-in (milestone 9).
 
 Milestone 8 shipped a panel that can open the transmit gate, raise a legal
-duty-cycle ceiling and hand out private seeds, with nothing in front of it but a
+duty-cycle ceiling and hand out private keys, with nothing in front of it but a
 loopback default and a loud warning. This module is what was owed.
 
 Four pieces, each small enough to be tested with an injected clock and no

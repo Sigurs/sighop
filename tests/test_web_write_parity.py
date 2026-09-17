@@ -9,14 +9,16 @@ implementation and a refusal reads the same in both surfaces.
 The two heavy ones are guarded on the pattern milestone 8 established, because
 they are not configuration changes:
 
-* **exporting an identity** writes an unencrypted seed out of the platform;
+* **exporting an identity** writes an unencrypted private key out of the platform;
 * **posting to a room** reaches every member of it and cannot be unsent.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime as dt
+import io
 import json
 import uuid
 
@@ -24,9 +26,16 @@ import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from sighop.bots import drivers as bot_drivers
-from sighop.config import generate_secret_key
+from sighop.cli import main
+from sighop.config import (
+    DATABASE_SCHEMA_VARIABLE,
+    SECRET_KEY_VARIABLE,
+    DatabaseConfig,
+    generate_secret_key,
+)
 from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
@@ -62,6 +71,22 @@ from tests.webfixtures import (
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
+
+
+@pytest.fixture
+def cli_store_environment(
+    database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Point `sighop.cli.main` at the same throwaway schema the panel is using.
+
+    So that "the browser and the command line store the same thing" is tested
+    against one database rather than two, which is the only way the claim means
+    anything.
+    """
+    monkeypatch.setenv(SECRET_KEY_VARIABLE, base64.b64encode(SECRET).decode())
+    assert database_config.schema is not None
+    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
+    return database_config.url
 NOW = dt.datetime(2026, 9, 12, 12, 0, tzinfo=dt.UTC)
 
 
@@ -145,7 +170,7 @@ def test_the_two_new_actions_say_what_they_do() -> None:
     """1.2: a confirmation with no description is a confirmation of nothing."""
     assert "reaches every member" in ACTION_DESCRIPTIONS[POST_TO_ROOM]
     assert "cannot be unsent" in ACTION_DESCRIPTIONS[POST_TO_ROOM]
-    assert "private seed" in ACTION_DESCRIPTIONS[EXPORT_KEY]
+    assert "private key" in ACTION_DESCRIPTIONS[EXPORT_KEY]
 
 
 def test_the_panel_builds_without_a_sealing_secret() -> None:
@@ -267,6 +292,163 @@ async def test_an_identity_created_in_the_browser_is_stored_as_the_cli_stores_on
 
 
 @pytest.mark.database
+async def test_an_identity_created_from_a_supplied_private_key_matches_the_cli(
+    database: Database, cli_store_environment: str
+) -> None:
+    """The same key, through both surfaces, is the same stored identity."""
+    held = generate_identity()
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="from-a-device",
+            private_key=held.private_key.hex(),
+        )
+
+    assert response.status_code == 303
+    opened = await persistence.entities.load_all(SECRET)
+    assert isinstance(opened, Succeeded)
+    [entity] = opened.value
+    assert entity.public_key == held.public_key
+    assert entity.identity.private_key == held.private_key
+    assert entity.name == "from-a-device"
+
+    # And what `sighop keys import --private-key` stores for the same key.
+    async with database.sessions() as session:
+        await session.execute(text("DELETE FROM entity"))
+        await session.commit()
+    assert (
+        await asyncio.to_thread(
+            main,
+            [
+                "keys", "import",
+                "--private-key", held.private_key.hex(),
+                "--name", "from-a-device",
+                "--database-url", cli_store_environment,
+            ],
+            out=io.StringIO(),
+        )
+        == 0
+    )
+    from_cli = (await persistence.entities.load_all(SECRET)).value[0]
+    assert _shape(from_cli.record) == _shape(entity.record)
+    assert from_cli.identity.private_key == entity.identity.private_key
+
+
+@pytest.mark.database
+async def test_an_empty_private_key_field_still_generates(database: Database) -> None:
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/admin/identities/create", name="generated", private_key="  "
+        )
+
+    assert response.status_code == 303
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["generated"]
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(
+    ("supplied", "expected"),
+    [
+        ("nothexatall" * 12, "not hexadecimal"),
+        ("ab" * 32, "a seed, which this system does not accept"),
+        ("ab" * 70, "is 70 bytes, expected 64"),
+    ],
+)
+async def test_a_supplied_private_key_is_refused_in_the_command_lines_words(
+    database: Database, supplied: str, expected: str
+) -> None:
+    """Design D6: one validator, so the two surfaces cannot drift apart."""
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="refused",
+            node_type="ROOM_SERVER",
+            private_key=supplied,
+        )
+
+    assert response.status_code == 400
+    assert expected in response.text
+    assert 'value="refused"' in response.text, "the name the operator typed was not kept"
+    assert 'value="ROOM_SERVER" selected' in response.text, (
+        "the node type the operator chose was not kept"
+    )
+    listed = await persistence.entities.list_all()
+    assert listed.value == [], "a refused key stored something"
+
+
+@pytest.mark.database
+async def test_a_refused_private_key_is_not_echoed_back_into_the_form(
+    database: Database,
+) -> None:
+    """Every other field is preserved on a refusal. Key material is not."""
+    persistence = Persistence(database=database)
+    app, _state, log = _built(stub_state(persistence=persistence))
+    # Valid hex of the right length, refused for its node hash, so the value
+    # reaches the refusal path rather than being rejected as malformed.
+    held = generate_identity()
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="refused",
+            private_key=held.private_key.hex()[:-2] + "zz",
+        )
+
+    assert response.status_code == 400
+    assert held.private_key.hex()[:-2] not in response.text, (
+        "the submitted private key was rendered back into the page"
+    )
+    assert "refused" in response.text, "the other fields were not preserved"
+    assert held.private_key.hex()[:-2] not in repr(log.events), (
+        "a log event carried the submitted private key"
+    )
+
+
+@pytest.mark.database
+async def test_a_supplied_key_colliding_with_a_known_node_hash_is_refused(
+    database: Database,
+) -> None:
+    """A supplied key cannot be rolled again, so the rule becomes a refusal."""
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence, stub_names=("loaded-one",))
+    app, _state, _log = _built(state)
+    taken = state.adverts.stubs[0].node_hash
+    colliding = generate_identity()
+    while colliding.node_hash != taken:
+        colliding = generate_identity()
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="collides",
+            private_key=colliding.private_key.hex(),
+        )
+
+    assert response.status_code == 400
+    assert f"0x{taken:02x} is already held" in response.text
+    listed = await persistence.entities.list_all()
+    assert listed.value == []
+
+
+@pytest.mark.database
 async def test_creation_avoids_every_node_hash_this_run_knows(
     database: Database,
 ) -> None:
@@ -322,7 +504,7 @@ async def test_the_identity_page_shows_every_field_and_no_seed(
     assert "CHAT" in body, "the node type it adverts as is not shown"
     assert "flood_interval_seconds" in body, "the advert configuration is not shown"
     assert ">yes<" in body, "the enabled state is not shown"
-    assert identity.seed.hex() not in body, "the page leaked a seed"
+    assert identity.private_key.hex() not in body, "the page leaked a private key"
 
 
 @pytest.mark.database
@@ -360,7 +542,7 @@ async def test_a_keyfile_imported_in_the_browser_matches_one_the_cli_imported(
     opened = await persistence.entities.load_all(SECRET)
     assert isinstance(opened, Succeeded)
     entity = next(e for e in opened.value if e.record.id == imported.id)
-    assert entity.identity.seed == keyfile.identity.seed
+    assert entity.identity.private_key == keyfile.identity.private_key
 
 
 @pytest.mark.database
@@ -388,7 +570,7 @@ async def test_a_malformed_keyfile_is_refused_with_the_keystores_own_reason(
     assert not_json.status_code == 400
     assert "keyfile is not valid JSON" in not_json.text
     assert mismatched.status_code == 400
-    assert "is not the one the stored seed derives" in mismatched.text
+    assert "is not the one the stored private key derives" in mismatched.text
     assert "refusing to prefer either value" in mismatched.text
 
     listed = await persistence.entities.list_all()
@@ -495,8 +677,8 @@ async def test_the_export_confirmation_names_the_identity_and_holds_no_key(
         body = (await client.get(f"/admin/identities/{record.id}/export")).text
 
     assert "exportable" in body
-    assert "private seed" in body
-    assert identity.seed.hex() not in body
+    assert "private key" in body
+    assert identity.private_key.hex() not in body
 
 
 @pytest.mark.database
@@ -558,7 +740,7 @@ async def test_an_exported_keyfile_re_imports_as_the_identity_it_came_from(
         )
 
     parsed = keyfile_from_text(downloaded.text, "downloaded")
-    assert parsed.identity.seed == identity.seed
+    assert parsed.identity.private_key == identity.private_key
     assert parsed.public_key == record.public_key
     assert parsed.name == "there-and-back"
 
@@ -606,14 +788,14 @@ async def test_an_export_without_a_confirmation_produces_nothing(
 
     assert absent.status_code == 403
     assert spent.status_code == 403
-    assert identity.seed.hex() not in absent.text
-    assert identity.seed.hex() not in spent.text
+    assert identity.private_key.hex() not in absent.text
+    assert identity.private_key.hex() not in spent.text
 
     audited = log.named("web_guarded_action")
     assert [event["outcome"] for event in audited] == ["refused", "success", "refused"]
     assert all(event["action"] == EXPORT_KEY for event in audited)
     assert all(event["target"] == str(record.id) for event in audited)
-    assert identity.seed.hex() not in repr(audited), "an event carried the seed"
+    assert identity.private_key.hex() not in repr(audited), "an event carried the private key"
 
 
 @pytest.mark.database
@@ -638,7 +820,7 @@ async def test_a_disabled_stored_identity_can_still_be_exported(
         )
 
     assert response.status_code == 200
-    assert json.loads(response.text)["seed_hex"] == identity.seed.hex()
+    assert json.loads(response.text)["private_key_hex"] == identity.private_key.hex()
 
 
 # --- 4. Rooms: create, and the read-only fallback ---------------------------
@@ -1669,6 +1851,36 @@ def test_the_identities_page_says_the_secret_is_a_terminal_command() -> None:
     assert "sighop keys secret" in collapsed
 
 
+def test_the_identities_page_says_removal_is_a_terminal_command() -> None:
+    """Design D10: the absence is named where an operator would look for it."""
+    app, _state, _log = _built(stub_state())
+
+    with _client(app) as client:
+        body = client.get("/admin/identities").text
+
+    collapsed = " ".join(body.split())
+    assert "sighop keys delete" in collapsed
+    assert "not offered here" in collapsed
+    assert "Disabling one is the reversible action" in collapsed, (
+        "an operator must be pointed at what this page does offer"
+    )
+    assert "room or a bot is bound to" in collapsed
+
+
+def test_no_route_removes_a_stored_identity() -> None:
+    """The panel offers disabling, and nothing that deletes a row."""
+    import inspect
+
+    app, _state, _log = _built(stub_state())
+
+    for route in app.routes:
+        endpoint = getattr(route, "endpoint", None)
+        if endpoint is None or not inspect.isfunction(endpoint):
+            continue
+        source = inspect.getsource(endpoint)
+        assert "entities.remove" not in source, f"{route.path} removes an identity"
+
+
 def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
     """7.4: and it is not the same wording a degraded database gets."""
     app, _state, _log = _built(stub_state())
@@ -1851,8 +2063,8 @@ async def test_no_safe_request_on_the_enlarged_interface_changes_anything(
     """
     persistence, state, ids = await _populated(database)
     app, _state, _log = _built(state)
-    seeds = [stub.identity.seed for stub in state.adverts.stubs]
-    assert seeds, "the state holds no identity; the leak assertion would be vacuous"
+    private_keys = [stub.identity.private_key for stub in state.adverts.stubs]
+    assert private_keys, "the state holds no identity; the leak assertion would be vacuous"
 
     before = state.scheduler.status().as_json()
     contacts = len(state.contacts)
@@ -1867,8 +2079,11 @@ async def test_no_safe_request_on_the_enlarged_interface_changes_anything(
     async with _live(app) as client:
         for method, path in _every_page(app, ids):
             response = await client.request(method, path)
-            for seed in seeds:
-                assert seed.hex() not in response.text, f"{path} leaked a seed"
+            for private_key in private_keys:
+                assert private_key.hex() not in response.text, (
+                    f"{path} leaked a private key"
+                )
+            assert "private_key_hex" not in response.text, f"{path} served key material"
             assert "seed_hex" not in response.text, f"{path} served key material"
 
     assert state.scheduler.status().as_json() == before, "a safe request transmitted"

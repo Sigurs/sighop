@@ -7,7 +7,7 @@ import asyncio
 import base64
 import secrets
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
@@ -45,6 +45,7 @@ from sighop.db.repositories import (
     EntityRepository,
     EntityRoleError,
     LoadedEntity,
+    OpenedEntities,
     RoomExistsError,
     RoomRecord,
     UsernameError,
@@ -55,7 +56,8 @@ from sighop.db.repositories import (
 )
 from sighop.db.sealing import SealError
 from sighop.keystore import (
-    PLAINTEXT_SEED_NOTICE,
+    PLAINTEXT_KEY_NOTICE,
+    Keyfile,
     KeyfileError,
     create_keyfile,
     load_keyfile,
@@ -73,6 +75,12 @@ from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
 from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.passwords import hash_password
+from sighop.protocol.identity import (
+    LocalIdentity,
+    PrivateKeyError,
+    private_key_from_hex,
+    refuse_unusable_node_hash,
+)
 from sighop.protocol.payloads import NodeType
 from sighop.radio.capture import CaptureRun, CaptureWriter
 from sighop.radio.kiss import KissTransport, serial_connector
@@ -402,6 +410,16 @@ def build_parser() -> argparse.ArgumentParser:
             "fixture; a real entity generates its own"
         ),
     )
+    keys_new.add_argument(
+        "--private-key",
+        default=None,
+        metavar="HEX",
+        help=(
+            "write a keyfile for an identity you already hold, instead of "
+            "generating one: the 64-byte private key a MeshCore device stores, as "
+            "128 hex characters. A 32-byte seed is not accepted"
+        ),
+    )
     keys_show = key_actions.add_parser(
         "show", help="print a keyfile's name, node type, public key and node hash"
     )
@@ -418,9 +436,47 @@ def build_parser() -> argparse.ArgumentParser:
         "list", help="list the identities in the entity store (needs a database)"
     )
     keys_import = key_actions.add_parser(
-        "import", help="store a keyfile's identity, sealing its seed (needs a database)"
+        "import",
+        help=(
+            "store an identity from a keyfile or a private key, sealing it "
+            "(needs a database)"
+        ),
     )
-    keys_import.add_argument("keyfile", type=Path, help="the keyfile to import")
+    # One of the two, never both (design D8). Not argparse's mutually exclusive
+    # group: `keyfile` is positional, so the group's own message would talk
+    # about an option and an argument rather than about two ways to name an
+    # identity. `_keys_import` says it in those terms instead.
+    keys_import.add_argument(
+        "keyfile",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="the keyfile to import",
+    )
+    keys_import.add_argument(
+        "--private-key",
+        default=None,
+        metavar="HEX",
+        help=(
+            "import an identity you already hold instead of a keyfile: the "
+            "64-byte private key a MeshCore device stores, as 128 hex characters. "
+            "Needs --name. Nothing is written to disk"
+        ),
+    )
+    keys_import.add_argument(
+        "--name",
+        default=None,
+        help="the entity's advertised name; required with --private-key",
+    )
+    keys_import.add_argument(
+        "--node-type",
+        default=NodeType.CHAT.name,
+        choices=[node_type.name for node_type in NodeType],
+        help=(
+            "the node type a --private-key identity adverts as (default: "
+            "%(default)s). A keyfile carries its own"
+        ),
+    )
     keys_import.add_argument(
         "--bot",
         action="store_true",
@@ -435,14 +491,32 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         help=(
             "write a stored identity back to a keyfile. The file holds an "
-            "unencrypted seed (needs a database)"
+            "unencrypted private key (needs a database)"
         ),
     )
     keys_export.add_argument(
         "reference", help="the stored entity, by exact name or hex public key prefix"
     )
     keys_export.add_argument("path", type=Path, help="keyfile to write (never overwritten)")
-    for store_parser in (keys_list, keys_import, keys_export):
+    keys_delete = key_actions.add_parser(
+        "delete",
+        help=(
+            "remove a stored identity. Irreversible, refused for an identity a "
+            "room or bot is bound to (needs a database)"
+        ),
+    )
+    keys_delete.add_argument(
+        "reference", help="the stored entity, by exact name or hex public key prefix"
+    )
+    keys_delete.add_argument(
+        "--delete-key",
+        action="store_true",
+        help=(
+            "accept losing this identity's stored key material, in place of "
+            "confirming at a terminal. Needed when there is no terminal"
+        ),
+    )
+    for store_parser in (keys_list, keys_import, keys_export, keys_delete):
         _add_database_url_argument(store_parser)
 
     room = subparsers.add_parser(
@@ -1113,15 +1187,20 @@ async def open_persistence(
             raise listed.error
         if not any(record.enabled for record in listed.value):
             return persistence, ()
-        loaded = await persistence.entities.load_all(
+        loaded = await persistence.entities.load_openable(
             config.secret_key_bytes(), enabled_only=True
         )
         if isinstance(loaded, Failed):
             raise loaded.error
+        for refusal in loaded.value.stranded:
+            # A row left behind by migration 0008. The run continues on the
+            # identities that did open — see `load_openable` — but this must
+            # reach the terminal every start until the row is dealt with.
+            print(f"!! {refusal}", file=sys.stderr)
     except BaseException:
         await persistence.stop()
         raise
-    return persistence, tuple(loaded.value)
+    return persistence, loaded.value.opened
 
 
 async def migrate_on_start(database: DatabaseConfig) -> None:
@@ -1156,12 +1235,26 @@ async def migrate_on_start(database: DatabaseConfig) -> None:
 
 
 def _keys_new(args: argparse.Namespace, out: IO[str]) -> int:
-    """Create a keyfile and print the public key another node's contact list needs."""
+    """Create a keyfile and print the public key another node's contact list needs.
+
+    With `--private-key`, the identity is the operator's rather than a new one.
+    It is validated before the file is opened, so a refused key leaves no file
+    behind — including no empty one at the path they meant to keep.
+    """
+    supplied: LocalIdentity | None = None
+    if args.private_key is not None:
+        try:
+            supplied = private_key_from_hex(args.private_key)
+            refuse_unusable_node_hash(supplied)
+        except PrivateKeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
     try:
         keyfile = create_keyfile(
             args.out,
             args.name,
             node_type=NodeType[args.node_type],
+            identity=supplied,
             burned=args.burned,
         )
     except KeyfileError as exc:
@@ -1172,14 +1265,14 @@ def _keys_new(args: argparse.Namespace, out: IO[str]) -> int:
     print(f"node_type  {NodeType(keyfile.node_type).name}", file=out)
     print(f"public_key {keyfile.public_key.hex()}", file=out)
     print(f"node_hash  0x{keyfile.node_hash:02x}", file=out)
-    print(f"!! {PLAINTEXT_SEED_NOTICE}", file=out)
+    print(f"!! {PLAINTEXT_KEY_NOTICE}", file=out)
     for warning in keyfile.warnings:
         print(f"!! {warning}", file=out)
     return 0
 
 
 def _keys_secret(out: IO[str]) -> int:
-    """Generate the key entity seeds are sealed under, and say what losing it costs.
+    """Generate the key entity private keys are sealed under, and what losing it costs.
 
     Printed once, from the system CSPRNG, with no passphrase anywhere near it:
     accepting a passphrase invites `hunter2` and then requires an Argon2
@@ -1197,7 +1290,7 @@ def _keys_secret(out: IO[str]) -> int:
 
 
 def _keys_list(args: argparse.Namespace, out: IO[str]) -> int:
-    """Stored identities. No seed, no ciphertext, and no flag that would print one."""
+    """Stored identities. No private key, no ciphertext, and no flag that prints one."""
     database = _database_config(args, out)
     if database is None:
         return 2
@@ -1229,52 +1322,136 @@ def _secret_key() -> bytes:
     return Config.from_environment().secret_key_bytes()
 
 
+IMPORT_NEEDS_ONE_SOURCE = (
+    "an identity comes from a keyfile or from --private-key, and this was given "
+    "both. They are alternatives: the keyfile carries a name and a node type, "
+    "and a bare private key needs --name to supply one"
+)
+
+IMPORT_NEEDS_A_SOURCE = (
+    "no identity to import: pass a keyfile, or --private-key with --name for an "
+    "identity you already hold"
+)
+
+PRIVATE_KEY_NEEDS_A_NAME = (
+    "--private-key needs --name: a keyfile carries the entity's advertised name "
+    "and a bare private key does not"
+)
+
+
 def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
-    """Milestone 4's promised one-function conversion (its design D1)."""
+    """Milestone 4's promised one-function conversion (its design D1).
+
+    Two ways in, never both (design D8): a keyfile, or a private key the
+    operator already holds. The second writes nothing to disk at any point,
+    which is the reason it exists — moving an identity into the store should not
+    require leaving unencrypted key material in a file first.
+    """
+    keyfile: Keyfile | None = None
+    identity: LocalIdentity | None = None
+
+    if args.keyfile is not None and args.private_key is not None:
+        print(IMPORT_NEEDS_ONE_SOURCE, file=sys.stderr)
+        return 2
+    if args.keyfile is None and args.private_key is None:
+        print(IMPORT_NEEDS_A_SOURCE, file=sys.stderr)
+        return 2
+    if args.private_key is not None and not args.name:
+        print(PRIVATE_KEY_NEEDS_A_NAME, file=sys.stderr)
+        return 2
+
     database = _database_config(args, out)
     if database is None:
         return 2
     try:
         secret = _secret_key()
-        keyfile = load_keyfile(args.keyfile)
-    except (ConfigError, KeyfileError) as exc:
+    except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if args.keyfile is not None:
+        try:
+            keyfile = load_keyfile(args.keyfile)
+        except KeyfileError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        name, identity, node_type = keyfile.name, keyfile.identity, keyfile.node_type
+    else:
+        try:
+            identity = private_key_from_hex(args.private_key)
+            refuse_unusable_node_hash(identity)
+        except PrivateKeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        name, node_type = args.name, NodeType[args.node_type]
 
     async def store_it(store: EntityRepository) -> Outcome[EntityRecord]:
         # Neither the "already stored" refusal nor the "a bot adverts as CHAT"
         # one is this command's: the browser imports through the same call and
-        # has to be refused in the same words. What stays here is the *file*
+        # has to be refused in the same words. What stays here is the *source*
         # this one was asked about, which the browser has no equivalent of.
         return await store.store(
-            name=keyfile.name,
-            identity=keyfile.identity,
+            name=name,
+            identity=identity,
             secret=secret,
-            node_type=keyfile.node_type,
+            node_type=node_type,
             entity_type=BOT_ENTITY_TYPE if args.bot else None,
             advert_config=advert_config_for(NodeType.CHAT) if args.bot else None,
         )
 
+    source = str(keyfile.path) if keyfile is not None else "the supplied private key"
     try:
         outcome = asyncio.run(_with_store(database, store_it))
     except (EntityExistsError, EntityRoleError) as exc:
-        print(f"{keyfile.path}: {exc}", file=sys.stderr)
+        print(f"{source}: {exc}", file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
         print(str(outcome.error), file=sys.stderr)
         return 2
     record = outcome.value
-    print(f"imported   {keyfile.path}", file=out)
+    print(f"imported   {source}", file=out)
     print(f"entity_id  {record.id}", file=out)
     print(f"name       {record.name}", file=out)
     print(f"type       {record.type}", file=out)
     print(f"node_type  {NodeType(record.node_type).name}", file=out)
     print(f"public_key {record.public_key.hex()}", file=out)
     print(f"node_hash  0x{record.node_hash:02x}", file=out)
-    print("the seed is sealed under SIGHOP_SECRET_KEY and is not stored in the clear", file=out)
-    for warning in keyfile.warnings:
+    print(
+        "the private key is sealed under SIGHOP_SECRET_KEY and is not stored in the clear",
+        file=out,
+    )
+    for warning in keyfile.warnings if keyfile is not None else ():
         print(f"!! {warning}", file=out)
     return 0
+
+
+def _one_identity[T: LoadedEntity | EntityRecord](
+    candidates: Iterable[T], reference: str
+) -> T | None:
+    """The one identity `reference` names, or None with the reason printed.
+
+    Exact name or hex public key prefix, and an ambiguous reference is refused
+    rather than resolved by order — picking "the first match" would make which
+    identity an operator exported or removed depend on `created_at`.
+
+    Shared by `keys export` and `keys delete` so the two select identically.
+    It takes records as well as opened entities, because a row under the removed
+    seed format cannot be opened and is exactly what `keys delete` is for.
+    """
+    wanted = reference.removeprefix("0x").lower()
+    matches = [
+        candidate
+        for candidate in candidates
+        if candidate.name == reference or candidate.public_key.hex().startswith(wanted)
+    ]
+    if not matches:
+        print(f"no stored identity matches {reference!r}", file=sys.stderr)
+        return None
+    if len(matches) > 1:
+        listed = ", ".join(f"{m.name} ({m.public_key.hex()[:16]})" for m in matches)
+        print(f"{reference!r} matches {len(matches)} identities: {listed}", file=sys.stderr)
+        return None
+    return matches[0]
 
 
 def _keys_export(args: argparse.Namespace, out: IO[str]) -> int:
@@ -1300,21 +1477,9 @@ def _keys_export(args: argparse.Namespace, out: IO[str]) -> int:
         print(str(outcome.error), file=sys.stderr)
         return 2
 
-    matches = [
-        entity
-        for entity in outcome.value
-        if entity.name == args.reference
-        or entity.public_key.hex().startswith(args.reference.removeprefix("0x").lower())
-    ]
-    if not matches:
-        print(f"no stored identity matches {args.reference!r}", file=sys.stderr)
+    entity = _one_identity(outcome.value, args.reference)
+    if entity is None:
         return 2
-    if len(matches) > 1:
-        listed = ", ".join(f"{e.name} ({e.public_key.hex()[:16]})" for e in matches)
-        print(f"{args.reference!r} matches {len(matches)} identities: {listed}", file=sys.stderr)
-        return 2
-
-    entity = matches[0]
     try:
         keyfile = create_keyfile(
             args.path,
@@ -1329,7 +1494,123 @@ def _keys_export(args: argparse.Namespace, out: IO[str]) -> int:
     print(f"name       {keyfile.name}", file=out)
     print(f"public_key {keyfile.public_key.hex()}", file=out)
     print(f"node_hash  0x{keyfile.node_hash:02x}", file=out)
-    print(f"!! {PLAINTEXT_SEED_NOTICE}", file=out)
+    print(f"!! {PLAINTEXT_KEY_NOTICE}", file=out)
+    return 0
+
+
+def _removal_consequence(record: EntityRecord, database: DatabaseConfig) -> str:
+    """What removing this identity costs, in the terms this row is actually in.
+
+    A stranded row and an openable one cost very different things, and an
+    operator clearing up after migration 0008 is looking at the first. Saying
+    "unrecoverable" about key material nothing can read any more would be both
+    false and discouraging at exactly the wrong moment.
+    """
+    opened = f"removing identity {record.name!r} ({record.public_key.hex()[:16]}) "
+    try:
+        secret = _secret_key()
+    except ConfigError:
+        # No secret configured. Removal still works — a row nobody here can open
+        # is one an operator may well be clearing — but we cannot say which case
+        # it is without opening it, and we will not guess.
+        return (
+            opened + "cannot be undone. Without SIGHOP_SECRET_KEY set, whether its "
+            "stored key material can still be read is unknown from here"
+        )
+
+    async def load(store: EntityRepository) -> Outcome[OpenedEntities]:
+        return await store.load_openable(secret)
+
+    try:
+        outcome = asyncio.run(_with_store(database, load))
+    except (EntityLoadError, SealError):
+        return opened + "cannot be undone"
+    if isinstance(outcome, Failed):
+        return opened + "cannot be undone"
+    if any(record.public_key.hex()[:16] in refusal for refusal in outcome.value.stranded):
+        return (
+            opened + "loses nothing you can still use: its stored key material is a "
+            "seed this build cannot read. Removing the row is what lets the same "
+            "identity be imported again with `keys import --private-key`"
+        )
+    return (
+        opened + "cannot be undone. Unless you hold this identity's private key "
+        "elsewhere, it is gone: peers that know this public key will never reach it "
+        "again"
+    )
+
+
+def _keys_delete(args: argparse.Namespace, out: IO[str]) -> int:
+    """Remove one stored identity (design D10).
+
+    The only destructive action on the `keys` surface, and it exists because a
+    row stranded by migration 0008 blocks its own replacement: `store()` refuses
+    the public key it still holds.
+
+    Two things stand in front of it. An identity a room or a bot is bound to is
+    refused outright — those foreign keys cascade, so removing it would take a
+    room's members and its whole history without saying so. And the removal is
+    confirmed the way `sighop channel remove` is confirmed, because an operator
+    should not have to learn a second pattern for the same kind of act.
+    """
+    database = _database_config(args, out)
+    if database is None:
+        return 2
+
+    async def listed(store: EntityRepository) -> Outcome[list[EntityRecord]]:
+        return await store.list_all()
+
+    outcome = asyncio.run(_with_store(database, listed))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record = _one_identity(outcome.value, args.reference)
+    if record is None:
+        return 2
+
+    async def bindings(store: EntityRepository) -> Outcome[list[str]]:
+        return await store.bound_to(record.id)
+
+    bound = asyncio.run(_with_store(database, bindings))
+    if isinstance(bound, Failed):
+        print(str(bound.error), file=sys.stderr)
+        return 2
+    if bound.value:
+        print(
+            f"identity {record.name!r} is serving {' and '.join(bound.value)}, which "
+            "would be deleted with it. Remove them first; nothing was removed",
+            file=sys.stderr,
+        )
+        return 2
+
+    consequence = _removal_consequence(record, database)
+    if not args.delete_key:
+        if not sys.stdin.isatty():
+            print(
+                f"{consequence}. Nothing was removed: confirm at a terminal, or pass "
+                "--delete-key to accept it",
+                file=sys.stderr,
+            )
+            return 2
+        print(consequence, file=out)
+        answer = input(f"type the identity name ({record.name}) to remove it: ")
+        if answer.strip() != record.name:
+            print("not confirmed; nothing was removed", file=sys.stderr)
+            return 2
+
+    async def remove(store: EntityRepository) -> Outcome[bool]:
+        return await store.remove(record.public_key)
+
+    removed = asyncio.run(_with_store(database, remove))
+    if isinstance(removed, Failed):
+        print(str(removed.error), file=sys.stderr)
+        return 2
+    if not removed.value:
+        print(f"no stored identity matches {args.reference!r}", file=sys.stderr)
+        return 2
+    print(f"removed    {record.name}", file=out)
+    print(f"public_key {record.public_key.hex()}", file=out)
+    print(f"node_hash  0x{record.node_hash:02x}", file=out)
     return 0
 
 
@@ -1345,7 +1626,7 @@ async def _with_store[T](
 
 
 def _keys_show(args: argparse.Namespace, out: IO[str]) -> int:
-    """Inspect an identity. The seed is not printed, and there is no flag for it."""
+    """Inspect an identity. The private key is not printed, and there is no flag for it."""
     try:
         keyfile = load_keyfile(args.keyfile)
     except KeyfileError as exc:
@@ -1945,7 +2226,7 @@ def _now_iso() -> str:
 
 def _render_bot(record: BotRecord, out: IO[str]) -> None:
     """One bot's configuration. No key material appears here and none can:
-    nothing on this path has ever held a seed or its ciphertext."""
+    nothing on this path has ever held a private key or its ciphertext."""
     print(f"bot        {record.entity_name}", file=out)
     print(f"bot_id     {record.id}", file=out)
     print(f"entity_id  {record.entity_id}", file=out)
@@ -2781,12 +3062,12 @@ def _web_sealing_secret(
     """`SIGHOP_SECRET_KEY` for the panel, or `None` when nothing is sealed.
 
     Design D1: the panel exports a *stored* identity, which means opening a
-    sealed seed, which needs the key this module already reads. It is passed
+    sealed private key, which needs the key this module already reads. It is passed
     here rather than reached for inside `web/` because `cli.py` is the one
     module that composes both sides.
 
     Only when a database is configured: a run with no database has no sealed
-    seed to open, and demanding the variable would make the panel refuse to
+    key to open, and demanding the variable would make the panel refuse to
     start for a capability that run does not have. The run itself has already
     failed by now if the variable was needed and missing, so this cannot be the
     place a bad value is first discovered.
@@ -3560,6 +3841,8 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
                 return _keys_list(args, stream)
             case "import":
                 return _keys_import(args, stream)
+            case "delete":
+                return _keys_delete(args, stream)
             case _:
                 return _keys_export(args, stream)
 
@@ -3646,7 +3929,7 @@ async def _run(args: argparse.Namespace) -> int:
         WebStartupError,
     ) as exc:
         # A configured database that cannot be reached, is unauthenticated, is
-        # at the wrong revision, or whose seeds will not open is a *startup*
+        # at the wrong revision, or whose keys will not open is a *startup*
         # failure that applies nothing and transmits nothing (`database` and
         # `entity-store` specs). It is reported here rather than as a traceback,
         # and the message names both revisions or the variable at fault.

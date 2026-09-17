@@ -995,7 +995,7 @@ async def reveal(
         "admin/revealed.html",
         entity_name=stub.name,
         public_key=stub.identity.public_key.hex(),
-        seed=stub.identity.seed.hex(),
+        private_key=stub.identity.private_key.hex(),
     )
 
 

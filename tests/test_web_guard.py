@@ -310,28 +310,30 @@ def test_no_safe_request_transmits_or_changes_state() -> None:
 
 
 def test_no_safe_request_reveals_private_key_material() -> None:
-    """8.3: the seeds this run holds appear in no page reachable by navigation.
+    """8.3: the private keys this run holds appear in no page reachable by navigation.
 
     Design D10 puts key material in exactly one response body, behind a guarded
     action's confirmation. Everything else is swept here.
     """
     state = stub_state(stub_names=("panel-identity",))
     app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger())
-    seeds = [stub.identity.seed for stub in state.adverts.stubs]
-    assert seeds, "the state holds no identity; the assertion would be vacuous"
+    private_keys = [stub.identity.private_key for stub in state.adverts.stubs]
+    assert private_keys, "the state holds no identity; the assertion would be vacuous"
 
     with _client(app) as client:
         for method, path in _safe_routes(app):
             body = client.request(method, path).text
-            for seed in seeds:
-                assert seed.hex() not in body, f"{method} {path} leaked a seed"
-                assert _base64ish(seed) not in body
+            for private_key in private_keys:
+                assert private_key.hex() not in body, (
+                    f"{method} {path} leaked a private key"
+                )
+                assert _base64ish(private_key) not in body
 
 
-def _base64ish(seed: bytes) -> str:
+def _base64ish(material: bytes) -> str:
     import base64
 
-    return base64.b64encode(seed).decode()
+    return base64.b64encode(material).decode()
 
 
 # --- 8.4 One event per request ----------------------------------------------
