@@ -130,9 +130,7 @@ class LocalIdentity:
         """
         if len(private_key) != PRV_KEY_SIZE:
             raise ValueError(f"private key must be {PRV_KEY_SIZE} bytes")
-        public_key = bindings.crypto_scalarmult_ed25519_base_noclamp(
-            private_key[:PUB_KEY_SIZE]
-        )
+        public_key = bindings.crypto_scalarmult_ed25519_base_noclamp(private_key[:PUB_KEY_SIZE])
         return cls(private_key=private_key, public_key=public_key)
 
     @property
@@ -208,9 +206,7 @@ def private_key_from_hex(text: str) -> LocalIdentity:
     try:
         private_key = bytes.fromhex(cleaned)
     except ValueError as exc:
-        raise PrivateKeyError(
-            f"the private key is not hexadecimal: {exc}"
-        ) from exc
+        raise PrivateKeyError(f"the private key is not hexadecimal: {exc}") from exc
 
     if len(private_key) != PRV_KEY_SIZE:
         detail = (

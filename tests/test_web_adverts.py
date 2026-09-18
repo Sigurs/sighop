@@ -234,9 +234,7 @@ def test_a_zero_hop_advert_is_submitted_and_leaves_the_schedule() -> None:
     assert event["node_hash"] == stub.node_hash
     assert event["actor"] == OPERATOR
     assert said == [
-        render_advert_request(
-            "zero-hop", stub.name, actor=OPERATOR, next_flood_at=scheduled
-        )
+        render_advert_request("zero-hop", stub.name, actor=OPERATOR, next_flood_at=scheduled)
     ]
 
 
@@ -489,9 +487,7 @@ class _Running:
 
 
 async def _stored(persistence: Persistence, state: StubState, name: str, node_type: NodeType):
-    identity = generate_identity(
-        avoid_node_hashes={stub.node_hash for stub in state.adverts.stubs}
-    )
+    identity = generate_identity(avoid_node_hashes={stub.node_hash for stub in state.adverts.stubs})
     stored = await persistence.entities.store(
         name=name,
         identity=identity,

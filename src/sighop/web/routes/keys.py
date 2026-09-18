@@ -189,9 +189,7 @@ async def set_identity_enabled(
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     record = await _entity(page, entity_id)
     if record is not None:
-        await page.persistence.entities.set_enabled(
-            record.public_key, enabled == "true"
-        )
+        await page.persistence.entities.set_enabled(record.public_key, enabled == "true")
     return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
 
 
@@ -235,8 +233,7 @@ async def create_identity(
         return await _refuse(
             request,
             page,
-            f"{node_type!r} is not a node type; this build has "
-            f"{', '.join(CREATABLE_NODE_TYPES)}",
+            f"{node_type!r} is not a node type; this build has {', '.join(CREATABLE_NODE_TYPES)}",
             field="node_type",
             **submitted,
         )
@@ -247,9 +244,7 @@ async def create_identity(
             identity = private_key_from_hex(private_key)
             refuse_unusable_node_hash(identity, avoid_node_hashes=taken)
         except PrivateKeyError as exc:
-            return await _refuse(
-                request, page, str(exc), field="private_key", **submitted
-            )
+            return await _refuse(request, page, str(exc), field="private_key", **submitted)
     else:
         try:
             identity = generate_identity(avoid_node_hashes=taken)
@@ -270,9 +265,7 @@ async def create_identity(
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
-    return RedirectResponse(
-        f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER
-    )
+    return RedirectResponse(f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER)
 
 
 async def _taken_hashes(page: Panel) -> frozenset[int]:
@@ -330,9 +323,7 @@ async def import_identity(
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
-    return RedirectResponse(
-        f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER
-    )
+    return RedirectResponse(f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER)
 
 
 async def _refuse(
@@ -386,10 +377,7 @@ def _serving(bindings: dict[str, list[str]], entity_id: str) -> list[str]:
 def _is_loaded(page: Panel, record: EntityRecord | None) -> bool:
     if record is None:
         return False
-    return any(
-        stub.identity.public_key == record.public_key
-        for stub in page.state.adverts.stubs
-    )
+    return any(stub.identity.public_key == record.public_key for stub in page.state.adverts.stubs)
 
 
 async def _entity(page: Panel, entity_id: str) -> EntityRecord | None:
@@ -412,9 +400,7 @@ async def _entity(page: Panel, entity_id: str) -> EntityRecord | None:
 
 
 @router.get("/{entity_id}/export", response_class=HTMLResponse)
-async def export_form(
-    entity_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def export_form(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """The confirmation in front of an export. Contains no key material."""
     record = await _entity(page, entity_id)
     return page.page(
@@ -554,7 +540,6 @@ def _filename(record: EntityRecord) -> str:
     and a header is not a place to find out what a peer put in a name field.
     """
     safe = "".join(
-        character if character.isalnum() or character in "-_" else "-"
-        for character in record.name
+        character if character.isalnum() or character in "-_" else "-" for character in record.name
     ).strip("-")
     return f"{safe or 'identity'}.json"

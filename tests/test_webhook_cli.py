@@ -67,10 +67,22 @@ def _no_secret(text: str) -> None:
         assert part not in text
 
 
-async def _add(url: str, *extra: str, name: str = "dev-hook", target: str = URL) -> tuple[int, str, str]:
+async def _add(
+    url: str, *extra: str, name: str = "dev-hook", target: str = URL
+) -> tuple[int, str, str]:
     return await _cli(
-        ["webhook", "add", name, "--format", "discord", "--trigger", "new_repeater", *extra,
-         "--database-url", url],
+        [
+            "webhook",
+            "add",
+            name,
+            "--format",
+            "discord",
+            "--trigger",
+            "new_repeater",
+            *extra,
+            "--database-url",
+            url,
+        ],
         f"{target}\n",
     )
 
@@ -96,8 +108,11 @@ def test_every_verb_is_registered_and_no_url_argument_exists() -> None:
     for verb, action in actions.items():
         dests = {argument.dest for argument in action._actions}
         assert "url" not in dests, verb
-        assert not any("url" in option and option != "--database-url"
-                       for argument in action._actions for option in argument.option_strings)
+        assert not any(
+            "url" in option and option != "--database-url"
+            for argument in action._actions
+            for option in argument.option_strings
+        )
     for verb in ("add", "set-url"):
         assert "standard input" in actions[verb].format_help()
     assert "standard input" in URL_IS_READ_FROM_STDIN
@@ -176,7 +191,9 @@ async def test_list_and_show_never_print_the_path(database: Database, url: str) 
     import datetime as dt
 
     await repository.record_delivery(record.id, dt.datetime(2026, 9, 13, 10, tzinfo=dt.UTC))
-    await repository.record_failure(record.id, dt.datetime(2026, 9, 13, 11, tzinfo=dt.UTC), "HTTP 404")
+    await repository.record_failure(
+        record.id, dt.datetime(2026, 9, 13, 11, tzinfo=dt.UTC), "HTTP 404"
+    )
 
     code, out, err = await _cli(["webhook", "list", "--database-url", url])
     assert code == 0, err
@@ -203,12 +220,27 @@ async def test_enable_disable_set_set_url_and_remove(database: Database, url: st
     assert code == 0 and "is enabled" in out
 
     code, out, err = await _cli(
-        ["webhook", "set", "dev-hook", "--format", "json", "--trigger", "new_companion",
-         "--trigger", "new_repeater", "--max-hops", "2", "--database-url", url]
+        [
+            "webhook",
+            "set",
+            "dev-hook",
+            "--format",
+            "json",
+            "--trigger",
+            "new_companion",
+            "--trigger",
+            "new_repeater",
+            "--max-hops",
+            "2",
+            "--database-url",
+            url,
+        ]
     )
     assert code == 0, err
     assert "triggers   new_companion, new_repeater" in out and "max_hops   2" in out
-    code, out, _ = await _cli(["webhook", "set", "dev-hook", "--no-max-hops", "--database-url", url])
+    code, out, _ = await _cli(
+        ["webhook", "set", "dev-hook", "--no-max-hops", "--database-url", url]
+    )
     assert code == 0 and "max_hops   none" in out
     code, _, err = await _cli(["webhook", "set", "dev-hook", "--database-url", url])
     assert code == 2 and "nothing to change" in err
@@ -218,7 +250,8 @@ async def test_enable_disable_set_set_url_and_remove(database: Database, url: st
     assert code == 2 and "new_repeater" in err
 
     code, out, err = await _cli(
-        ["webhook", "set-url", "dev-hook", "--database-url", url], "https://hooks.example.org/x/y?z=1\n"
+        ["webhook", "set-url", "dev-hook", "--database-url", url],
+        "https://hooks.example.org/x/y?z=1\n",
     )
     assert code == 0, err
     assert "now targets https://hooks.example.org" in out and "/x/y" not in out
@@ -232,7 +265,9 @@ async def test_enable_disable_set_set_url_and_remove(database: Database, url: st
 
 @pytest.mark.database
 async def test_test_sends_one_sample_and_reports_the_status(
-    database: Database, url: str, receiver: Receiver  # noqa: F811
+    database: Database,
+    url: str,
+    receiver: Receiver,  # noqa: F811
 ) -> None:
     await _add(url, target=f"{receiver.base}/ok?token=hunter2")
     await _cli(["webhook", "disable", "dev-hook", "--database-url", url])
@@ -250,7 +285,9 @@ async def test_test_sends_one_sample_and_reports_the_status(
 
 @pytest.mark.database
 async def test_test_reports_a_rejection_once(
-    database: Database, url: str, receiver: Receiver  # noqa: F811
+    database: Database,
+    url: str,
+    receiver: Receiver,  # noqa: F811
 ) -> None:
     await _add(url, target=f"{receiver.base}/missing")
     code, out, _ = await _cli(

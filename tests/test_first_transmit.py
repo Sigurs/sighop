@@ -68,10 +68,14 @@ def test_keys_new_writes_a_keyfile_for_a_supplied_private_key(tmp_path) -> None:
 
     code = main(
         [
-            "keys", "new",
-            "--name", "from-a-device",
-            "--out", str(path),
-            "--private-key", held.private_key.hex(),
+            "keys",
+            "new",
+            "--name",
+            "from-a-device",
+            "--out",
+            str(path),
+            "--private-key",
+            held.private_key.hex(),
         ],
         out=out,
     )
@@ -90,8 +94,16 @@ def test_a_supplied_key_survives_a_write_and_a_read(tmp_path) -> None:
     held = generate_identity()
     path = tmp_path / "held.json"
     main(
-        ["keys", "new", "--name", "held", "--out", str(path),
-         "--private-key", held.private_key.hex()],
+        [
+            "keys",
+            "new",
+            "--name",
+            "held",
+            "--out",
+            str(path),
+            "--private-key",
+            held.private_key.hex(),
+        ],
         out=io.StringIO(),
     )
     shown = io.StringIO()
@@ -132,8 +144,7 @@ def test_keys_new_refuses_an_unclamped_private_key(tmp_path, capsys) -> None:
     path = tmp_path / "never-written.json"
 
     code = main(
-        ["keys", "new", "--name", "x", "--out", str(path),
-         "--private-key", bytes(broken).hex()],
+        ["keys", "new", "--name", "x", "--out", str(path), "--private-key", bytes(broken).hex()],
         out=io.StringIO(),
     )
 
@@ -158,8 +169,16 @@ def test_keys_new_refuses_a_key_deriving_a_reserved_node_hash(tmp_path, capsys) 
     path = tmp_path / "never-written.json"
 
     code = main(
-        ["keys", "new", "--name", "x", "--out", str(path),
-         "--private-key", reserved.private_key.hex()],
+        [
+            "keys",
+            "new",
+            "--name",
+            "x",
+            "--out",
+            str(path),
+            "--private-key",
+            reserved.private_key.hex(),
+        ],
         out=io.StringIO(),
     )
 
@@ -174,8 +193,16 @@ def test_keys_new_with_a_supplied_key_still_refuses_an_existing_file(tmp_path) -
     before = path.read_text()
 
     code = main(
-        ["keys", "new", "--name", "x", "--out", str(path),
-         "--private-key", generate_identity().private_key.hex()],
+        [
+            "keys",
+            "new",
+            "--name",
+            "x",
+            "--out",
+            str(path),
+            "--private-key",
+            generate_identity().private_key.hex(),
+        ],
         out=io.StringIO(),
     )
 
@@ -247,10 +274,7 @@ def test_flooding_is_off_unless_asked_for() -> None:
     parser = build_parser()
 
     assert parser.parse_args(["run", "--replay", str(CAPTURE)]).allow_flood is False
-    assert (
-        parser.parse_args(["run", "--replay", str(CAPTURE), "--allow-flood"]).allow_flood
-        is True
-    )
+    assert parser.parse_args(["run", "--replay", str(CAPTURE), "--allow-flood"]).allow_flood is True
 
 
 def runtime(
@@ -333,9 +357,7 @@ async def test_persistent_and_ephemeral_entities_are_distinguished(tmp_path) -> 
 
     await run.run()
 
-    line = next(
-        line for line in out.getvalue().splitlines() if line.startswith("stubs: ")
-    )
+    line = next(line for line in out.getvalue().splitlines() if line.startswith("stubs: "))
     assert "persistent-one" in line and "persistent" in line
     assert "ephemeral-one" in line and "ephemeral" in line
 
@@ -458,12 +480,8 @@ async def test_two_entities_exchange_a_message_end_to_end(tmp_path) -> None:
         out=out,
     )
     # The contacts and route the peer's advert would have supplied.
-    run.contacts.observe_advert(
-        verified_advert(bob.identity, "bob"), at=clock.now()
-    )
-    run.contacts.observe_advert(
-        verified_advert(alice.identity, "alice"), at=clock.now()
-    )
+    run.contacts.observe_advert(verified_advert(bob.identity, "bob"), at=clock.now())
+    run.contacts.observe_advert(verified_advert(alice.identity, "alice"), at=clock.now())
     seed_zero_hop(run, bob.public_key, clock.now())
     seed_zero_hop(run, alice.public_key, clock.now())
 
@@ -542,12 +560,8 @@ async def test_a_transmitting_run_captures_the_frames_it_sent(tmp_path) -> None:
         capture_writer=writer,
         capture_probe=probe,
     )
-    run.contacts.observe_advert(
-        verified_advert(bob.identity, "bob"), at=clock.now()
-    )
-    run.contacts.observe_advert(
-        verified_advert(alice.identity, "alice"), at=clock.now()
-    )
+    run.contacts.observe_advert(verified_advert(bob.identity, "bob"), at=clock.now())
+    run.contacts.observe_advert(verified_advert(alice.identity, "alice"), at=clock.now())
     seed_zero_hop(run, bob.public_key, clock.now())
     seed_zero_hop(run, alice.public_key, clock.now())
 
@@ -790,7 +804,9 @@ async def test_a_message_arriving_before_the_readback_is_still_acknowledged(tmp_
     assert run.pipeline.dedup.stats.duplicates == 1, (
         "the duplicate was not seen; decode and dedup stalled behind the waiting ack"
     )
-    assert logger.of("ack_not_routed") == [], "the acknowledgement was dropped for want of a readback"
+    assert logger.of("ack_not_routed") == [], (
+        "the acknowledgement was dropped for want of a readback"
+    )
     received = logger.of("direct_message_received")
     assert received and received[0]["acknowledged"] is True
     assert run.scheduler.stats.transmitted == 1

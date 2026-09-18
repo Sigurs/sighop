@@ -357,9 +357,7 @@ async def test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities(
     """
     clock = TickingClock(START)
     storage = MemoryStorage()
-    addressed = {
-        record.dest_hash for record in corpus_records if record.dest_hash is not None
-    }
+    addressed = {record.dest_hash for record in corpus_records if record.dest_hash is not None}
     lounge = _entity_avoiding(addressed)
     assert lounge.node_hash not in addressed
     server, _lounge, _client, submit, events = _exercise(clock, storage, lounge)

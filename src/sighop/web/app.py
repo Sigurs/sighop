@@ -305,9 +305,7 @@ async def _paint_history(
     if isinstance(recent, Succeeded):
         rows = [logged_packet(row) for row in recent.value]
     else:
-        note = (
-            "the recorded history could not be read, so only records from now on are shown"
-        )
+        note = "the recorded history could not be read, so only records from now on are shown"
     await _send(websocket, {"kind": "history", "records": rows, "note": note})
     # The boundary itself, as its own message: "this happened before you
     # connected" and "this is happening" are different claims.
@@ -519,8 +517,7 @@ class WebInterface:
             ]
         else:
             lines = [
-                f"web: {self.url} — sign-in required; "
-                f"{self.accounts_enabled} enabled account(s)"
+                f"web: {self.url} — sign-in required; {self.accounts_enabled} enabled account(s)"
             ]
         if self.loopback:
             lines.append("     reachable from this host only")
@@ -604,9 +601,7 @@ class WebInterface:
         )
         server = _UnsignalledServer(config)
         self._server = server
-        running = asyncio.create_task(
-            server.serve(sockets=[self.listener]), name="web-server"
-        )
+        running = asyncio.create_task(server.serve(sockets=[self.listener]), name="web-server")
         try:
             await asyncio.shield(running)
         except asyncio.CancelledError:
@@ -715,8 +710,10 @@ def validate_allowed_hosts(values: Iterable[str]) -> tuple[str, ...]:
             problem = "it is empty"
         elif "*" in value:
             problem = "wildcards are not accepted; name each host"
-        elif "://" in value or any(mark in value for mark in "/?#@\\") or any(
-            character.isspace() for character in value
+        elif (
+            "://" in value
+            or any(mark in value for mark in "/?#@\\")
+            or any(character.isspace() for character in value)
         ):
             problem = "give a host name or host:port, not a URL"
         elif value.startswith("[") and "]" not in value:

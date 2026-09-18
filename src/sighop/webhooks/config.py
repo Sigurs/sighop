@@ -78,19 +78,14 @@ def parse_url(value: str) -> ParsedUrl:
     if not url:
         raise WebhookConfigError("a webhook URL cannot be empty")
     if any(
-        character.isspace() or unicodedata.category(character).startswith("C")
-        for character in url
+        character.isspace() or unicodedata.category(character).startswith("C") for character in url
     ):
-        raise WebhookConfigError(
-            "a webhook URL cannot contain whitespace or control characters"
-        )
+        raise WebhookConfigError("a webhook URL cannot contain whitespace or control characters")
     parts = urlsplit(url)
     scheme = parts.scheme.lower()
     if scheme not in ALLOWED_SCHEMES:
         shown = f"{scheme!r}" if scheme else "no scheme"
-        raise WebhookConfigError(
-            f"a webhook URL must use http or https; this one has {shown}"
-        )
+        raise WebhookConfigError(f"a webhook URL must use http or https; this one has {shown}")
     host = parts.hostname
     if not host:
         raise WebhookConfigError("a webhook URL must name a host")
@@ -164,7 +159,5 @@ def parse_max_hops(value: int | str | None) -> int | None:
                 f"a maximum hop count is a whole number; got {cleaned!r}"
             ) from None
     if isinstance(value, bool) or value < 0:
-        raise WebhookConfigError(
-            f"a maximum hop count cannot be negative; got {value}"
-        )
+        raise WebhookConfigError(f"a maximum hop count cannot be negative; got {value}")
     return value

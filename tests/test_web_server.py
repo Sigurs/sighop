@@ -123,9 +123,7 @@ async def test_serving_leaves_the_runs_signal_handlers_in_place() -> None:
     serving = asyncio.create_task(interface.serve())
     try:
         await _wait_until(lambda: _is_serving(interface), "the server never started")
-        assert {
-            sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
-        } == installed
+        assert {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)} == installed
     finally:
         serving.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -201,9 +199,7 @@ def test_the_flags_default_to_loopback_and_off() -> None:
     assert DEFAULT_WEB_HOST == "127.0.0.1"
 
 
-def test_a_run_without_the_flag_listens_on_nothing_and_says_nothing(
-    capsys, monkeypatch
-) -> None:
+def test_a_run_without_the_flag_listens_on_nothing_and_says_nothing(capsys, monkeypatch) -> None:
     """7.3, `web-server`: a run not asked for the interface is a run without one.
 
     Two halves. Nothing binds — asserted by making a bind fail the test outright,
@@ -224,9 +220,7 @@ def test_a_run_without_the_flag_listens_on_nothing_and_says_nothing(
     assert "web" not in printed.lower().replace("webhook", ""), printed
 
 
-def test_a_run_with_the_flag_and_no_database_refuses_before_binding(
-    capsys, monkeypatch
-) -> None:
+def test_a_run_with_the_flag_and_no_database_refuses_before_binding(capsys, monkeypatch) -> None:
     """9.1: the accounts live in the database, so there is no panel without one.
 
     Refused before any socket exists and before the replay is consumed: the bind
@@ -668,9 +662,7 @@ def test_a_setup_bind_prints_the_code_before_the_exposure_line(host: str) -> Non
         assert setup is not None
         lines = interface.startup_lines()
         assert lines[0] == f"web: {interface.url} — FIRST-RUN SETUP PENDING: no account exists"
-        assert lines[1] == (
-            f"     open {interface.url}/setup and enter setup code {setup.display}"
-        )
+        assert lines[1] == (f"     open {interface.url}/setup and enter setup code {setup.display}")
         if host == "127.0.0.1":
             assert lines[2] == "     reachable from this host only"
         else:

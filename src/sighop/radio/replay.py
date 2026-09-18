@@ -61,9 +61,7 @@ class CaptureReplay:
     _logger: Logger | None = None
 
     @classmethod
-    def open(
-        cls, path: Path, *, logger: Logger | None = None
-    ) -> CaptureReplay:
+    def open(cls, path: Path, *, logger: Logger | None = None) -> CaptureReplay:
         """Read the file's provenance, so a caller can report it before the
         first frame is replayed.
         """
@@ -163,9 +161,7 @@ class CaptureReplay:
         except ValueError:
             return None
 
-    def _report_unreadable(
-        self, line_number: int, reason: str, line: str
-    ) -> ModemEvent | None:
+    def _report_unreadable(self, line_number: int, reason: str, line: str) -> ModemEvent | None:
         """Record and log an unreadable line. Returns None: there is no event
         for a line we could not read, and the callers `return` that None.
         """

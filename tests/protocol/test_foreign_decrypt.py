@@ -62,9 +62,7 @@ from tests.protocol.corpus import (
 
 BURNED_KEYFILE = CAPTURES_DIR.parent / "tests" / "fixtures" / "burned-first-transmit.json"
 
-PEER_PUBLIC_KEY = bytes.fromhex(
-    "[redacted]"
-)
+PEER_PUBLIC_KEY = bytes.fromhex("[redacted]")
 PEER_FIRMWARE = "v1.17.1-d929643"
 
 # What the peer sent us, and what we sent it. Recorded, never derived from a run.
@@ -116,9 +114,7 @@ def test_the_recorded_peer_message_decrypts(shared_secret) -> None:
     frame = first_transmit_frame(PEER_DM_INDEX)
     envelope = envelope_of(frame)
 
-    candidate, plaintext = mac_then_decrypt(
-        shared_secret, envelope.mac, envelope.ciphertext
-    )
+    candidate, plaintext = mac_then_decrypt(shared_secret, envelope.mac, envelope.ciphertext)
 
     assert candidate.matched, (
         f"the MAC did not verify for {frame.describe()}: the shared secret "
@@ -150,9 +146,7 @@ def test_our_own_recorded_message_decrypts_with_the_same_secret(shared_secret) -
     frame = first_transmit_frame(SIGHOP_DM_INDEX)
     envelope = envelope_of(frame)
 
-    candidate, plaintext = mac_then_decrypt(
-        shared_secret, envelope.mac, envelope.ciphertext
-    )
+    candidate, plaintext = mac_then_decrypt(shared_secret, envelope.mac, envelope.ciphertext)
 
     assert candidate.matched
     assert plaintext is not None
@@ -211,9 +205,7 @@ def test_the_peers_acknowledgement_matches_the_checksum_we_computed(
     acknowledge anything.
     """
     envelope = envelope_of(first_transmit_frame(SIGHOP_DM_INDEX))
-    _candidate, plaintext = mac_then_decrypt(
-        shared_secret, envelope.mac, envelope.ciphertext
-    )
+    _candidate, plaintext = mac_then_decrypt(shared_secret, envelope.mac, envelope.ciphertext)
     assert plaintext is not None
     body = parse_text_message_body(plaintext)
     assert isinstance(body, TextMessageBody)
@@ -249,9 +241,7 @@ def test_our_acknowledgement_is_the_one_the_peer_accepted(shared_secret) -> None
     confirmed by a foreign implementation too.
     """
     envelope = envelope_of(first_transmit_frame(PEER_DM_INDEX))
-    _candidate, plaintext = mac_then_decrypt(
-        shared_secret, envelope.mac, envelope.ciphertext
-    )
+    _candidate, plaintext = mac_then_decrypt(shared_secret, envelope.mac, envelope.ciphertext)
     assert plaintext is not None
     body = parse_text_message_body(plaintext)
     assert isinstance(body, TextMessageBody)

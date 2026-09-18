@@ -105,8 +105,7 @@ def render_json(event: WebhookEvent) -> bytes:
 def escape_discord(text: str) -> str:
     """Advert text shown literally: controls flattened, markdown and mentions escaped."""
     flattened = "".join(
-        " " if unicodedata.category(character).startswith("C") else character
-        for character in text
+        " " if unicodedata.category(character).startswith("C") else character for character in text
     )
     return _DISCORD_MARKDOWN.sub(r"\\\1", flattened)
 
@@ -153,9 +152,7 @@ def render_discord(event: WebhookEvent) -> bytes:
     node_hash = event.sized_hash
     if event.name is None:
         shown_name = UNNAMED
-        description = (
-            f"An unnamed node, identified by node hash {node_hash} and key {public_key}"
-        )
+        description = f"An unnamed node, identified by node hash {node_hash} and key {public_key}"
     else:
         shown_name = escape_discord(event.name)
         description = shown_name

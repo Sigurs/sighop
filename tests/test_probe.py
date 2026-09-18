@@ -66,9 +66,7 @@ class FakeRequester:
     ) -> RequestResult:
         self.requests.append((sub_command, data))
         if sub_command in self.rejections:
-            return RequestRejected(
-                sub_command=sub_command, error_code=self.rejections[sub_command]
-            )
+            return RequestRejected(sub_command=sub_command, error_code=self.rejections[sub_command])
         if sub_command in self.answers:
             return RequestOk(
                 sub_command=sub_command,

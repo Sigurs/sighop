@@ -49,9 +49,7 @@ class _Tee:
             stream.flush()
 
 
-def configure_logging(
-    log_file: IO[str] | None = None, *, stream: IO[str] | None = None
-) -> None:
+def configure_logging(log_file: IO[str] | None = None, *, stream: IO[str] | None = None) -> None:
     """Configure JSON wide-event logging to `stream` (stdout by default), and
     additionally to `log_file` when given (e.g. so an unattended run's logs
     survive alongside its capture file).
@@ -101,9 +99,7 @@ def get_logger(**initial_context: object) -> Logger:
 
 
 @contextlib.contextmanager
-def wide_event(
-    logger: Logger, event_type: str, **context: object
-) -> Iterator[dict[str, object]]:
+def wide_event(logger: Logger, event_type: str, **context: object) -> Iterator[dict[str, object]]:
     """Time and log one unit of work as a single wide event.
 
     Extra fields can be added to the yielded dict up until the event is

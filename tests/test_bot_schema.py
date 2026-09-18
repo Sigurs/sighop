@@ -179,9 +179,7 @@ async def test_two_bots_may_hold_one_key_and_one_bot_may_not_hold_it_twice(
 
     with pytest.raises(IntegrityError):
         async with database.sessions() as session:
-            session.add(
-                BotState(bot_id=first.id, key="greeted:aa", value={"n": 3}, updated_at=now)
-            )
+            session.add(BotState(bot_id=first.id, key="greeted:aa", value={"n": 3}, updated_at=now))
             await session.commit()
 
 
@@ -194,9 +192,7 @@ async def test_removing_a_bot_removes_its_state(database: Database) -> None:
         await session.commit()
     async with database.sessions() as session:
         session.add(
-            BotState(
-                bot_id=bot.id, key="greeted:aa", value={}, updated_at=dt.datetime.now(dt.UTC)
-            )
+            BotState(bot_id=bot.id, key="greeted:aa", value={}, updated_at=dt.datetime.now(dt.UTC))
         )
         await session.commit()
 

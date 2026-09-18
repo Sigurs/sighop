@@ -477,9 +477,7 @@ class EntityRepository:
                     select(BotRow.driver).where(BotRow.entity_id == entity_id)
                 )
             ).scalars()
-            return [f"room {name!r}" for name in rooms] + [
-                f"bot {driver!r}" for driver in bots
-            ]
+            return [f"room {name!r}" for name in rooms] + [f"bot {driver!r}" for driver in bots]
 
         return await self.database.run("entity_bindings", work)
 
@@ -950,7 +948,7 @@ class RoomRecord:
 
     @property
     def retention(self) -> str:
-        """"unlimited" said plainly when no policy is set (design D15)."""
+        """ "unlimited" said plainly when no policy is set (design D15)."""
         bounds = []
         if self.retention_days is not None:
             bounds.append(f"{self.retention_days} days")
@@ -1224,9 +1222,7 @@ class RoomMemberRepository:
             "sync_since": member.sync_since,
             "last_timestamp": member.last_timestamp,
             "first_login": ensure_utc(member.first_login, field="room_member.first_login"),
-            "last_activity": ensure_utc(
-                member.last_activity, field="room_member.last_activity"
-            ),
+            "last_activity": ensure_utc(member.last_activity, field="room_member.last_activity"),
         }
 
         async def work(session: object) -> int:
@@ -1318,9 +1314,7 @@ class MessageRepository:
         async def work(session: object) -> PostRecord:
             highest = (
                 await session.execute(  # type: ignore[attr-defined]
-                    select(func.max(MessageRow.post_timestamp)).where(
-                        MessageRow.room_id == room_id
-                    )
+                    select(func.max(MessageRow.post_timestamp)).where(MessageRow.room_id == room_id)
                 )
             ).scalar_one_or_none()
             post_timestamp = stamp if highest is None else max(stamp, int(highest) + 1)
@@ -1439,16 +1433,9 @@ class MessageRepository:
         """
 
         async def work(session: object) -> list[PostRecord]:
-            order = (
-                MessageRow.post_timestamp.desc()
-                if newest_first
-                else MessageRow.post_timestamp
-            )
+            order = MessageRow.post_timestamp.desc() if newest_first else MessageRow.post_timestamp
             statement = (
-                select(MessageRow)
-                .where(MessageRow.room_id == room_id)
-                .order_by(order)
-                .limit(limit)
+                select(MessageRow).where(MessageRow.room_id == room_id).order_by(order).limit(limit)
             )
             if before is not None:
                 statement = statement.where(MessageRow.post_timestamp < before)
@@ -1795,9 +1782,7 @@ class BotStateRepository:
         async def work(session: object) -> object | None:
             row = (
                 await session.execute(  # type: ignore[attr-defined]
-                    select(BotStateRow).where(
-                        BotStateRow.bot_id == bot_id, BotStateRow.key == key
-                    )
+                    select(BotStateRow).where(BotStateRow.bot_id == bot_id, BotStateRow.key == key)
                 )
             ).scalar_one_or_none()
             return None if row is None else row.value
@@ -1861,9 +1846,7 @@ class BotStateRepository:
     async def delete(self, bot_id: uuid.UUID, key: str) -> Outcome[bool]:
         async def work(session: object) -> bool:
             result = await session.execute(  # type: ignore[attr-defined]
-                delete(BotStateRow).where(
-                    BotStateRow.bot_id == bot_id, BotStateRow.key == key
-                )
+                delete(BotStateRow).where(BotStateRow.bot_id == bot_id, BotStateRow.key == key)
             )
             return bool(result.rowcount)
 
@@ -2055,9 +2038,7 @@ class DirectMessageRepository:
             latest = (
                 select(DirectMessageRow)
                 .distinct(*keys)
-                .order_by(
-                    *keys, DirectMessageRow.handled_at.desc(), DirectMessageRow.id.desc()
-                )
+                .order_by(*keys, DirectMessageRow.handled_at.desc(), DirectMessageRow.id.desc())
             )
             counts = select(*keys, func.count().label("messages")).group_by(*keys)
             if entity_public_key is not None:
@@ -2207,8 +2188,7 @@ def normalise_username(value: str) -> str:
         raise UsernameError("a username cannot be empty")
     if len(normalised) > MAX_USERNAME_LENGTH:
         raise UsernameError(
-            f"a username is at most {MAX_USERNAME_LENGTH} characters; this one is "
-            f"{len(normalised)}"
+            f"a username is at most {MAX_USERNAME_LENGTH} characters; this one is {len(normalised)}"
         )
     for character in normalised:
         if character.isspace():
@@ -2430,9 +2410,7 @@ class WebUserRepository:
         async def work(session: object) -> int:
             total = (
                 await session.execute(  # type: ignore[attr-defined]
-                    select(func.count())
-                    .select_from(WebUserRow)
-                    .where(WebUserRow.enabled.is_(True))
+                    select(func.count()).select_from(WebUserRow).where(WebUserRow.enabled.is_(True))
                 )
             ).scalar_one()
             return int(total)
@@ -2561,8 +2539,7 @@ class WebhookRepository:
         existing = await self.get_by_name(checked_name)
         if isinstance(existing, Succeeded) and existing.value is not None:
             raise WebhookExistsError(
-                f"a webhook named {checked_name!r} already exists; the stored webhook "
-                "is unchanged"
+                f"a webhook named {checked_name!r} already exists; the stored webhook is unchanged"
             )
         sealed = seal_value(parsed.url.encode("utf-8"), secret)
         record = WebhookRecord(
@@ -2632,9 +2609,7 @@ class WebhookRepository:
             [_open_webhook(record, sealed, secret) for record, sealed in outcome.value]
         )
 
-    async def open_url(
-        self, webhook_id: uuid.UUID, secret: bytes
-    ) -> Outcome[OpenedWebhook | None]:
+    async def open_url(self, webhook_id: uuid.UUID, secret: bytes) -> Outcome[OpenedWebhook | None]:
         """One webhook with its URL opened, enabled or not — for a test send."""
 
         async def work(session: object) -> tuple[WebhookRecord, bytes] | None:
@@ -2946,8 +2921,7 @@ class ChannelRepository:
             # Constant time: the candidate may be a secret, and so may the stored key.
             if existing is not None and hmac.compare_digest(existing.key, key.key):
                 raise ChannelExistsError(
-                    f"this key is already stored as the channel {record.name!r}; "
-                    "nothing was added"
+                    f"this key is already stored as the channel {record.name!r}; nothing was added"
                 )
 
         created_at = dt.datetime.now(dt.UTC)
@@ -3160,8 +3134,7 @@ class ChannelMessageRepository:
         if not records:
             return Succeeded(value=0)
         values = _latest_per_key(
-            ((record.channel_id, record.ref), _channel_message_values(record))
-            for record in records
+            ((record.channel_id, record.ref), _channel_message_values(record)) for record in records
         )
 
         async def work(session: object) -> int:

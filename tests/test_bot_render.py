@@ -74,7 +74,10 @@ def test_a_bot_that_is_not_run_says_so_and_says_why() -> None:
         not_served_because="the bot is disabled",
     )
 
-    assert line == "bot 'greeter-bot'[2a]  driver=greeter  mode=observe  NOT RUNNING (the bot is disabled)"
+    assert (
+        line
+        == "bot 'greeter-bot'[2a]  driver=greeter  mode=observe  NOT RUNNING (the bot is disabled)"
+    )
 
 
 def test_no_database_says_bots_are_off_rather_than_omitting_the_subject() -> None:
@@ -177,9 +180,7 @@ def test_a_suppression_names_its_reason_and_its_detail() -> None:
 
 
 def test_a_dropped_dispatch_says_reception_is_unaffected() -> None:
-    line = render_bot_event(
-        BotDispatchDropped(bot_name="greeter-bot", driver="greeter", dropped=3)
-    )
+    line = render_bot_event(BotDispatchDropped(bot_name="greeter-bot", driver="greeter", dropped=3))
 
     assert "dropped the oldest pending dispatch" in line
     assert "reception is unaffected" in line
@@ -207,9 +208,7 @@ def test_a_driver_failure_names_the_bot_the_event_and_the_error() -> None:
 
 def test_an_observed_decision_says_plainly_that_it_transmitted_nothing() -> None:
     line = render_bot_event(
-        BotWouldAct(
-            bot_name="greeter-bot", driver="greeter", contact=PEER, text="hello"
-        )
+        BotWouldAct(bot_name="greeter-bot", driver="greeter", contact=PEER, text="hello")
     )
 
     assert line == (

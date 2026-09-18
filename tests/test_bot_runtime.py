@@ -442,9 +442,7 @@ async def test_a_burst_of_adverts_exhausts_the_limit_and_the_refusals_are_counte
 async def test_the_limit_is_spent_before_anything_is_composed() -> None:
     """7.4: a refused action reaches neither the messenger nor the scheduler."""
     sender = RecordingSender()
-    bot = worker(
-        SpyDriver(send="hello"), sender=sender, config={"rate_per_hour": 0.0, "burst": 0}
-    )
+    bot = worker(SpyDriver(send="hello"), sender=sender, config={"rate_per_hour": 0.0, "burst": 0})
 
     await bot.dispatch(advert_event())
 
@@ -489,9 +487,7 @@ async def test_observe_mode_still_spends_from_the_limit() -> None:
     optimistic about exactly the burst the limit exists for — and the dry run is
     what the operator decides the limit from.
     """
-    bot = worker(
-        SpyDriver(send="hello"), mode="observe", config={"rate_per_hour": 0.0, "burst": 1}
-    )
+    bot = worker(SpyDriver(send="hello"), mode="observe", config={"rate_per_hour": 0.0, "burst": 1})
 
     await bot.dispatch(advert_event())
     await bot.dispatch(advert_event())

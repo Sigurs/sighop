@@ -37,7 +37,9 @@ from tests.botfixtures import MemoryBotState, bot_record
 SECRET = base64.b64decode(generate_secret_key())
 
 
-async def _entity(database: Database, name: str, *, node_type: NodeType = NodeType.CHAT) -> uuid.UUID:
+async def _entity(
+    database: Database, name: str, *, node_type: NodeType = NodeType.CHAT
+) -> uuid.UUID:
     outcome = await EntityRepository(database=database).store(
         name=name,
         identity=generate_identity(),
@@ -153,9 +155,13 @@ async def test_state_is_written_read_listed_and_deleted_per_bot(database: Databa
     assert isinstance(first, Succeeded) and isinstance(second, Succeeded)
 
     assert isinstance(await state.set(first.value.id, "greeted:aa", {"outcome": "sent"}), Succeeded)
-    assert isinstance(await state.set(second.value.id, "greeted:aa", {"outcome": "observed"}), Succeeded)
+    assert isinstance(
+        await state.set(second.value.id, "greeted:aa", {"outcome": "observed"}), Succeeded
+    )
     # Upserted: writing a key twice is ordinary, not a constraint violation.
-    assert isinstance(await state.set(first.value.id, "greeted:aa", {"outcome": "acked"}), Succeeded)
+    assert isinstance(
+        await state.set(first.value.id, "greeted:aa", {"outcome": "acked"}), Succeeded
+    )
 
     read = await state.get(first.value.id, "greeted:aa")
     assert isinstance(read, Succeeded) and read.value == {"outcome": "acked"}

@@ -135,4 +135,6 @@ def test_retry_after_parsing(header: str | None, expected: float | None) -> None
 
 
 def test_retry_after_as_an_http_date() -> None:
-    assert parse_retry_after("Sun, 13 Sep 2026 12:00:05 GMT", now=1_789_300_800.0) == pytest.approx(5.0)
+    assert parse_retry_after("Sun, 13 Sep 2026 12:00:05 GMT", now=1_789_300_800.0) == pytest.approx(
+        5.0
+    )

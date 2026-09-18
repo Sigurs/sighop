@@ -74,9 +74,7 @@ SECRET = base64.b64decode(generate_secret_key())
 
 
 @pytest.fixture
-def cli_store_environment(
-    database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch
-) -> str:
+def cli_store_environment(database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch) -> str:
     """Point `sighop.cli.main` at the same throwaway schema the panel is using.
 
     So that "the browser and the command line store the same thing" is tested
@@ -87,6 +85,8 @@ def cli_store_environment(
     assert database_config.schema is not None
     monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
     return database_config.url
+
+
 NOW = dt.datetime(2026, 9, 12, 12, 0, tzinfo=dt.UTC)
 
 
@@ -132,9 +132,7 @@ def _nonce(body: str) -> str:
 
 def test_a_refusal_carries_back_what_was_typed() -> None:
     """1.1: a refused form re-renders with the author's values, not an empty one."""
-    refusal = refused(
-        "a room keeps 140 bytes and this is 180", field="text", text="…" * 60
-    )
+    refusal = refused("a room keeps 140 bytes and this is 180", field="text", text="…" * 60)
 
     assert isinstance(refusal, Refusal)
     assert refusal.value("text") == "…" * 60
@@ -325,10 +323,14 @@ async def test_an_identity_created_from_a_supplied_private_key_matches_the_cli(
         await asyncio.to_thread(
             main,
             [
-                "keys", "import",
-                "--private-key", held.private_key.hex(),
-                "--name", "from-a-device",
-                "--database-url", cli_store_environment,
+                "keys",
+                "import",
+                "--private-key",
+                held.private_key.hex(),
+                "--name",
+                "from-a-device",
+                "--database-url",
+                cli_store_environment,
             ],
             out=io.StringIO(),
         )
@@ -509,7 +511,8 @@ async def test_the_identity_page_shows_every_field_and_no_seed(
 
 @pytest.mark.database
 async def test_a_keyfile_imported_in_the_browser_matches_one_the_cli_imported(
-    database: Database, tmp_path,
+    database: Database,
+    tmp_path,
 ) -> None:
     """2.3: the document a keyfile holds, through the same repository call."""
     from sighop.keystore import create_keyfile, load_keyfile
@@ -557,9 +560,7 @@ async def test_a_malformed_keyfile_is_refused_with_the_keystores_own_reason(
     wrong_key["public_key_hex"] = generate_identity().public_key.hex()
 
     async with _live(app) as client:
-        not_json = await _apost(
-            client, app, "/admin/identities/import", document="{ not json"
-        )
+        not_json = await _apost(client, app, "/admin/identities/import", document="{ not json")
         mismatched = await _apost(
             client,
             app,
@@ -588,9 +589,7 @@ async def test_a_refused_import_re_renders_with_the_submitted_document(
     submitted = '{"version": 9, "name": "wrong-version"}'
 
     async with _live(app) as client:
-        response = await _apost(
-            client, app, "/admin/identities/import", document=submitted
-        )
+        response = await _apost(client, app, "/admin/identities/import", document=submitted)
 
     assert response.status_code == 400
     assert "wrong-version" in response.text, "the submitted document was discarded"
@@ -683,7 +682,8 @@ async def test_the_export_confirmation_names_the_identity_and_holds_no_key(
 
 @pytest.mark.database
 async def test_the_exported_document_is_the_command_lines_file(
-    database: Database, tmp_path,
+    database: Database,
+    tmp_path,
 ) -> None:
     """3.2: the same document, so the two files are interchangeable."""
     from sighop.keystore import create_keyfile, keyfile_bytes
@@ -695,21 +695,25 @@ async def test_the_exported_document_is_the_command_lines_file(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         response = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
+            client,
+            app,
+            f"/admin/identities/{record.id}/export",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
         )
 
     assert response.status_code == 200
     assert response.headers["content-disposition"] == 'attachment; filename="round-trip.json"'
 
     written = create_keyfile(tmp_path / "cli.json", "round-trip", identity=identity)
-    assert _without_timestamp(written.path.read_bytes()) == _without_timestamp(
-        response.content
-    )
+    assert _without_timestamp(written.path.read_bytes()) == _without_timestamp(response.content)
     # And the whole of the difference is the timestamp: the panel dates the
     # document from the row rather than from the moment it was asked for.
     assert response.content == keyfile_bytes(
         keyfile_document(
-            identity, "round-trip", NodeType.CHAT,
+            identity,
+            "round-trip",
+            NodeType.CHAT,
             created_at=record.created_at.isoformat(),
         )
     )
@@ -736,7 +740,11 @@ async def test_an_exported_keyfile_re_imports_as_the_identity_it_came_from(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         downloaded = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
+            client,
+            app,
+            f"/admin/identities/{record.id}/export",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
         )
 
     parsed = keyfile_from_text(downloaded.text, "downloaded")
@@ -779,11 +787,19 @@ async def test_an_export_without_a_confirmation_produces_nothing(
         nonce = _nonce(page)
         assert (
             await _apost(
-                client, app, f"/admin/identities/{record.id}/export", nonce=nonce, password=OPERATOR_PASSWORD
+                client,
+                app,
+                f"/admin/identities/{record.id}/export",
+                nonce=nonce,
+                password=OPERATOR_PASSWORD,
             )
         ).status_code == 200
         spent = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=nonce, password=OPERATOR_PASSWORD
+            client,
+            app,
+            f"/admin/identities/{record.id}/export",
+            nonce=nonce,
+            password=OPERATOR_PASSWORD,
         )
 
     assert absent.status_code == 403
@@ -816,7 +832,11 @@ async def test_a_disabled_stored_identity_can_still_be_exported(
     async with _live(app) as client:
         page = (await client.get(f"/admin/identities/{record.id}/export")).text
         response = await _apost(
-            client, app, f"/admin/identities/{record.id}/export", nonce=_nonce(page), password=OPERATOR_PASSWORD
+            client,
+            app,
+            f"/admin/identities/{record.id}/export",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
         )
 
     assert response.status_code == 200
@@ -835,9 +855,7 @@ async def test_a_room_created_in_the_browser_matches_one_the_cli_created(
     host, _identity = await _stored(
         persistence, name="browser-host", node_type=NodeType.ROOM_SERVER
     )
-    other, _second = await _stored(
-        persistence, name="cli-host", node_type=NodeType.ROOM_SERVER
-    )
+    other, _second = await _stored(persistence, name="cli-host", node_type=NodeType.ROOM_SERVER)
     direct = await persistence.rooms.create(
         entity_id=other.id, name="cli-lounge", admin_password_hash="x"
     )
@@ -873,9 +891,7 @@ async def test_a_room_created_in_the_browser_matches_one_the_cli_created(
 async def test_a_second_room_on_one_identity_is_refused(database: Database) -> None:
     """4.1: one identity is one node to the mesh, and a node is one room."""
     persistence = Persistence(database=database)
-    host, _identity = await _stored(
-        persistence, name="single-host", node_type=NodeType.ROOM_SERVER
-    )
+    host, _identity = await _stored(persistence, name="single-host", node_type=NodeType.ROOM_SERVER)
     first = await persistence.rooms.create(
         entity_id=host.id, name="first-lounge", admin_password_hash="x"
     )
@@ -937,12 +953,8 @@ async def test_only_unbound_room_server_identities_are_offered(
     """4.1: the form offers the choices the repository would accept, and no more."""
     persistence = Persistence(database=database)
     companion, _a = await _stored(persistence, name="just-a-companion")
-    free, _b = await _stored(
-        persistence, name="free-host", node_type=NodeType.ROOM_SERVER
-    )
-    taken, _c = await _stored(
-        persistence, name="taken-host", node_type=NodeType.ROOM_SERVER
-    )
+    free, _b = await _stored(persistence, name="free-host", node_type=NodeType.ROOM_SERVER)
+    taken, _c = await _stored(persistence, name="taken-host", node_type=NodeType.ROOM_SERVER)
     assert isinstance(
         await persistence.rooms.create(
             entity_id=taken.id, name="existing", admin_password_hash="x"
@@ -992,9 +1004,7 @@ async def test_the_read_only_fallback_can_be_set_and_cleared(
         assert isinstance(listed, Succeeded)
         assert listed.value[0].allow_read_only is True
 
-        assert (
-            await _apost(client, app, f"/admin/rooms/{room.id}/password")
-        ).status_code == 303
+        assert (await _apost(client, app, f"/admin/rooms/{room.id}/password")).status_code == 303
 
     listed = await persistence.rooms.list_all()
     assert isinstance(listed, Succeeded)
@@ -1006,7 +1016,6 @@ async def test_a_room_created_here_is_served_by_a_run_that_loads_its_identity(
     database: Database,
 ) -> None:
     """4.3: and unserved, with the reason stated, by a run that does not."""
-
 
     persistence = Persistence(database=database)
     host, _identity = await _stored(
@@ -1049,9 +1058,7 @@ def _runtime(persistence: Persistence, *, stored: tuple[LoadedEntity, ...]):
     return Runtime(
         source=_no_events(),
         startup=_no_startup,
-        config=RuntimeConfig(
-            status_interval=3600, advert_tick=3600, stored_entities=stored
-        ),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=stored),
         out=io.StringIO(),
         persistence=persistence,
     )
@@ -1146,9 +1153,7 @@ async def test_the_confirmation_says_when_no_run_will_deliver_it(
 ) -> None:
     """5.2, `web-rooms`: stored like any other post, and nothing delivered."""
     persistence, room, _entity = await _room(database)
-    app, _state, _log = _built(
-        stub_state(persistence=persistence, transmit_enabled=True)
-    )
+    app, _state, _log = _built(stub_state(persistence=persistence, transmit_enabled=True))
 
     async with _live(app) as client:
         body = (await _apost(client, app, f"/rooms/{room.id}/post", text="hello")).text
@@ -1224,9 +1229,7 @@ async def test_a_post_without_a_confirmation_stores_nothing(
     app, _state, log = _built(stub_state(persistence=persistence), logger=logger)
 
     async with _live(app) as client:
-        absent = await _apost(
-            client, app, f"/rooms/{room.id}/post/confirm", text="unconfirmed"
-        )
+        absent = await _apost(client, app, f"/rooms/{room.id}/post/confirm", text="unconfirmed")
 
     assert absent.status_code == 403
     counted = await persistence.messages.count(room.id)
@@ -1505,9 +1508,7 @@ async def test_one_key_changes_and_the_others_do_not(database: Database) -> None
 
     async with _live(app) as client:
         assert (
-            await _apost(
-                client, app, f"/admin/bots/{bot.id}/config", key="burst", value="5"
-            )
+            await _apost(client, app, f"/admin/bots/{bot.id}/config", key="burst", value="5")
         ).status_code == 303
 
     listed = await persistence.bots.list_all()
@@ -1550,9 +1551,7 @@ async def test_a_greeting_record_can_be_listed_cleared_set_and_seeded(
 
     async with _live(app) as client:
         # Seed: the contact gains a record saying nothing is owed to it.
-        assert (
-            await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")
-        ).status_code == 303
+        assert (await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")).status_code == 303
         stored = await persistence.bot_state.get(bot.id, key)
         assert isinstance(stored, Succeeded) and stored.value["outcome"] == SEEDED
 
@@ -1608,9 +1607,7 @@ async def test_seeding_leaves_an_existing_record_alone(database: Database) -> No
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
-        assert (
-            await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")
-        ).status_code == 303
+        assert (await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")).status_code == 303
 
     kept = await persistence.bot_state.get(bot.id, key)
     assert isinstance(kept, Succeeded)
@@ -1628,9 +1625,7 @@ async def test_both_statements_precede_the_actions_they_are_about(
     persistence, bot = await _greeter(database)
     peer = Contact(public_key=b"\x54" * 32, name=WireText.from_bytes(b"listed"))
     assert isinstance(
-        await persistence.bot_state.set_many(
-            bot.id, seeded_entries([peer], at="earlier")
-        ),
+        await persistence.bot_state.set_many(bot.id, seeded_entries([peer], at="earlier")),
         Succeeded,
     )
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -1644,9 +1639,7 @@ async def test_both_statements_precede_the_actions_they_are_about(
     assert "keep the one they have" in collapsed
 
     # Each statement is above the form it is about, which is what "before" means.
-    assert collapsed.index("eligible to be acted on again") < collapsed.index(
-        "clear this record"
-    )
+    assert collapsed.index("eligible to be acted on again") < collapsed.index("clear this record")
     assert collapsed.index("keep the one they have") < collapsed.index(
         "seed from the stored contacts"
     )
@@ -1668,18 +1661,14 @@ async def test_clearing_a_bots_whole_state_states_and_counts(
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
         confirmation = (await client.get(f"/admin/bots/{bot.id}/state/clear")).text
-        assert "forget everything it recorded, the seed included" in " ".join(
-            confirmation.split()
-        )
+        assert "forget everything it recorded, the seed included" in " ".join(confirmation.split())
         assert "<strong>3</strong> key(s)" in confirmation
 
         # Still there: opening the confirmation changes nothing.
         still = await persistence.bot_state.list(bot.id)
         assert isinstance(still, Succeeded) and len(still.value) == 3
 
-        response = await _apost(
-            client, app, f"/admin/bots/{bot.id}/state/clear", confirm="yes"
-        )
+        response = await _apost(client, app, f"/admin/bots/{bot.id}/state/clear", confirm="yes")
 
     assert response.status_code == 200
     assert "Cleared 3 key(s)" in response.text
@@ -1709,9 +1698,7 @@ async def test_clearing_a_record_makes_the_greeter_eligible_again(
     )
     assert isinstance(await persistence.contacts.upsert(peer), Succeeded)
     assert isinstance(
-        await persistence.bot_state.set_many(
-            bot.id, seeded_entries([peer], at="earlier")
-        ),
+        await persistence.bot_state.set_many(bot.id, seeded_entries([peer], at="earlier")),
         Succeeded,
     )
     driver = GreeterBot(config=dict(bot.config))
@@ -1720,10 +1707,7 @@ async def test_clearing_a_record_makes_the_greeter_eligible_again(
 
     stored = await persistence.bot_state.list(bot.id)
     assert isinstance(stored, Succeeded)
-    assert (
-        driver._record_gate(stored.value.get(key), 0, now)
-        is SuppressionReason.ALREADY_GREETED
-    )
+    assert driver._record_gate(stored.value.get(key), 0, now) is SuppressionReason.ALREADY_GREETED
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
@@ -1782,7 +1766,8 @@ async def test_the_schema_page_shows_both_revisions_and_that_they_agree(
 
 @pytest.mark.database
 async def test_a_disagreement_names_both_revisions_and_the_command(
-    database: Database, monkeypatch: pytest.MonkeyPatch,
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """7.1: and the disagreement is stated rather than left to be worked out."""
     from sighop.db import migrations
@@ -1878,7 +1863,9 @@ def test_no_route_removes_a_stored_identity() -> None:
         if endpoint is None or not inspect.isfunction(endpoint):
             continue
         source = inspect.getsource(endpoint)
-        assert "entities.remove" not in source, f"{route.path} removes an identity"
+        assert "entities.remove" not in source, (
+            f"{getattr(route, 'path', route)} removes an identity"
+        )
 
 
 def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
@@ -1895,7 +1882,8 @@ def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
 
 @pytest.mark.database
 async def test_a_degraded_database_is_its_own_wording_on_the_schema_page(
-    database: Database, monkeypatch: pytest.MonkeyPatch,
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """7.4: three states, as every other durable view has (`web-server`)."""
     from sighop.db.engine import DatabaseError
@@ -1964,20 +1952,24 @@ async def _populated(database: Database):
     state = stub_state(persistence=persistence, stub_names=("swept-run-identity",))
     # Change `channel-messaging`: the seeded Public channel, loaded as a run would.
     assert await state.reload_channels()
-    return persistence, state, {
-        "channel_id": str(state.channels.channels.channels[0].id),
-        "webhook_id": str(webhook.value.id),
-        "entity_id": str(identity_record.id),
-        "room_id": str(room.value.id),
-        "bot_id": str(bot.value.id),
-        "public_key": identity_record.public_key.hex(),
-        # Milestone 8's chat pages, so the sweep covers the whole interface
-        # rather than only what this change added.
-        "entity_key": state.adverts.stubs[0].identity.public_key.hex(),
-        "peer_key": identity_record.public_key.hex(),
-        # web-advert-now's confirmation views: the flood one, the costlier.
-        "kind": "flood",
-    }
+    return (
+        persistence,
+        state,
+        {
+            "channel_id": str(state.channels.channels.channels[0].id),
+            "webhook_id": str(webhook.value.id),
+            "entity_id": str(identity_record.id),
+            "room_id": str(room.value.id),
+            "bot_id": str(bot.value.id),
+            "public_key": identity_record.public_key.hex(),
+            # Milestone 8's chat pages, so the sweep covers the whole interface
+            # rather than only what this change added.
+            "entity_key": state.adverts.stubs[0].identity.public_key.hex(),
+            "peer_key": identity_record.public_key.hex(),
+            # web-advert-now's confirmation views: the flood one, the costlier.
+            "kind": "flood",
+        },
+    )
 
 
 def _every_page(app: FastAPI, ids: dict[str, str]) -> list[tuple[str, str]]:
@@ -2080,9 +2072,7 @@ async def test_no_safe_request_on_the_enlarged_interface_changes_anything(
         for method, path in _every_page(app, ids):
             response = await client.request(method, path)
             for private_key in private_keys:
-                assert private_key.hex() not in response.text, (
-                    f"{path} leaked a private key"
-                )
+                assert private_key.hex() not in response.text, f"{path} leaked a private key"
             assert "private_key_hex" not in response.text, f"{path} served key material"
             assert "seed_hex" not in response.text, f"{path} served key material"
 
@@ -2141,22 +2131,19 @@ async def test_every_new_guarded_action_emits_one_further_event(
     app, _state, log = _built(state, logger=logger)
 
     async with _live(app) as client:
-        export_page = (
-            await client.get(f"/admin/identities/{ids['entity_id']}/export")
-        ).text
+        export_page = (await client.get(f"/admin/identities/{ids['entity_id']}/export")).text
         requests_before = len(log.named("web_request"))
         await _apost(
             client,
             app,
             f"/admin/identities/{ids['entity_id']}/export",
-            nonce=_nonce(export_page), password=OPERATOR_PASSWORD,
+            nonce=_nonce(export_page),
+            password=OPERATOR_PASSWORD,
         )
         assert len(log.named("web_request")) == requests_before + 1
         assert len(log.named("web_guarded_action")) == 1
 
-        post_page = (
-            await _apost(client, app, f"/rooms/{ids['room_id']}/post", text="swept")
-        ).text
+        post_page = (await _apost(client, app, f"/rooms/{ids['room_id']}/post", text="swept")).text
         requests_before = len(log.named("web_request"))
         await _apost(
             client,
@@ -2194,8 +2181,14 @@ async def test_the_enlarged_interface_changes_no_replay_count() -> None:
     await state.pipeline.bus.aclose()
 
     with _client(app) as client:
-        for path in ("/", "/contacts", "/admin/identities", "/admin/rooms",
-                     "/admin/bots", "/admin/schema"):
+        for path in (
+            "/",
+            "/contacts",
+            "/admin/identities",
+            "/admin/rooms",
+            "/admin/bots",
+            "/admin/schema",
+        ):
             assert client.get(path).status_code == 200
 
     assert {
@@ -2235,8 +2228,21 @@ async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
         sys.stdin, sys.stderr = io.StringIO(f"{url}\n"), io.StringIO()
         try:
             return main(
-                ["webhook", "add", "cli-hook", "--format", "discord", "--trigger", "new_repeater",
-                 "--trigger", "new_companion", "--max-hops", "3", "--database-url", config.url],
+                [
+                    "webhook",
+                    "add",
+                    "cli-hook",
+                    "--format",
+                    "discord",
+                    "--trigger",
+                    "new_repeater",
+                    "--trigger",
+                    "new_companion",
+                    "--max-hops",
+                    "3",
+                    "--database-url",
+                    config.url,
+                ],
                 out=io.StringIO(),
             )
         finally:

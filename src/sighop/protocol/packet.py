@@ -164,9 +164,7 @@ def decode(raw: bytes) -> DecodeResult[Packet]:
         )
     header = PacketHeader(
         route_type=RouteType(header_byte & _ROUTE_MASK),
-        payload_type=PayloadType(
-            (header_byte & _PAYLOAD_TYPE_MASK) >> _PAYLOAD_TYPE_SHIFT
-        ),
+        payload_type=PayloadType((header_byte & _PAYLOAD_TYPE_MASK) >> _PAYLOAD_TYPE_SHIFT),
         payload_version=version,
     )
 
@@ -226,10 +224,7 @@ def decode(raw: bytes) -> DecodeResult[Packet]:
             reason=FailureReason.TRUNCATED,
             offset=len(raw),
             raw=raw,
-            detail=(
-                f"path declares {path_extent} bytes but only "
-                f"{len(raw) - offset} remain"
-            ),
+            detail=(f"path declares {path_extent} bytes but only {len(raw) - offset} remain"),
         )
     path = raw[offset:path_end]
 
@@ -240,8 +235,7 @@ def decode(raw: bytes) -> DecodeResult[Packet]:
             offset=path_end,
             raw=raw,
             detail=(
-                f"{len(payload)} payload bytes exceeds MAX_PACKET_PAYLOAD "
-                f"{MAX_PACKET_PAYLOAD}"
+                f"{len(payload)} payload bytes exceeds MAX_PACKET_PAYLOAD {MAX_PACKET_PAYLOAD}"
             ),
         )
 
@@ -262,13 +256,10 @@ def encode(packet: Packet) -> bytes:
     an over-limit packet is a bug here, not malformed traffic (design D3).
     """
     if packet.header.payload_version != PAYLOAD_VERSION_1:
-        raise EncodeError(
-            f"cannot encode payload version {packet.header.payload_version}: only v1"
-        )
+        raise EncodeError(f"cannot encode payload version {packet.header.payload_version}: only v1")
     if not 1 <= packet.hash_size <= 3:
         raise EncodeError(
-            f"path hash size {packet.hash_size} is not encodable "
-            "(1-3; the 4-byte code is reserved)"
+            f"path hash size {packet.hash_size} is not encodable (1-3; the 4-byte code is reserved)"
         )
     if not 0 <= packet.hop_count <= _HOP_COUNT_MASK:
         raise EncodeError(f"hop count {packet.hop_count} does not fit in 6 bits")
@@ -279,9 +270,7 @@ def encode(packet: Packet) -> bytes:
             f"{packet.hash_size} bytes needs {path_extent}"
         )
     if path_extent > MAX_PATH_SIZE:
-        raise EncodeError(
-            f"path of {path_extent} bytes exceeds MAX_PATH_SIZE {MAX_PATH_SIZE}"
-        )
+        raise EncodeError(f"path of {path_extent} bytes exceeds MAX_PATH_SIZE {MAX_PATH_SIZE}")
     if len(packet.payload) > MAX_PACKET_PAYLOAD:
         raise EncodeError(
             f"payload of {len(packet.payload)} bytes exceeds MAX_PACKET_PAYLOAD "
@@ -290,9 +279,7 @@ def encode(packet: Packet) -> bytes:
 
     has_codes = packet.header.route_type.has_transport_codes
     if has_codes and packet.transport_codes is None:
-        raise EncodeError(
-            f"route type {packet.header.route_type.name} requires transport codes"
-        )
+        raise EncodeError(f"route type {packet.header.route_type.name} requires transport codes")
     if not has_codes and packet.transport_codes is not None:
         raise EncodeError(
             f"route type {packet.header.route_type.name} must not carry transport codes"
@@ -310,7 +297,5 @@ def encode(packet: Packet) -> bytes:
     out += packet.payload
 
     if len(out) > MAX_TRANS_UNIT:
-        raise EncodeError(
-            f"packet of {len(out)} bytes exceeds MAX_TRANS_UNIT {MAX_TRANS_UNIT}"
-        )
+        raise EncodeError(f"packet of {len(out)} bytes exceeds MAX_TRANS_UNIT {MAX_TRANS_UNIT}")
     return bytes(out)

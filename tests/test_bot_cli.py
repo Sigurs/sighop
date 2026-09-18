@@ -83,10 +83,7 @@ async def _created_bot(url: str, tmp_path, *, name: str = "greeter-bot") -> str:
     await _bot_identity(url, tmp_path, name=name)
     out = io.StringIO()
     assert (
-        await _cli(
-            ["bot", "create", name, "--driver", "greeter", "--database-url", url], out
-        )
-        == 0
+        await _cli(["bot", "create", name, "--driver", "greeter", "--database-url", url], out) == 0
     ), out.getvalue()
     return name
 
@@ -143,8 +140,7 @@ async def test_an_identity_can_be_imported_as_a_bot_and_reports_both_types(
     assert code == 0
     assert "type       bot" in out.getvalue()
     assert "node_type  CHAT" in out.getvalue(), (
-        "a bot presents itself to the mesh as a chat node, indistinguishable "
-        "from a companion"
+        "a bot presents itself to the mesh as a chat node, indistinguishable from a companion"
     )
 
     listed = io.StringIO()
@@ -183,9 +179,7 @@ async def test_importing_without_the_flag_stores_an_ordinary_companion(
 
 
 @pytest.mark.database
-async def test_no_bot_output_discloses_key_material(
-    store_environment: str, tmp_path
-) -> None:
+async def test_no_bot_output_discloses_key_material(store_environment: str, tmp_path) -> None:
     """3.2: the same rule every other surface follows, asserted against output.
 
     The seed is sealed exactly as any other entity's — being a bot changes
@@ -216,7 +210,15 @@ async def test_creating_a_bot_states_that_it_will_transmit_nothing_yet(
     out = io.StringIO()
 
     code = await _cli(
-        ["bot", "create", "greeter-bot", "--driver", "greeter", "--database-url", store_environment],
+        [
+            "bot",
+            "create",
+            "greeter-bot",
+            "--driver",
+            "greeter",
+            "--database-url",
+            store_environment,
+        ],
         out,
     )
 
@@ -238,7 +240,15 @@ async def test_creating_a_bot_with_an_unknown_driver_lists_the_ones_that_exist(
     await _bot_identity(store_environment, tmp_path)
 
     code = await _cli(
-        ["bot", "create", "greeter-bot", "--driver", "weather", "--database-url", store_environment],
+        [
+            "bot",
+            "create",
+            "greeter-bot",
+            "--driver",
+            "weather",
+            "--database-url",
+            store_environment,
+        ],
         io.StringIO(),
     )
 
@@ -388,9 +398,7 @@ async def test_an_accepted_value_is_stored_as_the_driver_parsed_it(
     out = io.StringIO()
 
     assert (
-        await _cli(
-            ["bot", "set", name, "max_hops", "3", "--database-url", store_environment], out
-        )
+        await _cli(["bot", "set", name, "max_hops", "3", "--database-url", store_environment], out)
         == 0
     )
 
@@ -492,7 +500,15 @@ async def test_creating_a_greeter_seeds_the_contacts_this_node_already_knows(
     out = io.StringIO()
 
     code = await _cli(
-        ["bot", "create", "greeter-bot", "--driver", "greeter", "--database-url", store_environment],
+        [
+            "bot",
+            "create",
+            "greeter-bot",
+            "--driver",
+            "greeter",
+            "--database-url",
+            store_environment,
+        ],
         out,
     )
 
@@ -584,7 +600,10 @@ async def test_setting_one_contact_states_that_it_never_will_be(
 
 @pytest.mark.database
 async def test_clearing_and_setting_at_once_is_refused(
-    store_environment: str, tmp_path, database_config: DatabaseConfig, capsys: pytest.CaptureFixture[str]
+    store_environment: str,
+    tmp_path,
+    database_config: DatabaseConfig,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     await _seed_contacts(database_config, "skogen")
     name = await _created_bot(store_environment, tmp_path)
@@ -635,9 +654,7 @@ async def test_seeding_again_leaves_existing_records_alone(
     await _seed_contacts(database_config, "kajen")
     out = io.StringIO()
 
-    code = await _cli(
-        ["bot", "greeted", name, "--seed", "--database-url", store_environment], out
-    )
+    code = await _cli(["bot", "greeted", name, "--seed", "--database-url", store_environment], out)
 
     assert code == 0
     assert "seeded 1 contacts" in out.getvalue()

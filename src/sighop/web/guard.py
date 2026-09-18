@@ -179,9 +179,7 @@ class RequestGuard:
                     await _redirect(send, SETUP_PATH)
                 else:
                     await _redirect_to_login(send, scope)
-                self._emit(
-                    scope, method, path, SEE_OTHER_STATUS, "unauthenticated", started, actor
-                )
+                self._emit(scope, method, path, SEE_OTHER_STATUS, "unauthenticated", started, actor)
             else:
                 await _refuse(send, UNAUTHORIZED_STATUS, b"Sign in first.")
                 self._emit(

@@ -350,9 +350,7 @@ class GreeterBot:
     @property
     def ack_grace_seconds(self) -> float:
         try:
-            return max(
-                float(self.config.get("ack_grace_seconds", DEFAULT_ACK_GRACE_SECONDS)), 0.0
-            )
+            return max(float(self.config.get("ack_grace_seconds", DEFAULT_ACK_GRACE_SECONDS)), 0.0)
         except (TypeError, ValueError):
             return float(DEFAULT_ACK_GRACE_SECONDS)
 
@@ -437,9 +435,7 @@ class GreeterBot:
         now = context.now()
         refusal = self._record_gate(record, attempted, now)
         if refusal is not None:
-            context.suppress(
-                refusal, contact, detail=self._record_detail(record, attempted, now)
-            )
+            context.suppress(refusal, contact, detail=self._record_detail(record, attempted, now))
             return
 
         attempt = attempted
@@ -504,9 +500,7 @@ class GreeterBot:
             if not self._escalates(event, outcome, attempt):
                 return
 
-    def _escalates(
-        self, event: AdvertEvent, outcome: BotSendOutcome, attempt: int
-    ) -> bool:
+    def _escalates(self, event: AdvertEvent, outcome: BotSendOutcome, attempt: int) -> bool:
         """Whether to introduce ourselves and greet again without waiting.
 
         The distant case, and only it. A first greeting to a contact heard over
@@ -601,9 +595,7 @@ class GreeterBot:
             return 0
         return hops if attempt > 1 else None
 
-    async def on_direct_message(
-        self, context: BotContext, event: DirectMessageEvent
-    ) -> None:
+    async def on_direct_message(self, context: BotContext, event: DirectMessageEvent) -> None:
         """The greeter says hello once and then listens.
 
         Implemented as a deliberate no-op rather than omitted: a driver answering

@@ -295,9 +295,7 @@ async def test_revocation_states_what_it_removes_and_then_removes_it(
 
     app = _app(stub_state(persistence=persistence))
     async with _live(app) as client:
-        form = (
-            await client.get(f"/rooms/{room.id}/members/{member.hex()}/revoke")
-        ).text
+        form = (await client.get(f"/rooms/{room.id}/members/{member.hex()}/revoke")).text
         assert "membership, permissions, sync cursor and replay guard" in form
 
         unconfirmed = await client.post(

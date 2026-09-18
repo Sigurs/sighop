@@ -491,9 +491,7 @@ async def test_a_reply_composed_before_the_readback_waits_for_it() -> None:
     submit = RecordingSubmit()
     logger = RecordingLogger()
     ready = asyncio.Event()
-    server = server_for(
-        alice, lounge, submit=submit, radio=None, radio_ready=ready, logger=logger
-    )
+    server = server_for(alice, lounge, submit=submit, radio=None, radio_ready=ready, logger=logger)
 
     packet, _ = request_packet(member=alice, server=lounge, request_type=RequestType.KEEP_ALIVE)
     answering = asyncio.create_task(server.handle(_packet_for(packet)))

@@ -120,9 +120,7 @@ class AccountStore(Protocol):
 
     async def count(self) -> Outcome[int]: ...
 
-    async def add_first(
-        self, username: str, *, password_hash: str
-    ) -> Outcome[Account | None]:
+    async def add_first(self, username: str, *, password_hash: str) -> Outcome[Account | None]:
         """The store's one write: an account only into an empty store, else None.
 
         First-run setup's (web-first-run-setup design D2). Narrowly named so
@@ -146,8 +144,7 @@ SETUP_BAD_CODE = "That setup code is not the one this run printed."
 
 SETUP_CLOSED = "First-run setup has already been completed. Sign in instead."
 SETUP_PASSWORD_EMPTY = (
-    "A password cannot be empty: it is the only thing between the network and the "
-    "transmit gate."
+    "A password cannot be empty: it is the only thing between the network and the transmit gate."
 )
 SETUP_PASSWORD_MISMATCH = "The two passwords differ."
 SETUP_UNAVAILABLE = (
@@ -689,9 +686,7 @@ class Authenticator:
             added = await self.accounts.add_first(name, password_hash=hashed)
             if isinstance(added, Failed):
                 return self._setup_event(
-                    SetupAttempt(
-                        outcome="refused", reason="database_unavailable", username=name
-                    ),
+                    SetupAttempt(outcome="refused", reason="database_unavailable", username=name),
                     client=client,
                 )
             setup.close()

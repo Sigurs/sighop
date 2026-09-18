@@ -154,9 +154,7 @@ async def test_the_server_refuses_a_second_row_with_the_same_username(
 
 
 @pytest.mark.database
-async def test_the_server_columns_are_timestamptz(
-    database: Database, test_schema: str
-) -> None:
+async def test_the_server_columns_are_timestamptz(database: Database, test_schema: str) -> None:
     from sqlalchemy import text
 
     async with database.sessions() as session:

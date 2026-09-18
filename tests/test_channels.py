@@ -341,7 +341,10 @@ async def test_a_post_decrypts_under_the_channel_key_as_the_identity() -> None:
     assert (body.unverified_sender_name, body.body) == ("dev-companion", "hello")
     assert body.message.txt_type is TextType.PLAIN and body.message.attempt == 0
 
-    assert [r.outcome for r in sink.records] == [ChannelOutcome.AWAITING, ChannelOutcome.TRANSMITTED]
+    assert [r.outcome for r in sink.records] == [
+        ChannelOutcome.AWAITING,
+        ChannelOutcome.TRANSMITTED,
+    ]
     assert {r.ref for r in sink.records} == {post.post_id}
     assert sink.records[0].entity_public_key == entity.identity.public_key
     assert resolved.outcome is ChannelOutcome.TRANSMITTED
@@ -545,4 +548,3 @@ def test_build_channel_packet_returns_the_payload_dedup_keys_on() -> None:
     packet, payload = build_channel_packet(HASHTAG, b"\x00" * 5 + b"x: y")
     decoded = decode_packet(packet)
     assert not isinstance(decoded, DecodeFailure) and decoded.payload == payload
-

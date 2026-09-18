@@ -1,7 +1,10 @@
 # contacts Specification
 
 ## Purpose
-TBD - created by archiving change milestone-4-first-transmit. Update Purpose after archive.
+Who else is on the mesh: how a signed advert becomes a contact the system will address, what
+a contact records about the identity behind it, and how that survives a restart and a database
+outage. A contact is keyed by public key because a node hash is one byte and collides, so
+lookup by hash answers with every candidate rather than a guess.
 ## Requirements
 ### Requirement: Only verified adverts become contacts
 The system SHALL create or update a contact from an advert only after its Ed25519 signature has

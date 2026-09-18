@@ -225,9 +225,7 @@ class ChannelKey:
 
     def __post_init__(self) -> None:
         if len(self.key) not in (16, 32):
-            raise ValueError(
-                f"channel key must be 16 or 32 bytes, got {len(self.key)}"
-            )
+            raise ValueError(f"channel key must be 16 or 32 bytes, got {len(self.key)}")
 
     @property
     def secret(self) -> bytes:
@@ -267,16 +265,12 @@ pre-shared key only in the sense of its shape.
 # --- Adverts ---------------------------------------------------------------
 
 
-def advert_signed_message(
-    public_key: bytes, timestamp: int, appdata: bytes
-) -> bytes:
+def advert_signed_message(public_key: bytes, timestamp: int, appdata: bytes) -> bytes:
     """The bytes an advert signature covers (`Mesh.cpp::createAdvert`)."""
     return public_key + timestamp.to_bytes(4, "little") + appdata
 
 
-def sign_advert(
-    local: LocalIdentity, timestamp: int, appdata: bytes
-) -> Advert:
+def sign_advert(local: LocalIdentity, timestamp: int, appdata: bytes) -> Advert:
     """Build and sign an advert for `local`."""
     message = advert_signed_message(local.public_key, timestamp, appdata)
     return Advert(
@@ -340,9 +334,7 @@ def verify_advert(advert: Advert) -> AdvertVerification:
     belongs to anyone you trust.
     """
     identity = Identity(public_key=advert.public_key)
-    message = advert_signed_message(
-        advert.public_key, advert.timestamp, advert.appdata
-    )
+    message = advert_signed_message(advert.public_key, advert.timestamp, advert.appdata)
     if not identity.verify(advert.signature, message):
         return AdvertVerificationFailure(
             reason="bad_signature",
@@ -356,9 +348,7 @@ def verify_advert(advert: Advert) -> AdvertVerification:
             node_hash=advert.node_hash,
             detail=str(appdata),
         )
-    return VerifiedAdvert(
-        identity=identity, timestamp=advert.timestamp, appdata=appdata
-    )
+    return VerifiedAdvert(identity=identity, timestamp=advert.timestamp, appdata=appdata)
 
 
 # --- Acknowledgements ------------------------------------------------------

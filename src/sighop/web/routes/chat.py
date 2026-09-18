@@ -64,9 +64,7 @@ GUESSABLE_NOTE = (
     "anyone can read and post in it."
 )
 
-PUBLIC_NOTE = (
-    "A post to Public is flooded to the whole mesh and readable by anyone."
-)
+PUBLIC_NOTE = "A post to Public is flooded to the whole mesh and readable by anyone."
 
 POST_NOTE = (
     "A post is one flooded transmission with no retry. No acknowledgement exists "
@@ -117,9 +115,7 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
         # Built here rather than in the template: an identity is drawn by one
         # macro over one view, and a template that constructed its own would be
         # a second place §8's verification rule could be got wrong (design D13).
-        contact_views={
-            contact.public_key.hex(): identity_for(contact) for contact in contacts
-        },
+        contact_views={contact.public_key.hex(): identity_for(contact) for contact in contacts},
         channels=[
             {"channel": channel, "new": page.channel_log.new_for(channel.id)}
             for channel in page.state.channels.channels
@@ -247,8 +243,7 @@ async def post_to_channel(
     refusal = ""
     if entity is None:
         refusal = (
-            "An identity must be chosen: a channel post is sent as one of this "
-            "run's identities."
+            "An identity must be chosen: a channel post is sent as one of this run's identities."
         )
     elif not text.encode("utf-8"):
         refusal = "There is nothing to post."
@@ -287,9 +282,7 @@ async def _channel_context(page: Panel, loaded: LoadedChannel) -> dict[str, Any]
     }
 
 
-async def _channel_messages(
-    page: Panel, channel_id: int
-) -> tuple[list[dict[str, object]], bool]:
+async def _channel_messages(page: Panel, channel_id: int) -> tuple[list[dict[str, object]], bool]:
     """Durable rows and this session's own, merged on `ref`; the session's copy wins."""
     merged: dict[str, ChannelMessageRecord] = {}
     readable = False
@@ -317,9 +310,7 @@ def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str
         "inbound": record.inbound,
         "claimed": record.unverified_sender_name,
         "entity_name": (
-            ""
-            if record.entity_public_key is None
-            else _entity_name(page, record.entity_public_key)
+            "" if record.entity_public_key is None else _entity_name(page, record.entity_public_key)
         ),
         "text": rendered.text,
         "displayable": rendered.is_valid_utf8,
@@ -387,9 +378,7 @@ async def messages(
     return page.page(request, "chat/_messages.html", **context)
 
 
-async def _conversation_context(
-    page: Panel, entity: object, contact: Contact
-) -> dict[str, Any]:
+async def _conversation_context(page: Panel, entity: object, contact: Contact) -> dict[str, Any]:
     entity_key = entity.identity.public_key  # type: ignore[attr-defined]
     messages, history_readable = await _messages(page, entity_key, contact.public_key)
     return {
@@ -424,9 +413,7 @@ async def _messages(
     merged: dict[str, DirectMessageRecord] = {}
     readable = False
     if page.persistence is not None:
-        stored = await page.persistence.direct_messages.conversation(
-            entity_key, peer_key
-        )
+        stored = await page.persistence.direct_messages.conversation(entity_key, peer_key)
         if isinstance(stored, Succeeded):
             merged = {record.ref: record for record in stored.value}
             readable = True
@@ -466,9 +453,7 @@ def _state_text(record: DirectMessageRecord) -> str:
                 else f"attempt {record.attempts} in progress"
             )
         case RecordedOutcome.ACKNOWLEDGED:
-            latency = (
-                "" if record.ack_latency_ms is None else f", {record.ack_latency_ms:.0f} ms"
-            )
+            latency = "" if record.ack_latency_ms is None else f", {record.ack_latency_ms:.0f} ms"
             return f"delivered — acknowledged after {record.attempts} attempt(s){latency}"
         case RecordedOutcome.UNACKNOWLEDGED:
             return (

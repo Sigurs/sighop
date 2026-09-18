@@ -87,7 +87,9 @@ async def test_the_server_enforces_the_channel_checks(
 @pytest.mark.database
 async def test_removing_a_channel_cascades_to_its_messages(database: Database) -> None:
     async with database.sessions() as session:
-        channel = Channel(name="#dev", kind="hashtag", hashtag="#dev", channel_hash=3, created_at=NOW)
+        channel = Channel(
+            name="#dev", kind="hashtag", hashtag="#dev", channel_hash=3, created_at=NOW
+        )
         session.add(channel)
         await session.flush()
         session.add(

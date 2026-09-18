@@ -135,9 +135,7 @@ class NonceStore:
         while len(self._nonces) >= MAX_OUTSTANDING:
             self._nonces.pop(next(iter(self._nonces)))
         value = secrets.token_urlsafe(24)
-        self._nonces[value] = Nonce(
-            value=value, action=action, target=target, minted_at=at
-        )
+        self._nonces[value] = Nonce(value=value, action=action, target=target, minted_at=at)
         return value
 
     def spend(

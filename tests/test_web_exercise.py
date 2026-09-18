@@ -180,9 +180,7 @@ def test_every_panel_test_that_needs_a_database_says_so() -> None:
                 continue
             if not node.name.startswith("test_"):
                 continue
-            takes_database = any(
-                argument.arg == "database" for argument in node.args.args
-            )
+            takes_database = any(argument.arg == "database" for argument in node.args.args)
             marked = any(
                 ast.unparse(decorator) == "pytest.mark.database"
                 for decorator in node.decorator_list

@@ -36,9 +36,7 @@ line in the terminal say the same thing the same way. A glyph *and* a word,
 never colour alone: the marking has to survive a screenshot, a colourblind
 operator and a monochrome theme (design D13)."""
 
-REGULATORY_NOTE = (
-    "the 10% default on EU 868 is a regulatory limit, not a tuning knob"
-)
+REGULATORY_NOTE = "the 10% default on EU 868 is a regulatory limit, not a tuning knob"
 
 
 # --- The duty-cycle meter ---------------------------------------------------
@@ -457,9 +455,7 @@ class ContactView:
 def contact_rows(contacts: ContactStore, paths: PathStore) -> list[ContactView]:
     """The contact table, joined to what is known about reaching each peer."""
     rows: list[ContactView] = []
-    for contact in sorted(
-        contacts.contacts(), key=lambda c: c.last_heard or _EPOCH, reverse=True
-    ):
+    for contact in sorted(contacts.contacts(), key=lambda c: c.last_heard or _EPOCH, reverse=True):
         rows.append(
             ContactView(
                 identity=identity_for(contact),
@@ -620,11 +616,7 @@ def render_ceiling_change(previous: float, ceiling: float, *, actor: str) -> str
     """One line for the terminal: the old and new ceiling, and who changed it."""
     from sighop.net.tx import DEFAULT_CEILING_FRACTION
 
-    note = (
-        " — ABOVE the 10% regulatory default"
-        if ceiling > DEFAULT_CEILING_FRACTION
-        else ""
-    )
+    note = " — ABOVE the 10% regulatory default" if ceiling > DEFAULT_CEILING_FRACTION else ""
     return (
         f"web: airtime ceiling {previous * 100:g}% -> {ceiling * 100:g}%{note} "
         f"(by account {actor!r} from the web interface)"

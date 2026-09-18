@@ -87,9 +87,7 @@ async def complete_setup(
     if result.token is not None and result.session is not None:
         request.scope[SESSION_SCOPE_KEY] = result.session
         if page.announce is not None:
-            page.announce(
-                f"web: first-run setup completed; account {result.username!r} created"
-            )
+            page.announce(f"web: first-run setup completed; account {result.username!r} created")
         response = RedirectResponse("/", status_code=SEE_OTHER)
         set_session_cookie(response, result.token)
         return response

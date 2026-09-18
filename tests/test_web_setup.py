@@ -263,9 +263,7 @@ async def test_an_account_added_through_the_repository_closes_setup(database: ob
     def serve() -> tuple[FastAPI, FirstRunSetup, CountingHasher]:
         setup = FirstRunSetup()
         hasher = CountingHasher()
-        auth = Authenticator(
-            accounts=users, hasher=hasher, logger=RecordingLogger(), setup=setup
-        )
+        auth = Authenticator(accounts=users, hasher=hasher, logger=RecordingLogger(), setup=setup)
         app = create_app(
             stub_state(persistence=persistence), auth=auth, hosts=HOSTS, logger=RecordingLogger()
         )

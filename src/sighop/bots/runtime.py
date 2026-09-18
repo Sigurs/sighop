@@ -110,9 +110,7 @@ class TokenBucket:
         if elapsed <= 0:
             return
         self._last = now
-        self.tokens = min(
-            float(self.burst), self.tokens + elapsed * (self.rate_per_hour / 3600.0)
-        )
+        self.tokens = min(float(self.burst), self.tokens + elapsed * (self.rate_per_hour / 3600.0))
 
     def check(self, now: dt.datetime) -> bool:
         """Whether an action could be taken. Consumes nothing (see `BotContext`)."""
@@ -268,9 +266,7 @@ class BotWorker:
             driver=self.driver_name,
             advert="flood" if flood else "zero_hop",
             reach_hops=hops,
-            detail=(
-                "a direct message is only readable by a node holding our public key"
-            ),
+            detail=("a direct message is only readable by a node holding our public key"),
         )
         return await self.announce_advert(flood)
 
@@ -369,9 +365,7 @@ class BotWorker:
                     text=text,
                 )
             )
-            return BotSendOutcome(
-                result=BotSendResult.OBSERVED, contact=contact, text=text
-            )
+            return BotSendOutcome(result=BotSendResult.OBSERVED, contact=contact, text=text)
 
         outcome = await self.send_message(contact, text, ack_grace_seconds)
         self.counters.actions += 1

@@ -65,9 +65,7 @@ async def _startup() -> str:
     return "startup"
 
 
-def _runtime(
-    *services, logger: RecordingLogger | None = None, out=None
-) -> Runtime:
+def _runtime(*services, logger: RecordingLogger | None = None, out=None) -> Runtime:
     import io
 
     return Runtime(
@@ -202,9 +200,7 @@ def test_the_runtime_imports_nothing_from_the_panel() -> None:
     assert not _reaches(_imports(RUNTIME_FILE), "sighop.web")
 
 
-@pytest.mark.parametrize(
-    "path", sorted(WEB_DIR.rglob("*.py")), ids=lambda p: p.name
-)
+@pytest.mark.parametrize("path", sorted(WEB_DIR.rglob("*.py")), ids=lambda p: p.name)
 def test_no_web_module_imports_the_runtime(path: Path) -> None:
     """6.3: the panel reads a `Protocol`, so it never learns what fills it."""
     assert not _reaches(_imports(path), "sighop.runtime"), (
@@ -237,7 +233,12 @@ def test_a_stub_drives_every_page_with_no_runtime_present() -> None:
     from tests.webfixtures import safe_pages
 
     state = stub_state(stub_names=("panel-identity",))
-    app = create_app(state, auth=authenticator(), hosts=allowed_hosts("127.0.0.1", 8080), logger=RecordingLogger())
+    app = create_app(
+        state,
+        auth=authenticator(),
+        hosts=allowed_hosts("127.0.0.1", 8080),
+        logger=RecordingLogger(),
+    )
     pages = safe_pages(app)
     assert len(pages) > 5, f"only {pages} were enumerated; the router walk is broken"
 

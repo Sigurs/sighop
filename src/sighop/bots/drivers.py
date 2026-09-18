@@ -75,8 +75,7 @@ def _validate_limit(key: str, value: str) -> object:
             raise BotConfigError(f"burst is a whole number of actions; {value!r} is not") from exc
         if burst < 1:
             raise BotConfigError(
-                "a burst below 1 would refuse every action, which is what "
-                "disabling the bot is for"
+                "a burst below 1 would refuse every action, which is what disabling the bot is for"
             )
         return burst
     try:

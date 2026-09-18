@@ -172,9 +172,7 @@ class FeedHub:
 
     def connect(self, *, at: dt.datetime | None = None) -> Connection:
         self._next += 1
-        connection = Connection(
-            name=f"feed-{self._next}", capacity=self.capacity, opened_at=at
-        )
+        connection = Connection(name=f"feed-{self._next}", capacity=self.capacity, opened_at=at)
         self.connections.append(connection)
         return connection
 

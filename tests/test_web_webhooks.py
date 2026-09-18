@@ -61,7 +61,9 @@ def _no_secret(body: str, *parts: str) -> None:
         assert part not in body, part
 
 
-async def _stored(persistence: Persistence, name: str = "dev-hook", url: str = URL) -> WebhookRecord:
+async def _stored(
+    persistence: Persistence, name: str = "dev-hook", url: str = URL
+) -> WebhookRecord:
     created = await persistence.webhooks.create(
         name=name, url=url, format="discord", triggers=["new_repeater"], secret=SECRET
     )
@@ -95,7 +97,9 @@ def test_the_navigation_links_the_page() -> None:
 async def test_the_page_shows_scheme_and_host_and_outcomes_but_no_path(database: Database) -> None:
     persistence = Persistence(database=database)
     record = await _stored(persistence)
-    await persistence.webhooks.record_delivery(record.id, dt.datetime(2026, 9, 13, 10, tzinfo=dt.UTC))
+    await persistence.webhooks.record_delivery(
+        record.id, dt.datetime(2026, 9, 13, 10, tzinfo=dt.UTC)
+    )
     await persistence.webhooks.record_failure(
         record.id, dt.datetime(2026, 9, 13, 11, tzinfo=dt.UTC), "HTTP 404"
     )
@@ -121,8 +125,13 @@ async def test_adding_through_the_page_stores_an_enabled_webhook(database: Datab
         response = await _apost(
             client,
             "/admin/webhooks/create",
-            {"name": "dev-hook", "url": URL, "format": "json",
-             "triggers": ["new_repeater", "new_companion"], "max_hops": "2"},
+            {
+                "name": "dev-hook",
+                "url": URL,
+                "format": "json",
+                "triggers": ["new_repeater", "new_companion"],
+                "max_hops": "2",
+            },
         )
         assert response.status_code == 303
         body = (await client.get("/admin/webhooks")).text
@@ -170,7 +179,8 @@ async def test_enable_settings_url_and_remove_with_confirmation(database: Databa
         assert not (await _get(persistence)).enabled
 
         response = await _apost(
-            client, f"{base}/settings",
+            client,
+            f"{base}/settings",
             {"format": "json", "triggers": ["new_companion"], "max_hops": ""},
         )
         assert response.status_code == 303
@@ -202,7 +212,8 @@ async def test_enable_settings_url_and_remove_with_confirmation(database: Databa
 
 @pytest.mark.database
 async def test_testing_from_the_page_shows_the_outcome(
-    database: Database, receiver: Receiver  # noqa: F811
+    database: Database,
+    receiver: Receiver,  # noqa: F811
 ) -> None:
     persistence = Persistence(database=database)
     ok = await _stored(persistence, "dev-ok", f"{receiver.base}/ok?token=hunter2")
@@ -210,8 +221,12 @@ async def test_testing_from_the_page_shows_the_outcome(
     app = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        delivered = await _apost(client, f"/admin/webhooks/{ok.id}/test", {"trigger": "new_companion"})
-        rejected = await _apost(client, f"/admin/webhooks/{missing.id}/test", {"trigger": "new_repeater"})
+        delivered = await _apost(
+            client, f"/admin/webhooks/{ok.id}/test", {"trigger": "new_companion"}
+        )
+        rejected = await _apost(
+            client, f"/admin/webhooks/{missing.id}/test", {"trigger": "new_repeater"}
+        )
 
     assert delivered.status_code == 200
     assert "delivered, HTTP 204" in delivered.text

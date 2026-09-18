@@ -101,7 +101,9 @@ def test_bad_hop_limits_are_refused(given: int | str) -> None:
         parse_max_hops(given)
 
 
-@pytest.mark.parametrize(("given", "reason"), [("", "empty"), ("a b", "whitespace"), ("x" * 65, "at most")])
+@pytest.mark.parametrize(
+    ("given", "reason"), [("", "empty"), ("a b", "whitespace"), ("x" * 65, "at most")]
+)
 def test_bad_names_are_refused(given: str, reason: str) -> None:
     with pytest.raises(WebhookConfigError, match=reason):
         parse_name(given)

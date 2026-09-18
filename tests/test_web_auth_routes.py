@@ -173,9 +173,7 @@ def test_a_sign_in_without_the_process_token_is_refused_before_any_verification(
     hasher = app.state.auth.hasher
     assert isinstance(hasher, CountingHasher)
     with _anonymous(app) as client:
-        response = client.post(
-            "/login", data={"username": OPERATOR, "password": OPERATOR_PASSWORD}
-        )
+        response = client.post("/login", data={"username": OPERATOR, "password": OPERATOR_PASSWORD})
         with_other = client.post(
             "/login",
             data={TOKEN_FIELD: "not-the-token", "username": OPERATOR, "password": "x"},
@@ -301,10 +299,11 @@ def _unprotected(app: FastAPI) -> list[str]:
                 if (method, route.path) in PUBLIC_ROUTES:
                     continue
                 response = client.request(method, path)
-                refused = (method in ("GET", "HEAD") and response.status_code == 303
-                           and response.headers["location"].startswith("/login")) or (
-                    method not in ("GET", "HEAD") and response.status_code == 401
-                )
+                refused = (
+                    method in ("GET", "HEAD")
+                    and response.status_code == 303
+                    and response.headers["location"].startswith("/login")
+                ) or (method not in ("GET", "HEAD") and response.status_code == 401)
                 if not refused:
                     found.append(f"{method} {route.path}")
     return found
@@ -322,9 +321,7 @@ def test_the_sweep_catches_a_route_made_public_by_mistake(
 ) -> None:
     """6.5: the sweep is not vacuous. A route the guard treats as public that is
     not the sign-in or setup form is exactly the mistake it exists to find."""
-    monkeypatch.setattr(
-        guard_module, "PUBLIC_ROUTES", PUBLIC_ROUTES | {("GET", "/contacts")}
-    )
+    monkeypatch.setattr(guard_module, "PUBLIC_ROUTES", PUBLIC_ROUTES | {("GET", "/contacts")})
     app = _app()
     # The sweep's own skip list stays the real one, so the widened set shows up.
     assert "GET /contacts" in _unprotected(app)
@@ -355,7 +352,11 @@ def test_every_static_file_is_public_and_carries_no_state() -> None:
             assert response.status_code == 200, relative
             body = response.text
             for marker in (
-                "{{", "{%", app.state.auth.login_token, private_key, SESSION_COOKIE,
+                "{{",
+                "{%",
+                app.state.auth.login_token,
+                private_key,
+                SESSION_COOKIE,
             ):
                 assert marker not in body, f"{relative} carries {marker!r}"
 
@@ -458,7 +459,9 @@ def test_there_is_no_get_logout() -> None:
         assert client.get("/logout").status_code in (404, 405)
         assert client.get("/").status_code == 200, "navigation ended a session"
     assert not any(
-        isinstance(route, APIRoute) and route.path == "/logout" and "GET" in (route.methods or set())
+        isinstance(route, APIRoute)
+        and route.path == "/logout"
+        and "GET" in (route.methods or set())
         for route in registered_routes(app)
     )
 
@@ -830,7 +833,8 @@ async def test_the_corpus_replays_byte_identically_with_authentication_wired_in(
         "paths": state.pipeline.paths.destination_count,
     }
     expected = {key: without[key] for key in keys}
-    assert json.dumps(with_auth, sort_keys=True).encode() == json.dumps(
-        expected, sort_keys=True
-    ).encode()
+    assert (
+        json.dumps(with_auth, sort_keys=True).encode()
+        == json.dumps(expected, sort_keys=True).encode()
+    )
     assert without["delivered"] > 0, "the comparison would be vacuous"

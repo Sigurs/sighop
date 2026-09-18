@@ -294,9 +294,7 @@ class Runtime:
             logger=self.logger,
             radio=self.radio,
         )
-        self.adverts = AdvertScheduler(
-            submit=self.bus.submit, clock=self.clock, logger=self.logger
-        )
+        self.adverts = AdvertScheduler(submit=self.bus.submit, clock=self.clock, logger=self.logger)
         # Persistent identities first: a stub's generated key is then made to
         # avoid their node hashes rather than the other way round. Stored
         # entities before keyfiles, so a collision between the two sources is
@@ -618,9 +616,7 @@ class Runtime:
             self._release()
             self._write(self._status_line())
 
-    async def _run_service(
-        self, index: int, service: Callable[[], Awaitable[None]]
-    ) -> None:
+    async def _run_service(self, index: int, service: Callable[[], Awaitable[None]]) -> None:
         """Run one attached service, containing its failure (design D2).
 
         Cancellation is re-raised — that is the run shutting the service down,
@@ -679,9 +675,7 @@ class Runtime:
         assert self.persistence is not None
         rooms = await self.persistence.rooms.list_all()
         if not isinstance(rooms, Succeeded):
-            self._unserved_rooms.append(
-                f"rooms could not be read: {rooms.error}; none is served"
-            )
+            self._unserved_rooms.append(f"rooms could not be read: {rooms.error}; none is served")
             return
 
         by_id = {stored.record.id: stored for stored in self.config.stored_entities}
@@ -811,9 +805,7 @@ class Runtime:
         listening after the last attempt, never a packet.
         """
 
-        async def send(
-            contact: Contact, text: str, ack_grace_seconds: float = 0.0
-        ) -> SendOutcome:
+        async def send(contact: Contact, text: str, ack_grace_seconds: float = 0.0) -> SendOutcome:
             return await self.messenger.send(
                 entity,
                 contact,
@@ -883,9 +875,7 @@ class Runtime:
             logger=self.logger,
         )
         counted = await self.persistence.messages.count(record.id)
-        self._room_messages[record.name] = (
-            counted.value if isinstance(counted, Succeeded) else 0
-        )
+        self._room_messages[record.name] = counted.value if isinstance(counted, Succeeded) else 0
         server.subscribe(self.bus)
         # Design D10: this entity's packets are the room server's, so the direct
         # messenger and the shared path-body reader both leave it alone. Applied
@@ -1231,8 +1221,7 @@ class Runtime:
             channel_posts_unknown=self.persistence.restored.channel_posts_unknown,
             writing=self.persistence.writes_enabled,
             not_writing_because=(
-                "a replay carries an earlier session's timestamps; "
-                "--persist-replay writes anyway"
+                "a replay carries an earlier session's timestamps; --persist-replay writes anyway"
             ),
         )
 

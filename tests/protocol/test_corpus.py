@@ -94,9 +94,7 @@ def decoded(frames: tuple[CorpusFrame, ...]) -> list[tuple[CorpusFrame, Packet]]
     out: list[tuple[CorpusFrame, Packet]] = []
     for frame in frames:
         packet = decode(frame.raw)
-        assert isinstance(packet, Packet), (
-            f"frame failed to decode: {frame.describe()} -> {packet}"
-        )
+        assert isinstance(packet, Packet), f"frame failed to decode: {frame.describe()} -> {packet}"
         out.append((frame, packet))
     return out
 
@@ -333,9 +331,7 @@ def test_golden_file_contains_no_decrypted_content() -> None:
     key for any corpus frame, so any plaintext appearing here would be a bug —
     but the rule is asserted now so it still holds at milestone 4.
     """
-    data_lines = [
-        line for line in GOLDEN_PATH.read_text().splitlines() if not line.startswith("#")
-    ]
+    data_lines = [line for line in GOLDEN_PATH.read_text().splitlines() if not line.startswith("#")]
     assert data_lines
     for line in data_lines:
         assert "plaintext" not in line

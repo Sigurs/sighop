@@ -139,9 +139,7 @@ def test_a_supplied_private_key_tolerates_spacing_and_case() -> None:
         FIRMWARE_TEST_PRV.hex().upper()[index : index + 8] for index in range(0, 128, 8)
     )
     assert private_key_from_hex(spaced).public_key == FIRMWARE_TEST_PUB
-    assert private_key_from_hex("0x" + FIRMWARE_TEST_PRV.hex()).public_key == (
-        FIRMWARE_TEST_PUB
-    )
+    assert private_key_from_hex("0x" + FIRMWARE_TEST_PRV.hex()).public_key == (FIRMWARE_TEST_PUB)
 
 
 def test_a_private_key_that_is_not_hexadecimal_is_refused() -> None:
@@ -188,9 +186,7 @@ def test_the_refusal_to_clamp_says_why() -> None:
 
 def _identity_with_node_hash(wanted: int) -> LocalIdentity:
     for index in range(20000):
-        candidate = LocalIdentity.from_seed(
-            hashlib.sha256(index.to_bytes(4, "big")).digest()
-        )
+        candidate = LocalIdentity.from_seed(hashlib.sha256(index.to_bytes(4, "big")).digest())
         if candidate.node_hash == wanted:
             return candidate
     raise AssertionError(f"no key with node hash 0x{wanted:02x} was found")
@@ -251,9 +247,7 @@ def test_signing_matches_the_firmware_keypair_vector() -> None:
 
 def test_the_firmware_vector_is_a_signature_the_firmware_would_accept() -> None:
     """Falsifies the vector independently of how we produced it."""
-    assert Identity(FIRMWARE_TEST_PUB).verify(
-        FIRMWARE_TEST_SIGNATURE, FIRMWARE_SIGNED_MESSAGE
-    )
+    assert Identity(FIRMWARE_TEST_PUB).verify(FIRMWARE_TEST_SIGNATURE, FIRMWARE_SIGNED_MESSAGE)
     assert not Identity(FIRMWARE_TEST_PUB).verify(
         FIRMWARE_TEST_SIGNATURE, FIRMWARE_SIGNED_MESSAGE + b"!"
     )
@@ -272,9 +266,7 @@ def test_signing_from_a_private_key_matches_libsodium_for_seeded_keys() -> None:
         identity = LocalIdentity.from_seed(seed)
         for length in (0, 1, 31, 32, 55, 56, 64, 111, 200):
             message = bytes((index + offset) % 256 for offset in range(length))
-            expected = bindings.crypto_sign(
-                message, seed + identity.public_key
-            )[:SIGNATURE_SIZE]
+            expected = bindings.crypto_sign(message, seed + identity.public_key)[:SIGNATURE_SIZE]
             assert identity.sign(message) == expected
 
 
@@ -328,9 +320,7 @@ def test_edwards_to_montgomery_matches_the_formula_in_key_exchange_c() -> None:
     for public_key in (FIRMWARE_TEST_PUB, ALICE.public_key, BOB.public_key):
         y = int.from_bytes(public_key, "little") & ((1 << 255) - 1)
         expected = (1 + y) * pow(1 - y, -1, p) % p
-        actual = int.from_bytes(
-            bindings.crypto_sign_ed25519_pk_to_curve25519(public_key), "little"
-        )
+        actual = int.from_bytes(bindings.crypto_sign_ed25519_pk_to_curve25519(public_key), "little")
         assert actual == expected
 
 
@@ -352,9 +342,7 @@ def test_shared_secret_for_the_firmware_keypair_is_pinned() -> None:
     shows up as a failing constant rather than as a still-symmetric wrong answer.
     """
     secret = shared_secret_from_scalar(FIRMWARE_TEST_PRV[:32], FIRMWARE_TEST_PUB)
-    assert secret.hex() == (
-        "b981cf37cd88bb0728e3a30f51bd12d26ba27df6e2ba06179fd8bca83efe286d"
-    )
+    assert secret.hex() == ("b981cf37cd88bb0728e3a30f51bd12d26ba27df6e2ba06179fd8bca83efe286d")
 
 
 def test_shared_secret_is_not_the_all_zero_secret() -> None:
@@ -687,9 +675,7 @@ def test_ack_checksum_covers_the_attempt_byte() -> None:
         attempt=1,
         text=WireText.from_bytes(b"x"),
     )
-    assert ack_checksum_for(base, ALICE.public_key) != ack_checksum_for(
-        retry, ALICE.public_key
-    )
+    assert ack_checksum_for(base, ALICE.public_key) != ack_checksum_for(retry, ALICE.public_key)
 
 
 def test_ack_checksum_rejects_a_wrong_length_public_key() -> None:

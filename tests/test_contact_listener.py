@@ -162,7 +162,9 @@ async def test_with_no_listener_observation_and_persistence_are_unchanged() -> N
     """4.3: the same adverts through a store with and without a listener leave
     both stores in the same state and produce the same offers."""
     identities = [generate_identity() for _ in range(3)]
-    adverts = [verified_advert(identity, name=f"peer-{index}") for index, identity in enumerate(identities)]
+    adverts = [
+        verified_advert(identity, name=f"peer-{index}") for index, identity in enumerate(identities)
+    ]
 
     plain_sink, wired_sink = Sink(), Sink()
     plain = ContactStore(sink=plain_sink)
@@ -185,9 +187,7 @@ async def test_the_reception_the_listener_gets_is_the_one_that_arrived(hop_count
     listener = Recorder()
     store = ContactStore(on_observation=listener)
 
-    await store.handle(
-        advert_record(verified_advert(generate_identity()), hop_count=hop_count)
-    )
+    await store.handle(advert_record(verified_advert(generate_identity()), hop_count=hop_count))
 
     assert listener.seen[0][1].hop_count == hop_count
 

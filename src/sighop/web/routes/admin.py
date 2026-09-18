@@ -133,11 +133,7 @@ async def _room_server_identities(page: Panel) -> list[EntityRecord]:
     if isinstance(listed, Failed):
         return []
     bound = await page.persistence.rooms.list_all()
-    taken = (
-        {room.entity_id for room in bound.value}
-        if isinstance(bound, Succeeded)
-        else set()
-    )
+    taken = {room.entity_id for room in bound.value} if isinstance(bound, Succeeded) else set()
     return [
         record
         for record in listed.value
@@ -237,9 +233,7 @@ async def _room_counts(page: Panel, room: RoomRecord) -> tuple[int, int]:
 
 
 @router.get("/rooms/{room_id}/password", response_class=HTMLResponse)
-async def rotate_password_form(
-    room_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def rotate_password_form(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """The consequence, before the change: members must log in again.
 
     Stated on the way in rather than after the fact, because a rotation an
@@ -297,9 +291,7 @@ async def rotate_password(
 
 
 @router.get("/rooms/{room_id}/retention", response_class=HTMLResponse)
-async def retention_form(
-    room_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def retention_form(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """How many stored messages a bound would remove, before it is applied."""
     room = await _room(page, room_id)
     stored = 0
@@ -377,9 +369,7 @@ async def bots(
         if isinstance(listed, Succeeded):
             for bot in listed.value:
                 stored = await page.persistence.bot_state.list(bot.id)
-                state[str(bot.id)] = (
-                    stored.value if isinstance(stored, Succeeded) else {}
-                )
+                state[str(bot.id)] = stored.value if isinstance(stored, Succeeded) else {}
     return page.page(
         request,
         "admin/bots.html",
@@ -411,11 +401,7 @@ async def _bot_identities(page: Panel) -> list[EntityRecord]:
     if isinstance(listed, Failed):
         return []
     bound = await page.persistence.bots.list_all()
-    taken = (
-        {bot.entity_id for bot in bound.value}
-        if isinstance(bound, Succeeded)
-        else set()
-    )
+    taken = {bot.entity_id for bot in bound.value} if isinstance(bound, Succeeded) else set()
     return [
         record
         for record in listed.value
@@ -463,11 +449,7 @@ async def create_bot(
             **submitted,
         )
     record = await page.persistence.entities.get_by_id(entity)
-    name = (
-        record.value.name
-        if isinstance(record, Succeeded) and record.value is not None
-        else ""
-    )
+    name = record.value.name if isinstance(record, Succeeded) and record.value is not None else ""
 
     try:
         created = await page.persistence.bots.create(
@@ -528,9 +510,7 @@ async def set_bot_enabled(
 
 
 @router.get("/bots/{bot_id}/mode", response_class=HTMLResponse)
-async def bot_mode_form(
-    bot_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def bot_mode_form(bot_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """A switch to active is confirmed explicitly, and says what it means.
 
     "Active" is not a verbosity setting: an active bot transmits at strangers
@@ -737,9 +717,7 @@ async def clear_greeting(
         try:
             key = greeted_key(bytes.fromhex(public_key))
         except ValueError:
-            return RedirectResponse(
-                f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER
-            )
+            return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
         await page.persistence.bot_state.delete(bot.id, key)
     return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
 
@@ -760,9 +738,7 @@ async def set_greeting(
         try:
             raw = bytes.fromhex(public_key)
         except ValueError:
-            return RedirectResponse(
-                f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER
-            )
+            return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
         contact = page.state.contacts.get(raw)
         if contact is not None:
             await page.persistence.bot_state.set(
@@ -794,9 +770,7 @@ async def seed_greetings(bot_id: str, page: PanelDep) -> RedirectResponse:
 
 
 @router.get("/bots/{bot_id}/state/clear", response_class=HTMLResponse)
-async def clear_state_form(
-    bot_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def clear_state_form(bot_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """What clearing forgets, before it forgets it."""
     bot = await _bot(page, bot_id)
     keys = 0
@@ -925,9 +899,7 @@ async def radio(request: Request, page: PanelDep) -> HTMLResponse:
 
 
 @router.get("/reveal/{entity_id}", response_class=HTMLResponse)
-async def reveal_form(
-    entity_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def reveal_form(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """The confirmation in front of a key reveal. Contains no key material."""
     stub = _loaded(page, entity_id)
     return page.page(
@@ -1030,9 +1002,7 @@ def _advert_title(kind: str) -> str:
 
 
 @router.get("/advert/{entity_id}/{kind}", response_class=HTMLResponse)
-async def advert_form(
-    entity_id: str, kind: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def advert_form(entity_id: str, kind: str, request: Request, page: PanelDep) -> HTMLResponse:
     """The confirmation in front of an advert, with its cost and the schedule.
 
     The gate and the gap are shown so a refusal can be seen coming; the POST
@@ -1140,9 +1110,7 @@ async def advert(
         next_flood_at=None if next_flood_at is None else next_flood_at.isoformat(),
         **named,
     )
-    page.say(
-        render_advert_request(kind, stub.name, actor=actor, next_flood_at=next_flood_at)
-    )
+    page.say(render_advert_request(kind, stub.name, actor=actor, next_flood_at=next_flood_at))
     return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
 
 
@@ -1496,9 +1464,7 @@ async def set_webhook_url(
 
 
 @router.get("/webhooks/{webhook_id}/remove", response_class=HTMLResponse)
-async def remove_webhook_form(
-    webhook_id: str, request: Request, page: PanelDep
-) -> HTMLResponse:
+async def remove_webhook_form(webhook_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """What removing deletes, before it deletes it."""
     record = await _webhook(page, webhook_id)
     return page.page(
@@ -1560,9 +1526,7 @@ async def send_webhook_sample(
     opened = await page.persistence.webhooks.open_url(record.id, page.sealing_secret)
     if isinstance(opened, Failed) or opened.value is None:
         reason = str(opened.error) if isinstance(opened, Failed) else "no such webhook"
-        return await _refuse_webhook(
-            request, page, reason, field="test", webhook_id=webhook_id
-        )
+        return await _refuse_webhook(request, page, reason, field="test", webhook_id=webhook_id)
     result = await send_sample(opened.value, chosen, logger=page.logger)
     detail = result.summary
     if result.status is not None and result.reason and not result.delivered:
@@ -1818,6 +1782,4 @@ async def remove_channel(
         f"channel {record.name!r} removed with {removed.value} recorded message(s) "
         f"from the web interface by account {actor!r}"
     )
-    return RedirectResponse(
-        f"/admin/channels?removed={quote(record.name)}", status_code=SEE_OTHER
-    )
+    return RedirectResponse(f"/admin/channels?removed={quote(record.name)}", status_code=SEE_OTHER)

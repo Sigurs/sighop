@@ -146,9 +146,7 @@ async def test_the_stored_column_holds_ciphertext_and_not_the_private_key(
     identity = generate_identity()
     await store.store(name="roomy", identity=identity, secret=SECRET)
     async with database.sessions() as session:
-        sealed = (
-            await session.execute(text("SELECT sealed_private_key FROM entity"))
-        ).scalar_one()
+        sealed = (await session.execute(text("SELECT sealed_private_key FROM entity"))).scalar_one()
     assert bytes(sealed) != identity.private_key
     assert identity.private_key not in bytes(sealed)
     assert identity.private_scalar not in bytes(sealed)
@@ -249,9 +247,7 @@ async def test_a_stranded_row_is_left_exactly_as_it_was(database: Database) -> N
     await _strand_a_row(database, "roomy")
     async with database.sessions() as session:
         before = bytes(
-            (
-                await session.execute(text("SELECT sealed_private_key FROM entity"))
-            ).scalar_one()
+            (await session.execute(text("SELECT sealed_private_key FROM entity"))).scalar_one()
         )
 
     with pytest.raises(SealRemovedFormatError):
@@ -259,9 +255,7 @@ async def test_a_stranded_row_is_left_exactly_as_it_was(database: Database) -> N
 
     async with database.sessions() as session:
         after = bytes(
-            (
-                await session.execute(text("SELECT sealed_private_key FROM entity"))
-            ).scalar_one()
+            (await session.execute(text("SELECT sealed_private_key FROM entity"))).scalar_one()
         )
     assert after == before, "loading rewrote the row it refused"
 
@@ -367,9 +361,7 @@ async def test_bound_to_reports_a_room_and_a_bot(database: Database) -> None:
         entity_type="bot",
         advert_config=advert_config_for(NodeType.CHAT),
     )
-    await persistence.bots.create(
-        entity_id=bot_entity.value.id, driver="greeter", config={}
-    )
+    await persistence.bots.create(entity_id=bot_entity.value.id, driver="greeter", config={})
 
     bound_room = await store.bound_to(stored.value.id)
     bound_bot = await store.bound_to(bot_entity.value.id)
@@ -401,9 +393,7 @@ async def test_keys_delete_removes_an_unbound_identity(
     monkeypatch.setattr("sys.stdin", _TypedAnswer("goodbye"))
     out = io.StringIO()
 
-    code = await _cli(
-        ["keys", "delete", "goodbye", "--database-url", store_environment], out
-    )
+    code = await _cli(["keys", "delete", "goodbye", "--database-url", store_environment], out)
 
     printed = out.getvalue()
     assert code == 0, printed
@@ -524,9 +514,7 @@ async def test_keys_delete_works_with_no_sealing_secret_configured(
     monkeypatch.setattr("sys.stdin", _TypedAnswer("goodbye"))
     out = io.StringIO()
 
-    code = await _cli(
-        ["keys", "delete", "goodbye", "--database-url", store_environment], out
-    )
+    code = await _cli(["keys", "delete", "goodbye", "--database-url", store_environment], out)
 
     assert code == 0, out.getvalue()
     assert "unknown from here" in out.getvalue()
@@ -570,10 +558,14 @@ async def test_a_stranded_identity_can_be_deleted_and_re_imported(
     # Before: the identity cannot be re-imported, because the row holds its key.
     blocked = await _cli(
         [
-            "keys", "import",
-            "--private-key", held.private_key.hex(),
-            "--name", "carried-forward",
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            "--private-key",
+            held.private_key.hex(),
+            "--name",
+            "carried-forward",
+            "--database-url",
+            store_environment,
         ],
         io.StringIO(),
     )
@@ -590,10 +582,14 @@ async def test_a_stranded_identity_can_be_deleted_and_re_imported(
     assert (
         await _cli(
             [
-                "keys", "import",
-                "--private-key", held.private_key.hex(),
-                "--name", "carried-forward",
-                "--database-url", store_environment,
+                "keys",
+                "import",
+                "--private-key",
+                held.private_key.hex(),
+                "--name",
+                "carried-forward",
+                "--database-url",
+                store_environment,
             ],
             io.StringIO(),
         )
@@ -741,10 +737,14 @@ async def test_keys_import_stores_a_supplied_private_key_without_a_file(
 
     code = await _cli(
         [
-            "keys", "import",
-            "--private-key", identity.private_key.hex(),
-            "--name", "from-a-device",
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            "--private-key",
+            identity.private_key.hex(),
+            "--name",
+            "from-a-device",
+            "--database-url",
+            store_environment,
         ],
         out,
     )
@@ -772,9 +772,7 @@ async def test_a_supplied_key_and_a_keyfile_import_to_the_same_identity(
     keyfile = create_keyfile(tmp_path / "dev.json", "dev-entity")
     out = io.StringIO()
     assert (
-        await _cli(
-            ["keys", "import", str(keyfile.path), "--database-url", store_environment], out
-        )
+        await _cli(["keys", "import", str(keyfile.path), "--database-url", store_environment], out)
         == 0
     )
     from_file = (await EntityRepository(database=database).load_all(SECRET)).value[0]
@@ -786,10 +784,14 @@ async def test_a_supplied_key_and_a_keyfile_import_to_the_same_identity(
     assert (
         await _cli(
             [
-                "keys", "import",
-                "--private-key", keyfile.identity.private_key.hex(),
-                "--name", keyfile.name,
-                "--database-url", store_environment,
+                "keys",
+                "import",
+                "--private-key",
+                keyfile.identity.private_key.hex(),
+                "--name",
+                keyfile.name,
+                "--database-url",
+                store_environment,
             ],
             io.StringIO(),
         )
@@ -811,10 +813,15 @@ async def test_keys_import_refuses_both_a_keyfile_and_a_private_key(
 
     code = await _cli(
         [
-            "keys", "import", str(keyfile.path),
-            "--private-key", generate_identity().private_key.hex(),
-            "--name", "x",
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            str(keyfile.path),
+            "--private-key",
+            generate_identity().private_key.hex(),
+            "--name",
+            "x",
+            "--database-url",
+            store_environment,
         ],
         io.StringIO(),
     )
@@ -829,9 +836,7 @@ async def test_keys_import_refuses_both_a_keyfile_and_a_private_key(
 async def test_keys_import_refuses_neither_a_keyfile_nor_a_private_key(
     database: Database, store_environment: str, capsys
 ) -> None:
-    code = await _cli(
-        ["keys", "import", "--database-url", store_environment], io.StringIO()
-    )
+    code = await _cli(["keys", "import", "--database-url", store_environment], io.StringIO())
 
     assert code == 2
     error = capsys.readouterr().err
@@ -847,9 +852,12 @@ async def test_a_supplied_private_key_without_a_name_is_refused(
     """A keyfile carries a name; a bare key does not (design D8)."""
     code = await _cli(
         [
-            "keys", "import",
-            "--private-key", generate_identity().private_key.hex(),
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            "--private-key",
+            generate_identity().private_key.hex(),
+            "--database-url",
+            store_environment,
         ],
         io.StringIO(),
     )
@@ -874,10 +882,14 @@ async def test_keys_import_refuses_a_private_key_it_cannot_use(
 ) -> None:
     code = await _cli(
         [
-            "keys", "import",
-            "--private-key", supplied,
-            "--name", "x",
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            "--private-key",
+            supplied,
+            "--name",
+            "x",
+            "--database-url",
+            store_environment,
         ],
         io.StringIO(),
     )
@@ -898,10 +910,14 @@ async def test_a_supplied_private_key_already_stored_fails_naming_the_existing_o
 
     code = await _cli(
         [
-            "keys", "import",
-            "--private-key", identity.private_key.hex(),
-            "--name", "second-go",
-            "--database-url", store_environment,
+            "keys",
+            "import",
+            "--private-key",
+            identity.private_key.hex(),
+            "--name",
+            "second-go",
+            "--database-url",
+            store_environment,
         ],
         io.StringIO(),
     )
@@ -985,7 +1001,9 @@ async def test_keys_list_shows_identities_and_no_key_material(
         name="roomy", identity=identity, secret=SECRET, node_type=NodeType.ROOM_SERVER
     )
     async with database.sessions() as session:
-        sealed = bytes((await session.execute(text("SELECT sealed_private_key FROM entity"))).scalar_one())
+        sealed = bytes(
+            (await session.execute(text("SELECT sealed_private_key FROM entity"))).scalar_one()
+        )
 
     out = io.StringIO()
     assert await _cli(["keys", "list", "--database-url", store_environment], out) == 0

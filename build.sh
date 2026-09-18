@@ -9,6 +9,7 @@
 #
 # Gates, in order, stopping at the first failure and naming it:
 #   lock   uv.lock agrees with pyproject.toml (never updated here)
+#   format ruff format --check — checks only, so a build never rewrites the tree
 #   lint   ruff check
 #   types  mypy
 #   test   pytest (database tests skip without a URL, as they always have)
@@ -65,6 +66,8 @@ lock() {
     return 1
   fi
 }
+
+format() { uv run --locked ruff format --check; }
 
 lint() { uv run --locked ruff check; }
 
@@ -179,6 +182,7 @@ scan() {
 run_gate() {
   case "$1" in
     lock) gate lock lock ;;
+    format) gate format format ;;
     lint) gate lint lint ;;
     types) gate types types ;;
     test) gate test tests ;;
@@ -186,7 +190,7 @@ run_gate() {
     smoke) gate smoke smoke ;;
     replay) gate replay replay ;;
     scan) gate scan scan ;;
-    *) echo "unknown gate: $1 (lock lint types test image smoke replay scan)" >&2; exit 2 ;;
+    *) echo "unknown gate: $1 (lock format lint types test image smoke replay scan)" >&2; exit 2 ;;
   esac
 }
 
@@ -197,6 +201,7 @@ if [ "$#" -gt 0 ]; then
 fi
 
 gate lock lock
+gate format format
 gate lint lint
 gate types types
 gate test tests

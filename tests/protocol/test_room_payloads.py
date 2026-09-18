@@ -116,9 +116,7 @@ def test_the_client_kind_follows_the_permission_byte() -> None:
 
 def test_a_login_response_blob_that_is_not_four_bytes_is_refused() -> None:
     with pytest.raises(EncodeError):
-        build_room_login_response_body(
-            RoomLoginResponseBody(server_timestamp=1, blob=b"\x00\x01")
-        )
+        build_room_login_response_body(RoomLoginResponseBody(server_timestamp=1, blob=b"\x00\x01"))
 
 
 # --- 3.2 Request bodies -----------------------------------------------------

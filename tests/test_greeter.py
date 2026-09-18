@@ -34,9 +34,7 @@ from tests.botfixtures import MemoryBotState, MemoryBotStorage, RecordingSender,
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
 
-def contact_for(
-    name: str = "stranger", node_type: NodeType | int = NodeType.CHAT
-) -> Contact:
+def contact_for(name: str = "stranger", node_type: NodeType | int = NodeType.CHAT) -> Contact:
     return Contact(
         public_key=generate_identity().public_key,
         name=WireText.from_bytes(name.encode()),
@@ -242,9 +240,7 @@ async def test_a_seeded_contact_is_not_greeted() -> None:
     sender = RecordingSender()
     bot = greeter(storage=storage, sender=sender)
     contact = contact_for()
-    storage.bot_state.rows[(bot.record.id, greeted_key(contact.public_key))] = {
-        "outcome": SEEDED
-    }
+    storage.bot_state.rows[(bot.record.id, greeted_key(contact.public_key))] = {"outcome": SEEDED}
 
     await bot.dispatch(advert(contact))
 
@@ -260,9 +256,7 @@ async def test_a_contact_heard_after_the_seed_is_greeted() -> None:
     sender = RecordingSender()
     bot = greeter(storage=storage, sender=sender)
     seeded, fresh = contact_for("old"), contact_for("new")
-    storage.bot_state.rows[(bot.record.id, greeted_key(seeded.public_key))] = {
-        "outcome": SEEDED
-    }
+    storage.bot_state.rows[(bot.record.id, greeted_key(seeded.public_key))] = {"outcome": SEEDED}
 
     await bot.dispatch(advert(seeded))
     await bot.dispatch(advert(fresh))
@@ -422,8 +416,7 @@ async def test_the_greeting_record_is_written_before_the_transmission() -> None:
     contact = contact_for()
 
     async def send(target: Contact, text: str, grace: float = 0.0):
-        seen.append(greeted_key(contact.public_key) in
-                    {key for _, key in storage.bot_state.rows})
+        seen.append(greeted_key(contact.public_key) in {key for _, key in storage.bot_state.rows})
         return await RecordingSender()(target, text)
 
     bot = greeter(storage=storage, sender=send)  # type: ignore[arg-type]
@@ -656,9 +649,7 @@ async def test_a_bare_greeting_that_goes_unanswered_escalates_immediately() -> N
     minutes would only buy the same silence for the same reason. Flood advert
     and greet again, in the same reaction, while the peer is demonstrably awake."""
     announcer = RecordingAnnouncer()
-    sender = RecordingSender(
-        results=[SendResult.UNACKNOWLEDGED, SendResult.ACKNOWLEDGED]
-    )
+    sender = RecordingSender(results=[SendResult.UNACKNOWLEDGED, SendResult.ACKNOWLEDGED])
     bot = greeter(sender=sender, announcer=announcer, config={"max_hops": 2})
 
     await bot.dispatch(advert(hop_count=1))
@@ -671,9 +662,7 @@ async def test_a_bare_greeting_that_goes_unanswered_escalates_immediately() -> N
 async def test_the_escalated_greeting_settles_the_contact() -> None:
     """The whole point of escalating: the second one is readable, so it is acked,
     so the contact is closed rather than left owing a retry."""
-    sender = RecordingSender(
-        results=[SendResult.UNACKNOWLEDGED, SendResult.ACKNOWLEDGED]
-    )
+    sender = RecordingSender(results=[SendResult.UNACKNOWLEDGED, SendResult.ACKNOWLEDGED])
     storage = MemoryBotStorage()
     bot = greeter(sender=sender, storage=storage, config={"max_hops": 2})
     contact = contact_for()
@@ -692,9 +681,7 @@ async def test_the_escalation_happens_once_and_then_the_cooldown_takes_over() ->
     announcer = RecordingAnnouncer()
     sender = RecordingSender(result=SendResult.UNACKNOWLEDGED)
     clock = FakeClock()
-    bot = greeter(
-        sender=sender, announcer=announcer, clock=clock, config={"max_hops": 2}
-    )
+    bot = greeter(sender=sender, announcer=announcer, clock=clock, config={"max_hops": 2})
     contact = contact_for()
 
     await bot.dispatch(advert(contact, hop_count=1))

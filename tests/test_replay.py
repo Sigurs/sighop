@@ -109,7 +109,12 @@ async def test_a_truncated_final_line_is_reported_and_the_rest_still_replays(tmp
     path = tmp_path / "c.jsonl"
     path.write_text(
         json.dumps(
-            {"ts": "2026-09-03T20:00:01+00:00", "kind": "rx_frame", "raw_hex": "01", "rx_meta": None}
+            {
+                "ts": "2026-09-03T20:00:01+00:00",
+                "kind": "rx_frame",
+                "raw_hex": "01",
+                "rx_meta": None,
+            }
         )
         + "\n"
         + '{"ts": "2026-09-03T20:00:02+00:00", "kind": "rx_fra'
@@ -178,9 +183,7 @@ async def test_every_corpus_capture_replays_with_the_provenance_it_has(tmp_path)
         # A file's frame records are its receptions plus, for a capture from a
         # transmitting run, the frames sighop sent. Only the receptions are
         # replayed; the rest are counted as passed over, never as unreadable.
-        assert (
-            len(rx_events) + replay.transmitted_skipped == EXPECTED_FRAMES_PER_FILE[name]
-        ), name
+        assert len(rx_events) + replay.transmitted_skipped == EXPECTED_FRAMES_PER_FILE[name], name
 
 
 async def test_replay_does_not_pace_itself(tmp_path):

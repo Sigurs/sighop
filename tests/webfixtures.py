@@ -125,13 +125,9 @@ def stub_state(
         if ceiling_fraction is None
         else AirtimeBudget(ceiling_fraction=ceiling_fraction)
     )
-    scheduler = TxScheduler(
-        radio=radio, budget=budget, transmit_enabled=transmit_enabled
-    )
+    scheduler = TxScheduler(radio=radio, budget=budget, transmit_enabled=transmit_enabled)
     bus = NetworkBus(tx_sink=scheduler)
-    pipeline = IngressPipeline(
-        bus=bus, dedup=DedupCache(), paths=PathStore(), radio=radio
-    )
+    pipeline = IngressPipeline(bus=bus, dedup=DedupCache(), paths=PathStore(), radio=radio)
     contacts = ContactStore()
     adverts = AdvertScheduler(submit=bus.submit)
     for name in stub_names:

@@ -1,7 +1,11 @@
 # direct-messaging Specification
 
 ## Purpose
-TBD - created by archiving change milestone-4-first-transmit. Update Purpose after archive.
+One-to-one text between a local entity and a contact: how a message is composed, encrypted and
+routed, how the acknowledgement that proves delivery is computed and matched, and how a retry
+stays the same message rather than becoming a second one. The firmware on the other end is the
+authority throughout — the ack checksum, the retry timeout and the wire layout are what it
+does, not what would be tidiest here.
 ## Requirements
 ### Requirement: Outbound text message composition
 The system SHALL compose a direct text message as the plaintext `timestamp` (4 bytes,

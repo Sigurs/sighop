@@ -151,7 +151,9 @@ async def test_a_channel_added_to_the_repository_appears_after_reload(
 async def _channel_rows(database: Database) -> int:
     async with database.sessions() as session:
         return int(
-            (await session.execute(select(func.count()).select_from(ChannelMessageRow))).scalar_one()
+            (
+                await session.execute(select(func.count()).select_from(ChannelMessageRow))
+            ).scalar_one()
         )
 
 

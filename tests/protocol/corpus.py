@@ -163,19 +163,14 @@ def load_corpus() -> tuple[CorpusFrame, ...]:
         loaded = _load_file(name)
         expected = EXPECTED_FRAMES_PER_FILE[name]
         if len(loaded) != expected:
-            raise CorpusError(
-                f"{name} holds {len(loaded)} frame records, expected {expected}"
-            )
+            raise CorpusError(f"{name} holds {len(loaded)} frame records, expected {expected}")
         frames.extend(loaded)
     if len(frames) != EXPECTED_FRAME_COUNT:
-        raise CorpusError(
-            f"corpus holds {len(frames)} frames, expected {EXPECTED_FRAME_COUNT}"
-        )
+        raise CorpusError(f"corpus holds {len(frames)} frames, expected {EXPECTED_FRAME_COUNT}")
     transmitted = sum(1 for frame in frames if frame.transmitted)
     if transmitted != EXPECTED_TRANSMITTED_COUNT:
         raise CorpusError(
-            f"corpus holds {transmitted} transmitted frames, expected "
-            f"{EXPECTED_TRANSMITTED_COUNT}"
+            f"corpus holds {transmitted} transmitted frames, expected {EXPECTED_TRANSMITTED_COUNT}"
         )
     return tuple(frames)
 

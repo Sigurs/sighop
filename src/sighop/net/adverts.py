@@ -428,9 +428,7 @@ class AdvertScheduler:
             entity_id=stub.entity_id,
             entity_name=stub.name,
             size_bytes=len(packet),
-            next_flood_at=(
-                None if stub.next_flood_at is None else stub.next_flood_at.isoformat()
-            ),
+            next_flood_at=(None if stub.next_flood_at is None else stub.next_flood_at.isoformat()),
         )
         return handle
 
@@ -477,9 +475,7 @@ class AdvertScheduler:
             entity_id=stub.entity_id,
             entity_name=stub.name,
             size_bytes=len(packet),
-            next_flood_at=(
-                None if stub.next_flood_at is None else stub.next_flood_at.isoformat()
-            ),
+            next_flood_at=(None if stub.next_flood_at is None else stub.next_flood_at.isoformat()),
             detail="repeated by every repeater in the mesh; the schedule moved with it",
         )
         return handle
@@ -537,7 +533,6 @@ def configure_interval(stub: EntityStub, seconds: float) -> EntityStub:
     """Reconfigure a stub's flood interval, refusing anything below the floor."""
     if seconds < FLOOD_INTERVAL_FLOOR_SECONDS:
         raise AdvertPolicyError(
-            f"flood interval {seconds:.0f}s is below the "
-            f"{FLOOD_INTERVAL_FLOOR_SECONDS:.0f}s floor"
+            f"flood interval {seconds:.0f}s is below the {FLOOD_INTERVAL_FLOOR_SECONDS:.0f}s floor"
         )
     return replace(stub, flood_interval_seconds=seconds)

@@ -28,9 +28,7 @@ NOW = dt.datetime(2026, 9, 5, 20, 0, tzinfo=dt.UTC)
 
 
 def verified_advert(identity: LocalIdentity, name: str, *, timestamp: int = 1_700_000_000):
-    advert = sign_advert(
-        identity, timestamp, build_appdata(NodeType.CHAT, name=name)
-    )
+    advert = sign_advert(identity, timestamp, build_appdata(NodeType.CHAT, name=name))
     verification = verify_advert(advert)
     assert not isinstance(verification, AdvertVerificationFailure)
     return verification

@@ -70,18 +70,14 @@ def upgrade() -> None:
         sa.Column("created_at", TIMESTAMPTZ, nullable=False),
         sa.PrimaryKeyConstraint("id", name="pk_channel"),
         sa.UniqueConstraint("name", name="uq_channel_name"),
-        sa.CheckConstraint(
-            "kind IN ('public', 'hashtag', 'psk')", name=op.f("ck_channel_kind")
-        ),
+        sa.CheckConstraint("kind IN ('public', 'hashtag', 'psk')", name=op.f("ck_channel_kind")),
         sa.CheckConstraint(
             "(kind = 'hashtag') = (hashtag IS NOT NULL)", name=op.f("ck_channel_hashtag")
         ),
         sa.CheckConstraint(
             "(kind = 'psk') = (sealed_key IS NOT NULL)", name=op.f("ck_channel_sealed_key")
         ),
-        sa.CheckConstraint(
-            "channel_hash BETWEEN 0 AND 255", name=op.f("ck_channel_channel_hash")
-        ),
+        sa.CheckConstraint("channel_hash BETWEEN 0 AND 255", name=op.f("ck_channel_channel_hash")),
     )
     op.create_table(
         "channel_message",
@@ -110,9 +106,7 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint("channel_id", "ref", name="uq_channel_message_channel_id_ref"),
-        sa.CheckConstraint(
-            "direction IN ('in', 'out')", name=op.f("ck_channel_message_direction")
-        ),
+        sa.CheckConstraint("direction IN ('in', 'out')", name=op.f("ck_channel_message_direction")),
         sa.CheckConstraint(
             "outcome IN ('awaiting', 'transmitted', 'not_transmitted', 'unknown', 'received')",
             name=op.f("ck_channel_message_outcome"),
@@ -121,9 +115,7 @@ def upgrade() -> None:
             "(direction = 'out') = (entity_public_key IS NOT NULL)",
             name=op.f("ck_channel_message_entity_public_key"),
         ),
-        sa.CheckConstraint(
-            "repeats_heard >= 0", name=op.f("ck_channel_message_repeats_heard")
-        ),
+        sa.CheckConstraint("repeats_heard >= 0", name=op.f("ck_channel_message_repeats_heard")),
     )
     op.create_index(
         "ix_channel_message_channel_id_handled_at",
@@ -134,6 +126,7 @@ def upgrade() -> None:
         "INSERT INTO channel (name, kind, channel_hash, created_at) "
         f"VALUES ('Public', 'public', {PUBLIC_CHANNEL_HASH}, now())"
     )
+
 
 def downgrade() -> None:
     """Drop both tables. Tested — an untested downgrade does not exist.

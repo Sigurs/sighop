@@ -198,9 +198,7 @@ class PathBodyReader:
                 return
 
     def _handle_path(self, record: RxRecord, envelope: DirectEnvelope) -> None:
-        entities = [
-            entity for entity in self.entities if entity.node_hash == envelope.dest_hash
-        ]
+        entities = [entity for entity in self.entities if entity.node_hash == envelope.dest_hash]
         if not entities:
             return  # addressed to a hash none of our entities carries
         contacts = tuple(self.contacts.by_node_hash(envelope.src_hash)) or tuple(
@@ -214,9 +212,7 @@ class PathBodyReader:
             for contact in contacts:
                 tried += 1
                 secret = self.secrets.get(entity.identity, contact.public_key)
-                candidate, plaintext = mac_then_decrypt(
-                    secret, envelope.mac, envelope.ciphertext
-                )
+                candidate, plaintext = mac_then_decrypt(secret, envelope.mac, envelope.ciphertext)
                 if not candidate.matched or plaintext is None:
                     continue
                 body = parse_returned_path_body(plaintext)

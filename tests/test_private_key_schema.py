@@ -168,9 +168,7 @@ async def test_0008_renames_without_the_secret_and_reports_the_rows_it_strands(
                     schema,
                 )
             }
-            remaining = await connection.fetchval(
-                f'SELECT count(*) FROM "{schema}".entity'
-            )
+            remaining = await connection.fetchval(f'SELECT count(*) FROM "{schema}".entity')
         finally:
             await connection.close()
         assert "sealed_seed" in reverted, "the downgrade must reverse the rename"

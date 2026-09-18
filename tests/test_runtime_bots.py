@@ -379,7 +379,9 @@ async def test_a_driver_that_never_finishes_is_cut_short_and_named() -> None:
 
     assert elapsed >= 0.2
     assert storage.bot_state.writes == 0
-    cut_short = [fields for level, name, fields in logger.events if name == "bot_dispatch_cut_short"]
+    cut_short = [
+        fields for level, name, fields in logger.events if name == "bot_dispatch_cut_short"
+    ]
     assert len(cut_short) == 1
     assert cut_short[0]["bot"] == running.name
 
@@ -587,7 +589,9 @@ async def test_an_observe_mode_bot_submits_nothing_across_a_whole_replay() -> No
     driver = GreedyDriver()
     run = runtime(_events(CAPTURE), out=io.StringIO())
     worker = BotWorker(
-        record=bot_record(driver="greedy", mode="observe", config={"rate_per_hour": 1e6, "burst": 10_000}),
+        record=bot_record(
+            driver="greedy", mode="observe", config={"rate_per_hour": 1e6, "burst": 10_000}
+        ),
         driver=driver,
         storage=MemoryBotStorage(),
         send_message=sender,

@@ -43,6 +43,7 @@ class ModemSource(Protocol):
 
     def events(self) -> AsyncIterator[ModemEvent]: ...
 
+
 CAPTURE_META_KIND = "capture_meta"
 
 TX_FRAME_KIND = "tx_frame"
@@ -231,9 +232,7 @@ class CaptureRun:
             consume_task = asyncio.create_task(self._consume())
             stop_task = asyncio.create_task(self._stop_event.wait())
             try:
-                await asyncio.wait(
-                    (consume_task, stop_task), return_when=asyncio.FIRST_COMPLETED
-                )
+                await asyncio.wait((consume_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
             finally:
                 for task in (consume_task, heartbeat_task, header_task, stop_task):
                     if not task.done():

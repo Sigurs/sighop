@@ -100,9 +100,7 @@ def classify_status(status: int, retry_after: str | None = None) -> AttemptResul
     if status >= 500:
         return AttemptResult(AttemptOutcome.RETRYABLE, status=status, reason="server error")
     if 300 <= status < 400:
-        return AttemptResult(
-            AttemptOutcome.FINAL, status=status, reason="redirect not followed"
-        )
+        return AttemptResult(AttemptOutcome.FINAL, status=status, reason="redirect not followed")
     return AttemptResult(AttemptOutcome.FINAL, status=status, reason="rejected")
 
 

@@ -211,7 +211,7 @@ def test_a_zero_hop_route_is_a_route_and_not_the_absence_of_one() -> None:
     with _client(_app(state)) as client:
         body = client.get("/contacts").text
     assert "direct, zero hops" in body
-    assert "no route known" not in body.split("<p class=\"note\">")[0]
+    assert "no route known" not in body.split('<p class="note">')[0]
 
 
 def test_a_contact_with_no_route_says_so() -> None:
@@ -265,9 +265,7 @@ def test_the_contact_table_carries_identity_route_and_signal_together() -> None:
 def test_an_unverified_contact_is_drawn_distinctly_in_the_table() -> None:
     """11.3 / 9.3: §8's hard rule, in the densest view there is."""
     state = stub_state()
-    state.contacts.restore(
-        [_contact("verified-peer"), _contact("pasted-in", verified=False)]
-    )
+    state.contacts.restore([_contact("verified-peer"), _contact("pasted-in", verified=False)])
 
     with _client(_app(state)) as client:
         body = client.get("/contacts").text

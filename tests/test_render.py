@@ -76,8 +76,7 @@ def test_frame_line_is_fixed_width_and_carries_the_reception_facts():
     line = render_frame_line(record_for(raw))
 
     assert line == (
-        "21:15:04  ACK         FLOOD    h2  path=a3,7f               "
-        "snr=+2.00 rssi= -90   8B"
+        "21:15:04  ACK         FLOOD    h2  path=a3,7f               snr=+2.00 rssi= -90   8B"
     )
 
 
@@ -302,8 +301,7 @@ def test_summary_line_reports_the_session_counts():
     )
 
     assert line == (
-        "-- frames=351 failed=0 adverts=53 advert_failures=1 "
-        "nodes_heard=12 reconnects=2 reboots=3"
+        "-- frames=351 failed=0 adverts=53 advert_failures=1 nodes_heard=12 reconnects=2 reboots=3"
     )
 
 
@@ -357,9 +355,7 @@ def _dedup_stats(**overrides):
 def test_the_status_line_leads_with_the_gate_and_the_duty_cycle():
     from sighop.monitor.render import render_status
 
-    line = render_status(
-        _status(), dedup=_dedup_stats(), learned_paths=5, contacts=3
-    )
+    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=5, contacts=3)
 
     # Milestone 5 appends persistence: the state, and three counters that read
     # zero rather than being omitted (`runtime-cli` spec).
@@ -539,8 +535,7 @@ def test_a_matched_acknowledgement_names_the_attempt_and_latency():
     )
 
     assert line == (
-        "          <- ack deadbeef (6B) matched attempt 2 from 'peer' after "
-        "812ms  id=pkt9"
+        "          <- ack deadbeef (6B) matched attempt 2 from 'peer' after 812ms  id=pkt9"
     )
 
 
@@ -586,9 +581,7 @@ def test_a_delivered_send_and_an_unacknowledged_one_read_differently():
         )
     )
 
-    assert delivered == (
-        "          dm delivered to 'peer' after 1 attempt(s) in 812ms  id=m1"
-    )
+    assert delivered == ("          dm delivered to 'peer' after 1 attempt(s) in 812ms  id=m1")
     assert failed == (
         "          ! dm unacknowledged to 'peer' after 4 attempt(s): "
         "no acknowledgement after 4 attempts  id=m2"
@@ -629,9 +622,7 @@ def test_an_undecryptable_message_reports_the_candidate_count():
     from sighop.net.dm import MessageUndecryptable
 
     line = render_message_undecryptable(
-        MessageUndecryptable(
-            packet_id="pkt4", dest_hash=0x2A, src_hash=0x91, candidates_tried=3
-        )
+        MessageUndecryptable(packet_id="pkt4", dest_hash=0x2A, src_hash=0x91, candidates_tried=3)
     )
 
     assert line == (
@@ -714,8 +705,7 @@ def test_a_channel_message_renders_its_claimed_sender_as_unverified():
 
     assert VERIFIED_MARK not in line, "a channel sender name was rendered as verified"
     assert line == (
-        "          ✗ Public from claimed 'Sigurs' (unverified)  h2: 'hej'  "
-        "ts=1757000000"
+        "          ✗ Public from claimed 'Sigurs' (unverified)  h2: 'hej'  ts=1757000000"
     )
     assert "pkt9" not in line, "a per-reception id would make a replay render differently"
 
@@ -758,14 +748,22 @@ def test_channel_posts_and_their_outcomes_render_with_the_account():
     )
     transmitted = render_channel_post_resolved(
         ChannelPostResolved(
-            "post1", "#dev-sighop", "dev-companion", ChannelOutcome.TRANSMITTED, "p1",
+            "post1",
+            "#dev-sighop",
+            "dev-companion",
+            ChannelOutcome.TRANSMITTED,
+            "p1",
             airtime_ms=420.0,
         )
     )
     assert "transmitted (no acknowledgement exists for channel messages)" in transmitted
     dropped = render_channel_post_resolved(
         ChannelPostResolved(
-            "post1", "#dev-sighop", "dev-companion", ChannelOutcome.NOT_TRANSMITTED, "p1",
+            "post1",
+            "#dev-sighop",
+            "dev-companion",
+            ChannelOutcome.NOT_TRANSMITTED,
+            "p1",
             reason="deadline_expired",
         )
     )
@@ -807,9 +805,10 @@ def test_the_channel_startup_lists_hashes_guessable_marks_and_skips():
     assert text.startswith("channels: Public[11](public, guessable), private[")
     assert "(psk)" in text
     assert "channel 'lost' skipped" in text
-    assert render_channel_status(
-        decrypted=3, unknown=1, undecryptable=0, transmitted=2, repeats=5
-    ) == "ch_rx=3 ch_unknown=1 ch_undecryptable=0 ch_tx=2 ch_repeats=5"
+    assert (
+        render_channel_status(decrypted=3, unknown=1, undecryptable=0, transmitted=2, repeats=5)
+        == "ch_rx=3 ch_unknown=1 ch_undecryptable=0 ch_tx=2 ch_repeats=5"
+    )
 
 
 def test_a_changed_channel_set_names_what_was_added_and_removed():

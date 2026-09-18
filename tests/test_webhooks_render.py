@@ -34,7 +34,9 @@ NOW = dt.datetime(2026, 9, 13, 12, 0, tzinfo=dt.UTC)
 SEED = bytes(range(32))
 
 
-def _advert(*, name: str | None, latitude: int | None = None, longitude: int | None = None) -> VerifiedAdvert:
+def _advert(
+    *, name: str | None, latitude: int | None = None, longitude: int | None = None
+) -> VerifiedAdvert:
     identity = LocalIdentity.from_seed(SEED)
     appdata = build_appdata(NodeType.REPEATER, name=name, latitude=latitude, longitude=longitude)
     verification = verify_advert(sign_advert(identity, 1_700_000_000, appdata))
@@ -317,7 +319,10 @@ def test_an_unlocated_node_keeps_its_snr_in_json() -> None:
 
 def test_rendering_the_same_event_twice_gives_the_same_event_id() -> None:
     event = _fixed()
-    assert json.loads(render(event, "json"))["event_id"] == json.loads(render(event, "json"))["event_id"]
+    assert (
+        json.loads(render(event, "json"))["event_id"]
+        == json.loads(render(event, "json"))["event_id"]
+    )
 
 
 # --- 4.2 Discord -------------------------------------------------------------
@@ -352,7 +357,9 @@ def test_the_discord_body_is_one_embed_with_mentions_disabled() -> None:
 
 
 def test_a_mention_in_a_name_notifies_nobody() -> None:
-    body = _discord(_fixed(trigger=Trigger.NEW_COMPANION, node_type=NodeType.CHAT, name="@everyone"))
+    body = _discord(
+        _fixed(trigger=Trigger.NEW_COMPANION, node_type=NodeType.CHAT, name="@everyone")
+    )
     assert body["allowed_mentions"] == {"parse": []}
     rendered = json.dumps(body)
     assert "@everyone" not in rendered.replace("\\\\@everyone", "")
@@ -385,7 +392,9 @@ def test_an_unnamed_node_is_identified_by_hash_and_key_prefix() -> None:
 
 
 def _field(event: WebhookEvent, name: str) -> str:
-    [value] = [field["value"] for field in _discord(event)["embeds"][0]["fields"] if field["name"] == name]
+    [value] = [
+        field["value"] for field in _discord(event)["embeds"][0]["fields"] if field["name"] == name
+    ]
     return value
 
 

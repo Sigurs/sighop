@@ -67,9 +67,7 @@ def _reception(raw: bytes = FRAME, *, at: dt.datetime = NOW):
 
 
 def _unparsed(at: dt.datetime = NOW):
-    return decode_event(
-        UnparsedEvent(raw=b"\xff\xfe", reason="not a KISS frame", received_at=at)
-    )
+    return decode_event(UnparsedEvent(raw=b"\xff\xfe", reason="not a KISS frame", received_at=at))
 
 
 def _submission(*, origin: str = "advert") -> Submission:
@@ -375,18 +373,18 @@ def test_the_socket_paints_history_then_marks_the_boundary_then_streams() -> Non
         signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
-            history = socket.receive_json()
-            boundary = socket.receive_json()
-            status = socket.receive_json()
+        history = socket.receive_json()
+        boundary = socket.receive_json()
+        status = socket.receive_json()
 
-            assert history["kind"] == "history"
-            assert boundary["kind"] == "boundary"
-            assert status["kind"] == "status"
+        assert history["kind"] == "history"
+        assert boundary["kind"] == "boundary"
+        assert status["kind"] == "status"
 
-            hub.on_reception(_reception(), False)
-            live = socket.receive_json()
-            assert live["kind"] == "records"
-            assert live["records"][0]["source"] == LIVE
+        hub.on_reception(_reception(), False)
+        live = socket.receive_json()
+        assert live["kind"] == "records"
+        assert live["records"][0]["source"] == LIVE
 
 
 def test_with_no_readable_history_the_feed_starts_empty_and_says_why() -> None:
@@ -397,7 +395,7 @@ def test_with_no_readable_history_the_feed_starts_empty_and_says_why() -> None:
         signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
-            history = socket.receive_json()
+        history = socket.receive_json()
 
     assert history["records"] == []
     assert "could not be read" in history["note"]
@@ -412,12 +410,12 @@ def test_a_transmission_reaches_a_connected_browser() -> None:
         signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
-            socket.receive_json()  # history
-            socket.receive_json()  # boundary
-            socket.receive_json()  # status
+        socket.receive_json()  # history
+        socket.receive_json()  # boundary
+        socket.receive_json()  # status
 
-            hub.on_transmission(_submission(), _outcome(), at=NOW)
-            message = socket.receive_json()
+        hub.on_transmission(_submission(), _outcome(), at=NOW)
+        message = socket.receive_json()
 
     assert message["records"][0]["direction"] == "tx"
     assert message["records"][0]["outcome"] == "transmitted"
@@ -432,18 +430,18 @@ def test_the_drop_count_reaches_the_browser() -> None:
         signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
-            socket.receive_json()  # history
-            socket.receive_json()  # boundary
-            first = socket.receive_json()
-            assert first["incomplete"] is False
+        socket.receive_json()  # history
+        socket.receive_json()  # boundary
+        first = socket.receive_json()
+        assert first["incomplete"] is False
 
-            connection = hub.connections[0]
-            for index in range(6):
-                connection.offer({"packet_id": f"p{index}"})
+        connection = hub.connections[0]
+        for index in range(6):
+            connection.offer({"packet_id": f"p{index}"})
 
-            records = socket.receive_json()
-            assert records["kind"] == "records"
-            status = socket.receive_json()
+        records = socket.receive_json()
+        assert records["kind"] == "records"
+        status = socket.receive_json()
 
     assert status["kind"] == "status"
     assert status["incomplete"] is True
@@ -464,11 +462,11 @@ def test_a_closed_connection_emits_one_event_with_its_counts() -> None:
         signed_client(app, base_url="http://127.0.0.1:8080") as client,
         _open_feed(client) as socket,
     ):
-            socket.receive_json()
-            socket.receive_json()
-            socket.receive_json()
-            hub.on_reception(_reception(), False)
-            socket.receive_json()
+        socket.receive_json()
+        socket.receive_json()
+        socket.receive_json()
+        hub.on_reception(_reception(), False)
+        socket.receive_json()
 
     events = logger.named("web_feed_closed")
     assert len(events) == 1, "a closed connection did not emit exactly one event"

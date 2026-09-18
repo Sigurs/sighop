@@ -80,9 +80,7 @@ async def test_capture_run_writes_jsonl_end_to_end(tmp_path):
     """Full pipeline: raw KISS bytes -> KissTransport -> Modem -> CaptureRun -> JSONL file."""
     ok = encode_frame(TYPE_SET_HARDWARE, bytes((SUB_OK,)))
     data = encode_frame(TYPE_DATA, bytes((0xAB, 0xCD)))
-    rx_meta = encode_frame(
-        TYPE_SET_HARDWARE, bytes((SUB_RXMETA, 8 & 0xFF, (-90) & 0xFF))
-    )
+    rx_meta = encode_frame(TYPE_SET_HARDWARE, bytes((SUB_RXMETA, 8 & 0xFF, (-90) & 0xFF)))
     malformed = bytes((0xC0, 0x00, 0xDB, 0xC0))  # dangling escape byte at end of frame
 
     reader = FakeReader([ok + data + rx_meta + malformed])
@@ -207,9 +205,7 @@ class StubModem:
 async def test_header_precedes_a_frame_that_arrived_during_probing(tmp_path):
     from sighop.radio.modem import RxEvent, RxMeta
 
-    modem = StubModem(
-        [RxEvent(packet=b"\x01\x02", rx_meta=RxMeta(snr_db=2.0, rssi_dbm=-90))]
-    )
+    modem = StubModem([RxEvent(packet=b"\x01\x02", rx_meta=RxMeta(snr_db=2.0, rssi_dbm=-90))])
     out_path = tmp_path / "capture.jsonl"
     run = CaptureRun(modem, out_path, probe_result=probe_result(), heartbeat_interval=1000)
 

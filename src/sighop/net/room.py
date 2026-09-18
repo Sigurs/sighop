@@ -68,7 +68,6 @@ from sighop.db.repositories import (
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckMatch, AckRegistry
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
-from sighop.net.readback import wait_for_readback
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.dm import (
     LocalEntity,
@@ -78,6 +77,7 @@ from sighop.net.dm import (
 )
 from sighop.net.pathbodies import adopt_path_body, deliver_bundled_ack
 from sighop.net.paths import PathStore
+from sighop.net.readback import wait_for_readback
 from sighop.net.rx import Payload, RxRecord
 from sighop.net.tx import Clock, SystemClock
 from sighop.passwords import PasswordHasher, PasswordPolicy, evaluate

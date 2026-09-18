@@ -76,9 +76,7 @@ def test_one_message_is_one_row_per_identity_and_ref() -> None:
 
 def test_the_conversation_read_is_indexed_by_handled_at_not_the_wire_clock() -> None:
     """2.1: the index carries the ordering rule design D7 states."""
-    indexes = {
-        index.name: [column.name for column in index.columns] for index in TABLE.indexes
-    }
+    indexes = {index.name: [column.name for column in index.columns] for index in TABLE.indexes}
     assert indexes["ix_direct_message_entity_public_key_peer_public_key_handled_at"] == [
         "entity_public_key",
         "peer_public_key",
@@ -169,9 +167,7 @@ async def test_message_text_survives_bytes_that_are_not_valid_text(database: Dat
 
     async with database.sessions() as session:
         stored = (
-            await session.execute(
-                select(DirectMessage).where(DirectMessage.ref == "pkt-bytes")
-            )
+            await session.execute(select(DirectMessage).where(DirectMessage.ref == "pkt-bytes"))
         ).scalar_one()
         assert stored.text == raw
 
@@ -204,9 +200,7 @@ async def test_the_wire_clock_column_holds_a_value_no_timestamp_would(
 
     async with database.sessions() as session:
         stored = (
-            await session.execute(
-                select(DirectMessage).where(DirectMessage.ref == "pkt-clock")
-            )
+            await session.execute(select(DirectMessage).where(DirectMessage.ref == "pkt-clock"))
         ).scalar_one()
         assert stored.wire_timestamp == 4_294_967_295
 

@@ -475,9 +475,7 @@ class Bot(Protocol):
 
     async def on_advert(self, context: BotContext, event: AdvertEvent) -> None: ...
 
-    async def on_direct_message(
-        self, context: BotContext, event: DirectMessageEvent
-    ) -> None: ...
+    async def on_direct_message(self, context: BotContext, event: DirectMessageEvent) -> None: ...
 
 
 class BotConfigError(ValueError):

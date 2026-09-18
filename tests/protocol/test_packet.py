@@ -70,9 +70,7 @@ def test_reserved_payload_type_is_preserved_not_coerced(value: int) -> None:
     assert not packet.payload_type.is_recognized
 
 
-@pytest.mark.parametrize(
-    ("bits", "version"), [(0b01, 2), (0b10, 3), (0b11, 4)]
-)
+@pytest.mark.parametrize(("bits", "version"), [(0b01, 2), (0b10, 3), (0b11, 4)])
 def test_non_v1_payload_version_is_rejected(bits: int, version: int) -> None:
     result = failure(build_raw(bits << 6 | 0x11, 0x00, payload=b"x"))
     assert result.reason is FailureReason.UNSUPPORTED_PAYLOAD_VERSION
@@ -82,9 +80,7 @@ def test_non_v1_payload_version_is_rejected(bits: int, version: int) -> None:
 # --- Transport codes -------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "route", [RouteType.TRANSPORT_FLOOD, RouteType.TRANSPORT_DIRECT]
-)
+@pytest.mark.parametrize("route", [RouteType.TRANSPORT_FLOOD, RouteType.TRANSPORT_DIRECT])
 def test_transport_routed_packet_carries_transport_codes(route: RouteType) -> None:
     raw = build_raw(
         0x10 | route,

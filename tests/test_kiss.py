@@ -1,4 +1,3 @@
-
 import pytest
 
 from sighop.radio.kiss import (
@@ -64,9 +63,7 @@ def test_invalid_escape_target_reported_malformed():
 
 def test_decoder_recovers_after_malformed_frame():
     decoder = KissDecoder()
-    events = decoder.feed(
-        bytes((FEND, 0x00, 0x01, FESC, FEND, 0x00, 0x02, 0x03, FEND))
-    )
+    events = decoder.feed(bytes((FEND, 0x00, 0x01, FESC, FEND, 0x00, 0x02, 0x03, FEND)))
     assert isinstance(events[0], MalformedFrame)
     assert events[1] == KissFrame(type_byte=0x00, data=bytes((0x02, 0x03)))
 

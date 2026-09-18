@@ -55,10 +55,10 @@ from typing import Protocol
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckMatch, AckRegistry, AckUnowned
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
-from sighop.net.readback import wait_for_readback
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.paths import PathStore
+from sighop.net.readback import wait_for_readback
 from sighop.net.rx import Payload, RxRecord
 from sighop.net.tx import Clock, SystemClock
 from sighop.protocol.crypto import (
@@ -170,9 +170,7 @@ class Route:
         return f"DIRECT h{self.hop_count}{suffix}"
 
 
-def choose_route(
-    paths: PathStore, contact: Contact, *, allow_flood: bool = False
-) -> Route:
+def choose_route(paths: PathStore, contact: Contact, *, allow_flood: bool = False) -> Route:
     """The route to a contact, or a refusal (design D4).
 
     A route keyed by the peer's public key is preferred; a route keyed by its
@@ -228,8 +226,7 @@ def compose_body(
     """
     if len(text) > MAX_TEXT_LEN:
         raise MessageTooLongError(
-            f"message text is {len(text)} bytes; the firmware's MAX_TEXT_LEN is "
-            f"{MAX_TEXT_LEN}"
+            f"message text is {len(text)} bytes; the firmware's MAX_TEXT_LEN is {MAX_TEXT_LEN}"
         )
     if not 0 <= attempt <= MAX_ATTEMPT:
         raise DirectMessageError(
@@ -284,9 +281,7 @@ def build_message_packet(
     return packet, plaintext
 
 
-def build_ack_packet(
-    *, checksum: bytes, route: Route
-) -> bytes:
+def build_ack_packet(*, checksum: bytes, route: Route) -> bytes:
     """The 4-byte acknowledgement form. We accept 6 and emit 4 (design D8)."""
     return encode_packet(
         Packet(
@@ -721,8 +716,7 @@ class DirectMessenger:
                 ref=record.ref,
                 direction=record.direction,
                 detail=(
-                    "a record sink refused the record; this message is not in "
-                    "that sink's history"
+                    "a record sink refused the record; this message is not in that sink's history"
                 ),
             )
 
@@ -858,9 +852,7 @@ class DirectMessenger:
                 expected = ack_checksum_for(body, entity.identity.public_key)
                 pending.expectations.append(expected)
                 self._pending_by_checksum[expected] = pending
-                self.acks.register(
-                    expected, owner=ACK_OWNER, on_match=self._on_ack_match
-                )
+                self.acks.register(expected, owner=ACK_OWNER, on_match=self._on_ack_match)
 
                 try:
                     await wait_for_readback(self.radio_ready)
@@ -925,17 +917,13 @@ class DirectMessenger:
                     )
                 self.sent += 1
                 if await self._await_ack(pending, timeout):
-                    return self._resolve_send(
-                        pending, SendResult.ACKNOWLEDGED, route, packet_ids
-                    )
+                    return self._resolve_send(pending, SendResult.ACKNOWLEDGED, route, packet_ids)
             # Every attempt is spent. Before calling it unacknowledged, keep
             # listening if the caller asked to: an acknowledgement returning
             # over a different, longer path is late rather than absent, and the
             # expectations for all four attempts are still registered.
             if ack_grace_ms > 0 and await self._await_ack(pending, ack_grace_ms):
-                return self._resolve_send(
-                    pending, SendResult.ACKNOWLEDGED, route, packet_ids
-                )
+                return self._resolve_send(pending, SendResult.ACKNOWLEDGED, route, packet_ids)
             return self._resolve_send(
                 pending,
                 SendResult.UNACKNOWLEDGED,
@@ -988,12 +976,8 @@ class DirectMessenger:
         # emitted, so a consumer told the send resolved can read the resolved
         # record rather than racing it.
         pending.route = route
-        self._record(
-            self._sent_record(pending, RecordedOutcome(str(result)), packet_ids)
-        )
-        self._emit(
-            SendResolved(outcome=outcome, contact=pending.contact, text=pending.text)
-        )
+        self._record(self._sent_record(pending, RecordedOutcome(str(result)), packet_ids))
+        self._emit(SendResolved(outcome=outcome, contact=pending.contact, text=pending.text))
         return outcome
 
     # --- Inbound -----------------------------------------------------------
@@ -1053,9 +1037,7 @@ class DirectMessenger:
             contacts = self.contacts.contacts()
         return entities, contacts
 
-    async def _handle_text_message(
-        self, record: RxRecord, envelope: DirectEnvelope
-    ) -> None:
+    async def _handle_text_message(self, record: RxRecord, envelope: DirectEnvelope) -> None:
         entities, contacts = self._candidates(envelope)
         if not entities:
             return  # addressed to a hash none of our entities carries
@@ -1065,9 +1047,7 @@ class DirectMessenger:
             for contact in contacts:
                 tried += 1
                 secret = self.secrets.get(entity.identity, contact.public_key)
-                candidate, plaintext = mac_then_decrypt(
-                    secret, envelope.mac, envelope.ciphertext
-                )
+                candidate, plaintext = mac_then_decrypt(secret, envelope.mac, envelope.ciphertext)
                 if not candidate.matched or plaintext is None:
                     continue
                 body = parse_text_message_body(plaintext)
@@ -1211,9 +1191,7 @@ class DirectMessenger:
         here as unmatched. `unmatched` keeps meaning nobody in this process was
         waiting for it.
         """
-        result = self.acks.deliver(
-            ack, packet_id=record.packet_id, received_at=record.received_at
-        )
+        result = self.acks.deliver(ack, packet_id=record.packet_id, received_at=record.received_at)
         if isinstance(result, AckUnowned):
             self._emit(
                 AckUnmatched(

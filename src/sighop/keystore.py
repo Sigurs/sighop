@@ -239,15 +239,12 @@ def create_keyfile(
         identity = generate_identity(avoid_node_hashes=avoid_node_hashes)
     elif identity.node_hash in avoid_node_hashes:
         raise NodeHashCollisionError(
-            f"{path}: node hash 0x{identity.node_hash:02x} is already taken by "
-            "another local entity"
+            f"{path}: node hash 0x{identity.node_hash:02x} is already taken by another local entity"
         )
 
     document = keyfile_document(identity, name, node_type, burned=burned)
     try:
-        descriptor = os.open(
-            path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, KEYFILE_MODE
-        )
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, KEYFILE_MODE)
     except FileExistsError as exc:
         raise KeyfileExistsError(
             f"{path}: a keyfile already exists here and will not be overwritten; "
@@ -328,8 +325,7 @@ def keyfile_from_document(
         )
     if version != KEYFILE_VERSION:
         raise KeyfileError(
-            f"{source}: keyfile version {version} is not the supported version "
-            f"{KEYFILE_VERSION}"
+            f"{source}: keyfile version {version} is not the supported version {KEYFILE_VERSION}"
         )
 
     identity = identity_from_document(document, source)
@@ -360,9 +356,7 @@ def keyfile_from_document(
     )
 
 
-def load_keyfile(
-    path: Path, *, logger: Logger | None = None
-) -> Keyfile:
+def load_keyfile(path: Path, *, logger: Logger | None = None) -> Keyfile:
     """Load an identity from a keyfile, checking what the file claims."""
     log = logger or get_logger(component="keystore")
     try:

@@ -90,9 +90,7 @@ class MonitorRun:
         consume_task = asyncio.create_task(self._consume())
         stop_task = asyncio.create_task(self._stop_event.wait())
         try:
-            await asyncio.wait(
-                (consume_task, stop_task), return_when=asyncio.FIRST_COMPLETED
-            )
+            await asyncio.wait((consume_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
         finally:
             for task in (consume_task, summary_task, startup_task, stop_task):
                 if not task.done():

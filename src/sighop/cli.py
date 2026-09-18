@@ -384,9 +384,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    keys = subparsers.add_parser(
-        "keys", help="create and inspect entity identity keyfiles"
-    )
+    keys = subparsers.add_parser("keys", help="create and inspect entity identity keyfiles")
     key_actions = keys.add_subparsers(dest="keys_command", required=True)
     keys_new = key_actions.add_parser(
         "new", help="generate an entity keyfile and print its public key"
@@ -437,10 +435,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     keys_import = key_actions.add_parser(
         "import",
-        help=(
-            "store an identity from a keyfile or a private key, sealing it "
-            "(needs a database)"
-        ),
+        help=("store an identity from a keyfile or a private key, sealing it (needs a database)"),
     )
     # One of the two, never both (design D8). Not argparse's mutually exclusive
     # group: `keyfile` is positional, so the group's own message would talk
@@ -617,9 +612,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="remove both bounds, returning the room to keeping everything",
     )
 
-    room_post = room_actions.add_parser(
-        "post", help="post to a room as the room's own identity"
-    )
+    room_post = room_actions.add_parser("post", help="post to a room as the room's own identity")
     room_post.add_argument("room", help="the room, by name")
     room_post.add_argument("text", help="the message text")
 
@@ -731,9 +724,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
-    bot_state = bot_actions.add_parser(
-        "state", help="inspect or clear a bot's durable state"
-    )
+    bot_state = bot_actions.add_parser("state", help="inspect or clear a bot's durable state")
     bot_state.add_argument("bot", help="the bot, by the name of the identity it runs on")
     bot_state.add_argument(
         "--clear",
@@ -770,9 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     webhook_add = webhook_actions.add_parser(
         "add",
-        help=(
-            "add an enabled webhook. " + URL_IS_READ_FROM_STDIN
-        ),
+        help=("add an enabled webhook. " + URL_IS_READ_FROM_STDIN),
         description=URL_IS_READ_FROM_STDIN,
     )
     webhook_add.add_argument("name", help="a name for the webhook, unique, no whitespace")
@@ -827,9 +816,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hops = webhook_set.add_mutually_exclusive_group()
     hops.add_argument("--max-hops", type=int, default=None, help="set the hop limit")
-    hops.add_argument(
-        "--no-max-hops", action="store_true", help="remove the hop limit"
-    )
+    hops.add_argument("--no-max-hops", action="store_true", help="remove the hop limit")
 
     webhook_set_url = webhook_actions.add_parser(
         "set-url",
@@ -906,8 +893,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--name",
         default=None,
         help=(
-            "the channel's name (default: Public, or the hashtag); required for a "
-            "pre-shared key"
+            "the channel's name (default: Public, or the hashtag); required for a pre-shared key"
         ),
     )
     channel_actions.add_parser("list", help="list the channels, with kind and hash, no keys")
@@ -1835,11 +1821,7 @@ def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
             file=sys.stderr,
         )
         return 2
-    guest = (
-        _read_password("guest password: ", from_stdin=False)
-        if args.guest_password
-        else None
-    )
+    guest = _read_password("guest password: ", from_stdin=False) if args.guest_password else None
 
     async def work(persistence: Persistence) -> Any:
         entities = EntityRepository(database=persistence.database)
@@ -2020,11 +2002,7 @@ def _room_revoke(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
         if isinstance(members, Failed):
             return members
         wanted = args.member.lower()
-        matches = [
-            member
-            for member in members.value
-            if member.public_key.hex().startswith(wanted)
-        ]
+        matches = [member for member in members.value if member.public_key.hex().startswith(wanted)]
         if len(matches) != 1:
             return matches
         removed = await persistence.members.delete(record.id, matches[0].public_key)
@@ -2107,9 +2085,7 @@ def _room_post(args: argparse.Namespace, database: DatabaseConfig, out: IO[str])
         rows = await entities.list_all()
         if isinstance(rows, Failed):
             return rows
-        author = next(
-            (row.public_key for row in rows.value if row.id == record.entity_id), None
-        )
+        author = next((row.public_key for row in rows.value if row.id == record.entity_id), None)
         if author is None:  # pragma: no cover - the FK makes this unreachable
             return None
         return await persistence.messages.store(
@@ -2398,9 +2374,7 @@ def _bot_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) 
     return 0
 
 
-def _bot_enablement(
-    args: argparse.Namespace, database: DatabaseConfig, out: IO[str]
-) -> int:
+def _bot_enablement(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
     enabled = args.bot_command == "enable"
 
     async def work(persistence: Persistence) -> Any:
@@ -2421,8 +2395,7 @@ def _bot_enablement(
         return 2
     if enabled:
         print(
-            f"bot {outcome.entity_name!r} is enabled and will run, in "
-            f"{outcome.mode} mode",
+            f"bot {outcome.entity_name!r} is enabled and will run, in {outcome.mode} mode",
             file=out,
         )
         return 0
@@ -2603,9 +2576,7 @@ def _bot_greeted(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
             )
         case "list":
             greetings = {
-                key: value
-                for key, value in payload.items()
-                if greeted_public_key(key) is not None
+                key: value for key, value in payload.items() if greeted_public_key(key) is not None
             }
             if not greetings:
                 print(
@@ -2905,8 +2876,10 @@ def _web_user_enablement(
 
     outcome = asyncio.run(_with_rooms(database, work))
     if outcome == LAST_ENABLED:
-        print(f"{name!r} is the only enabled account; disabling it is refused: {NO_ACCOUNT_LEFT}",
-              file=sys.stderr)
+        print(
+            f"{name!r} is the only enabled account; disabling it is refused: {NO_ACCOUNT_LEFT}",
+            file=sys.stderr,
+        )
         return 2
     if isinstance(outcome, Failed):
         print(str(outcome.error), file=sys.stderr)
@@ -2937,12 +2910,16 @@ def _web_user_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO
 
     outcome = asyncio.run(_with_rooms(database, work))
     if outcome == LAST_ACCOUNT:
-        print(f"{name!r} is the only account; removing it is refused: {NEXT_RUN_OFFERS_SETUP}",
-              file=sys.stderr)
+        print(
+            f"{name!r} is the only account; removing it is refused: {NEXT_RUN_OFFERS_SETUP}",
+            file=sys.stderr,
+        )
         return 2
     if outcome == LAST_ENABLED:
-        print(f"{name!r} is the only enabled account; removing it is refused: {NO_ACCOUNT_LEFT}",
-              file=sys.stderr)
+        print(
+            f"{name!r} is the only enabled account; removing it is refused: {NO_ACCOUNT_LEFT}",
+            file=sys.stderr,
+        )
         return 2
     if isinstance(outcome, Failed):
         print(str(outcome.error), file=sys.stderr)
@@ -3038,9 +3015,7 @@ async def _attach_web(
     return interface
 
 
-def _webhook_secret(
-    args: argparse.Namespace, persistence: Persistence | None
-) -> bytes | None:
+def _webhook_secret(args: argparse.Namespace, persistence: Persistence | None) -> bytes | None:
     """`SIGHOP_SECRET_KEY` for opening webhook URLs, or `None` when unusable.
 
     Not demanded: a run with a database and no secret still runs, and its
@@ -3056,9 +3031,7 @@ def _webhook_secret(
         return None
 
 
-def _web_sealing_secret(
-    args: argparse.Namespace, runtime: Runtime
-) -> bytes | None:
+def _web_sealing_secret(args: argparse.Namespace, runtime: Runtime) -> bytes | None:
     """`SIGHOP_SECRET_KEY` for the panel, or `None` when nothing is sealed.
 
     Design D1: the panel exports a *stored* identity, which means opening a
@@ -3469,9 +3442,7 @@ def _webhook_test(args: argparse.Namespace, config: Config, out: IO[str]) -> int
     opened, result = outcome
     target = f"{opened.record.name!r} ({opened.record.url_host})"
     if result.delivered:
-        print(
-            f"test {trigger.value} sent to {target}: delivered, {result.summary}", file=out
-        )
+        print(f"test {trigger.value} sent to {target}: delivered, {result.summary}", file=out)
         return 0
     detail = result.summary
     if result.status is not None and result.reason:

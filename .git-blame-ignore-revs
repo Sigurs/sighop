@@ -1,0 +1,12 @@
+# Revisions to skip when reading blame: commits that changed formatting and
+# nothing else, so that `git blame` names the commit that wrote a line rather
+# than the one that re-wrapped it.
+#
+# Not picked up automatically by a local clone — git reads it only when told to:
+#
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub's blame view honours this file with no configuration at all.
+
+# Run ruff format over the repository (101 files, formatting only)
+1d696a6ae5afab721870654581ee7cd7b5f43e33

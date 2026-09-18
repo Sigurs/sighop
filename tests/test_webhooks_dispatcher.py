@@ -317,7 +317,9 @@ async def test_only_subscribed_webhooks_receive_an_event() -> None:
 )
 async def test_the_hop_filter(hop_count: int | None, max_hops: int | None, delivered: bool) -> None:
     transport = FakeTransport()
-    dispatcher = _dispatcher(FakeRepository(records=[_record("dev-a", max_hops=max_hops)]), transport)
+    dispatcher = _dispatcher(
+        FakeRepository(records=[_record("dev-a", max_hops=max_hops)]), transport
+    )
 
     await _deliver(dispatcher, _event(hop_count=hop_count))
 
@@ -326,9 +328,7 @@ async def test_the_hop_filter(hop_count: int | None, max_hops: int | None, deliv
 
 async def test_a_disabled_webhook_receives_nothing() -> None:
     transport = FakeTransport()
-    dispatcher = _dispatcher(
-        FakeRepository(records=[_record("dev-off", enabled=False)]), transport
-    )
+    dispatcher = _dispatcher(FakeRepository(records=[_record("dev-off", enabled=False)]), transport)
 
     await _deliver(dispatcher, _event())
 
@@ -561,7 +561,12 @@ def test_status_segment_and_summary() -> None:
     assert dispatcher.status_segment() == "wh ok=3 fail=1 drop=2"
     assert enabled_summary([]) == "0 enabled"
     assert (
-        enabled_summary([_record("a", triggers=("new_companion",)), _record("b", triggers=("new_companion", "new_repeater"))])
+        enabled_summary(
+            [
+                _record("a", triggers=("new_companion",)),
+                _record("b", triggers=("new_companion", "new_repeater")),
+            ]
+        )
         == "2 enabled (new_repeater, new_companion)"
     )
 

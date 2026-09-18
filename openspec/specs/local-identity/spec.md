@@ -1,7 +1,11 @@
 # local-identity Specification
 
 ## Purpose
-TBD - created by archiving change milestone-4-first-transmit. Update Purpose after archive.
+The Ed25519 keypair a local entity transmits as, and where it lives between runs: the two
+stores that can hold one — a keyfile and, where a database is configured, the entity store —
+which of them is the store of record, and what each one is allowed to do with the private key.
+A keyfile holds that key in the clear, so every requirement here that looks like ceremony is
+about not producing one by accident, not overwriting one, and not printing what it holds.
 ## Requirements
 ### Requirement: An entity identity survives the process
 The system SHALL be able to store a local entity's identity and reload it on a later run, so
@@ -40,16 +44,16 @@ one each loaded entity came from rather than leaving the source to be inferred.
 ### Requirement: A keyfile is an interchange format, not the store of record
 Where a database is configured, the system SHALL treat the entity store as the store of record
 for a local identity and a keyfile as a means of moving one in or out. The system SHALL NOT
-write an identity's seed to a keyfile as a side effect of ordinary operation, and SHALL require a
-distinct, explicit action to produce one.
+write an identity's private key to a keyfile as a side effect of ordinary operation, and SHALL
+require a distinct, explicit action to produce one.
 
 #### Scenario: Ordinary run with persisted entities
 - **WHEN** the runtime runs with a database configured and entities in the entity store
-- **THEN** no keyfile is written and no seed reaches the filesystem
+- **THEN** no keyfile is written and no private key reaches the filesystem
 
 #### Scenario: Creating an identity with a database configured
 - **WHEN** an identity is created with a database configured and no keyfile path requested
-- **THEN** the identity is written to the entity store with its seed encrypted, and no keyfile is produced
+- **THEN** the identity is written to the entity store with its private key encrypted, and no keyfile is produced
 
 #### Scenario: Producing a keyfile from a stored identity
 - **WHEN** an export of a stored identity is explicitly requested

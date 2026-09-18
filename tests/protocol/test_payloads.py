@@ -90,9 +90,7 @@ def test_direct_envelope_rejects_empty_ciphertext() -> None:
 
 
 def test_direct_envelope_rejects_truncation() -> None:
-    assert bad(parse_payload(PayloadType.TXT_MSG, b"\xab\xcd")).reason is (
-        FailureReason.TRUNCATED
-    )
+    assert bad(parse_payload(PayloadType.TXT_MSG, b"\xab\xcd")).reason is (FailureReason.TRUNCATED)
 
 
 def test_anon_request_round_trips() -> None:
@@ -112,9 +110,7 @@ def test_anon_request_rejects_truncation() -> None:
     )
 
 
-@pytest.mark.parametrize(
-    "payload_type", [PayloadType.GRP_TXT, PayloadType.GRP_DATA]
-)
+@pytest.mark.parametrize("payload_type", [PayloadType.GRP_TXT, PayloadType.GRP_DATA])
 def test_group_envelope_round_trips(payload_type: PayloadType) -> None:
     raw = b"\x7f" + b"\x12\x34" + BLOCK
     envelope = ok(parse_payload(payload_type, raw))

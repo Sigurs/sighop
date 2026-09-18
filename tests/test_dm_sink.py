@@ -132,9 +132,7 @@ async def test_an_acknowledged_send_records_its_latency_and_attempt_count() -> N
     clock = TickingClock()
     submit = RecordingSubmit()
     records = Recorder()
-    dm = messenger(
-        us, contacts=contacts, paths=paths, submit=submit, clock=clock, records=records
-    )
+    dm = messenger(us, contacts=contacts, paths=paths, submit=submit, clock=clock, records=records)
 
     send = asyncio.create_task(dm.send(us, contact, "hello"))
     await asyncio.sleep(0)
@@ -270,9 +268,7 @@ async def test_the_acknowledgement_reaches_the_scheduler_before_the_sink_is_offe
     submit = RecordingSubmit()
     sink = RaisingSink(submit)
     events: list = []
-    dm = messenger(
-        us, contacts=contacts, paths=paths, submit=submit, records=sink, events=events
-    )
+    dm = messenger(us, contacts=contacts, paths=paths, submit=submit, records=sink, events=events)
 
     await _receive(dm, sender=them, recipient=us)
 
@@ -295,9 +291,7 @@ async def test_two_sends_to_different_peers_do_not_wait_on_each_other() -> None:
     us = Entity("us")
     first, second = Entity("first"), Entity("second")
     contacts = ContactStore(logger=RecordingLogger())
-    contacts.restore(
-        [contact_for(first.identity, "first"), contact_for(second.identity, "second")]
-    )
+    contacts.restore([contact_for(first.identity, "first"), contact_for(second.identity, "second")])
     one = next(c for c in contacts.contacts() if c.public_key == first.identity.public_key)
     two = next(c for c in contacts.contacts() if c.public_key == second.identity.public_key)
     paths = PathStore()
@@ -367,9 +361,7 @@ async def test_each_acknowledgement_matches_its_own_message() -> None:
     us = Entity("us")
     first, second = Entity("first"), Entity("second")
     contacts = ContactStore(logger=RecordingLogger())
-    contacts.restore(
-        [contact_for(first.identity, "first"), contact_for(second.identity, "second")]
-    )
+    contacts.restore([contact_for(first.identity, "first"), contact_for(second.identity, "second")])
     one = next(c for c in contacts.contacts() if c.public_key == first.identity.public_key)
     two = next(c for c in contacts.contacts() if c.public_key == second.identity.public_key)
     paths = PathStore()
@@ -397,9 +389,7 @@ async def test_each_acknowledgement_matches_its_own_message() -> None:
     assert first_outcome.result is SendResult.UNACKNOWLEDGED
 
     resolved = {
-        record.peer_public_key: record.outcome
-        for record in records.offered
-        if record.resolved
+        record.peer_public_key: record.outcome for record in records.offered if record.resolved
     }
     assert resolved[two.public_key] is RecordedOutcome.ACKNOWLEDGED
     assert resolved[one.public_key] is RecordedOutcome.UNACKNOWLEDGED

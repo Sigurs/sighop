@@ -73,9 +73,7 @@ def _built(
 ) -> tuple[FastAPI, StubState, ConversationLog]:
     # A radio readback, because a send with none resolves as dropped before it
     # reaches the scheduler — `time_on_air_ms` refuses to guess (§4.1).
-    state = stub_state(
-        stub_names=stub_names, transmit_enabled=transmit_enabled, radio=EU868_NARROW
-    )
+    state = stub_state(stub_names=stub_names, transmit_enabled=transmit_enabled, radio=EU868_NARROW)
     for contact in contacts or []:
         state.contacts.restore([contact])
         if routed:
@@ -92,7 +90,11 @@ def _built(
             )
     conversations = log or ConversationLog()
     app = create_app(
-        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), conversations=conversations
+        state,
+        auth=authenticator(),
+        hosts=HOSTS,
+        logger=RecordingLogger(),
+        conversations=conversations,
     )
     return app, state, conversations
 
@@ -141,9 +143,7 @@ def test_two_identities_and_one_contact_are_two_conversations() -> None:
 
     with _client(app) as client:
         listing = client.get("/chat").text
-        first = client.get(
-            f"/chat/{one.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        first = client.get(f"/chat/{one.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert listing.count("open</a>") >= 2
     assert "from one" in first
@@ -191,9 +191,7 @@ def test_an_acknowledged_send_shows_its_attempts_and_latency() -> None:
     )
 
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert "delivered" in body
     assert "2 attempt(s)" in body
@@ -215,9 +213,7 @@ def test_a_send_that_is_never_acknowledged_is_not_shown_as_delivered() -> None:
     )
 
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert "unacknowledged after 4 attempt(s)" in body
     assert "cannot tell whether it arrived" in body
@@ -232,9 +228,7 @@ def test_a_submitted_message_is_in_the_conversation_before_it_resolves() -> None
     log.offer(_record(stub.identity.public_key, contact.public_key))
 
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert "awaiting transmission" in body
 
@@ -461,9 +455,7 @@ def test_a_received_message_from_an_unverified_contact_is_marked() -> None:
     )
 
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert "identity-unverified" in body
     assert "authenticates possession" in body
@@ -486,9 +478,7 @@ def test_a_message_from_a_verified_contact_uses_the_same_marking_as_elsewhere() 
     )
 
     with _client(app) as client:
-        chat = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        chat = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
         contacts = client.get("/contacts").text
 
     assert "identity-verified" in chat
@@ -523,9 +513,7 @@ def test_a_group_text_reception_produces_no_chat_message() -> None:
     # ...and it produced no conversation entry.
     assert log.conversation_keys() == []
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
     assert "No messages yet" in body
 
 
@@ -642,9 +630,7 @@ def test_a_conversation_opened_while_degraded_says_stored_history_cannot_be_read
     )
 
     with _client(app) as client:
-        body = client.get(
-            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-        ).text
+        body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
     assert "Stored history cannot be read" in body
     assert "new messages are not being recorded" in body
@@ -703,9 +689,7 @@ def test_the_log_updates_a_message_in_place_rather_than_twice() -> None:
     entity, peer = b"\x01" * 32, b"\x02" * 32
 
     log.offer(_record(entity, peer, ref="m1"))
-    log.offer(
-        _record(entity, peer, ref="m1", outcome=RecordedOutcome.ACKNOWLEDGED, attempts=1)
-    )
+    log.offer(_record(entity, peer, ref="m1", outcome=RecordedOutcome.ACKNOWLEDGED, attempts=1))
 
     held = log.conversation(entity, peer)
     assert len(held) == 1
@@ -758,15 +742,17 @@ async def test_a_conversation_survives_a_restart(database: Database) -> None:
 
     # A fresh panel: no in-memory log at all, as after a restart.
     app = create_app(
-        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), conversations=ConversationLog()
+        state,
+        auth=authenticator(),
+        hosts=HOSTS,
+        logger=RecordingLogger(),
+        conversations=ConversationLog(),
     )
     async with signed_async_client(
         transport=httpx2.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
     ) as client:
         body = (
-            await client.get(
-                f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
-            )
+            await client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}")
         ).text
 
     assert "before the restart" in body
@@ -793,9 +779,7 @@ def _channel_app(
 ):
     from sighop.web.chat import ChannelLog
 
-    state = stub_state(
-        stub_names=stub_names, transmit_enabled=transmit_enabled, radio=EU868_NARROW
-    )
+    state = stub_state(stub_names=stub_names, transmit_enabled=transmit_enabled, radio=EU868_NARROW)
     _channels(state, "#dev-sighop")
     channel_log = ChannelLog()
     state.channels.add_record_sink(channel_log)
@@ -833,8 +817,14 @@ def test_the_channel_log_updates_in_place_and_is_bounded() -> None:
 
     log = ChannelLog(capacity=3)
     post = ChannelMessageRecord(
-        channel_id=2, direction="out", ref="post", text=b"hi", wire_timestamp=1,
-        handled_at=NOW, outcome=ChannelOutcome.AWAITING, entity_public_key=b"\x01" * 32,
+        channel_id=2,
+        direction="out",
+        ref="post",
+        text=b"hi",
+        wire_timestamp=1,
+        handled_at=NOW,
+        outcome=ChannelOutcome.AWAITING,
+        entity_public_key=b"\x01" * 32,
     )
     log.offer(post)
     log.offer(replace(post, outcome=ChannelOutcome.TRANSMITTED, repeats_heard=1))
@@ -931,15 +921,26 @@ def test_a_transmitted_post_states_repeats_and_that_no_acknowledgement_exists() 
     stub = state.adverts.stubs[0]
     log.offer(
         ChannelMessageRecord(
-            channel_id=2, direction="out", ref="post", text=b"hi", wire_timestamp=1,
-            handled_at=NOW, outcome=ChannelOutcome.TRANSMITTED,
-            entity_public_key=stub.identity.public_key, repeats_heard=3,
+            channel_id=2,
+            direction="out",
+            ref="post",
+            text=b"hi",
+            wire_timestamp=1,
+            handled_at=NOW,
+            outcome=ChannelOutcome.TRANSMITTED,
+            entity_public_key=stub.identity.public_key,
+            repeats_heard=3,
         )
     )
     log.offer(
         ChannelMessageRecord(
-            channel_id=2, direction="out", ref="quiet", text=b"hi", wire_timestamp=1,
-            handled_at=NOW, outcome=ChannelOutcome.TRANSMITTED,
+            channel_id=2,
+            direction="out",
+            ref="quiet",
+            text=b"hi",
+            wire_timestamp=1,
+            handled_at=NOW,
+            outcome=ChannelOutcome.TRANSMITTED,
             entity_public_key=stub.identity.public_key,
         )
     )
@@ -958,7 +959,11 @@ def test_a_post_over_the_limit_is_refused_with_the_text_kept_and_nothing_recorde
     with _client(app) as client:
         refused = client.post(
             "/chat/channel/2",
-            data={TOKEN_FIELD: csrf(client), "text": text, "identity": stub.identity.public_key.hex()},
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": text,
+                "identity": stub.identity.public_key.hex(),
+            },
         )
 
     assert refused.status_code == 400
@@ -974,7 +979,11 @@ def test_a_closed_gate_refuses_a_post_and_queues_nothing() -> None:
     with _client(app) as client:
         refused = client.post(
             "/chat/channel/2",
-            data={TOKEN_FIELD: csrf(client), "text": "hi", "identity": stub.identity.public_key.hex()},
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "hi",
+                "identity": stub.identity.public_key.hex(),
+            },
         )
     assert refused.status_code == 400 and "Transmission is disabled" in refused.text
     assert log.messages(2) == [] and state.scheduler.status().stats.submitted == 0
@@ -1032,7 +1041,11 @@ def test_a_degraded_database_is_said_in_an_open_channel_while_posting_continues(
         partial = client.get("/chat/channel/2/messages").text
         posted = client.post(
             "/chat/channel/2",
-            data={TOKEN_FIELD: csrf(client), "text": "still posting", "identity": stub.identity.public_key.hex()},
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "still posting",
+                "identity": stub.identity.public_key.hex(),
+            },
         )
 
     assert "not being recorded" not in healthy
@@ -1053,7 +1066,11 @@ def test_a_post_from_the_interface_is_run_output_naming_the_account() -> None:
     with _client(app) as client:
         client.post(
             "/chat/channel/2",
-            data={TOKEN_FIELD: csrf(client), "text": "hello", "identity": stub.identity.public_key.hex()},
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "hello",
+                "identity": stub.identity.public_key.hex(),
+            },
         )
 
     [line] = [line for line in output if "post as" in line]

@@ -41,8 +41,10 @@ def _block(text: str, header: str, indent: int) -> str:
 
 
 def _without_comments(text: str) -> str:
-    return "\n".join(line.split(" #", 1)[0] if not line.lstrip().startswith("#") else ""
-                     for line in text.splitlines())
+    return "\n".join(
+        line.split(" #", 1)[0] if not line.lstrip().startswith("#") else ""
+        for line in text.splitlines()
+    )
 
 
 def _service(text: str, name: str) -> str:
@@ -165,8 +167,10 @@ def test_secrets_come_from_the_gitignored_env_file_and_are_never_values() -> Non
     assert not re.search(r"^\s+SIGHOP_SECRET_KEY:[ ]*[^\s\"$]", text, re.M)
 
 
-@pytest.mark.parametrize(("key", "line"), [("read_only", "    read_only: true\n"),
-                                           ("cap_drop", "    cap_drop:\n      - ALL\n")])
+@pytest.mark.parametrize(
+    ("key", "line"),
+    [("read_only", "    read_only: true\n"), ("cap_drop", "    cap_drop:\n      - ALL\n")],
+)
 def test_deleting_a_hardening_key_is_noticed(key: str, line: str) -> None:
     """12.5: the check is not vacuous — remove the key and it fails."""
     text = COMPOSE.read_text()
@@ -227,7 +231,9 @@ def test_the_final_stage_runs_nothing_and_deletes_nothing() -> None:
     instructions = [
         line for line in final.splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
-    assert not any(line.startswith("RUN") for line in instructions), "the final stage runs a command"
+    assert not any(line.startswith("RUN") for line in instructions), (
+        "the final stage runs a command"
+    )
     assert not any("rm -" in line for line in instructions)
 
 

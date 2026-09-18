@@ -193,9 +193,7 @@ async def test_an_account_change_ends_the_session_at_the_next_revalidation(
     assert await auth.resolve(token) is None
     assert await auth.resolve(token) is None
     ended = logger.named("web_session_ended")
-    assert [(event["reason"], event["detail"]) for event in ended] == [
-        ("account_changed", detail)
-    ]
+    assert [(event["reason"], event["detail"]) for event in ended] == [("account_changed", detail)]
 
 
 async def test_revalidation_reads_the_account_at_most_once_a_minute() -> None:
@@ -281,7 +279,9 @@ def test_a_success_resets_both_counts() -> None:
 def test_tracking_stays_bounded_after_ten_thousand_distinct_keys() -> None:
     throttle = LoginThrottle(clock=ManualClock())
     for index in range(10_000):
-        throttle.record_failure(f"user-{index}", f"10.{index // 65536}.{index // 256 % 256}.{index % 256}")
+        throttle.record_failure(
+            f"user-{index}", f"10.{index // 65536}.{index // 256 % 256}.{index % 256}"
+        )
     assert throttle.tracked == (THROTTLE_KEYS, THROTTLE_KEYS)
 
 
@@ -292,9 +292,11 @@ async def test_unknown_usernames_are_throttled_exactly_like_real_ones() -> None:
     for _ in range(FREE_FAILURES):
         await real.sign_in(OPERATOR, "wrong", client=CLIENT)
         await unknown.sign_in("nobody-here", "wrong", client=CLIENT)
-    assert real.throttle.retry_after(OPERATOR, "other") == unknown.throttle.retry_after(
-        "nobody-here", "other"
-    ) == 1.0
+    assert (
+        real.throttle.retry_after(OPERATOR, "other")
+        == unknown.throttle.retry_after("nobody-here", "other")
+        == 1.0
+    )
 
 
 # --- 5.4 The sign-in decision -----------------------------------------------
@@ -364,9 +366,7 @@ async def test_sign_in_rotates_a_presented_session() -> None:
     auth = authenticator(logger=RecordingLogger())
     first = await auth.sign_in(OPERATOR, OPERATOR_PASSWORD, client=CLIENT)
     assert first.token is not None
-    second = await auth.sign_in(
-        OPERATOR, OPERATOR_PASSWORD, client=CLIENT, presented=first.token
-    )
+    second = await auth.sign_in(OPERATOR, OPERATOR_PASSWORD, client=CLIENT, presented=first.token)
     assert second.token is not None and second.token != first.token
     assert await auth.resolve(first.token) is None
     assert await auth.resolve(second.token) is not None

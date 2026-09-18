@@ -113,9 +113,12 @@ def first_advert_hex() -> str:
             record = json.loads(line)
             if record.get("kind") != "rx_frame":
                 continue
-            if decode_event(
-                RxEvent(packet=bytes.fromhex(record["raw_hex"]), rx_meta=None)
-            ).payload_type is PayloadType.ADVERT:
+            if (
+                decode_event(
+                    RxEvent(packet=bytes.fromhex(record["raw_hex"]), rx_meta=None)
+                ).payload_type
+                is PayloadType.ADVERT
+            ):
                 return record["raw_hex"]
     raise AssertionError("no advert in the corpus")
 

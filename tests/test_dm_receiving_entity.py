@@ -58,9 +58,7 @@ async def test_the_report_names_the_receiving_entity_itself() -> None:
     dm = messenger(bob, contacts=contacts, paths=paths, events=events)
 
     secret = SharedSecretCache().get(alice.identity, bob.identity.public_key)
-    packet, _ = message_packet(
-        sender=alice, recipient_node_hash=bob.node_hash, secret=secret
-    )
+    packet, _ = message_packet(sender=alice, recipient_node_hash=bob.node_hash, secret=secret)
     await dm.handle(_packet_for(packet))
 
     received = next(event for event in events if isinstance(event, MessageReceived))
@@ -83,9 +81,7 @@ async def test_two_entities_sharing_a_display_name_are_still_distinguishable() -
     dm = messenger(first, second, contacts=contacts, paths=paths, events=events)
 
     secret = SharedSecretCache().get(alice.identity, second.identity.public_key)
-    packet, _ = message_packet(
-        sender=alice, recipient_node_hash=second.node_hash, secret=secret
-    )
+    packet, _ = message_packet(sender=alice, recipient_node_hash=second.node_hash, secret=secret)
     await dm.handle(_packet_for(packet))
 
     received = next(event for event in events if isinstance(event, MessageReceived))
@@ -117,9 +113,7 @@ async def test_the_acknowledgement_is_submitted_before_a_consumer_that_raises() 
     dm._on_event = explode
 
     secret = SharedSecretCache().get(alice.identity, bob.identity.public_key)
-    packet, _ = message_packet(
-        sender=alice, recipient_node_hash=bob.node_hash, secret=secret
-    )
+    packet, _ = message_packet(sender=alice, recipient_node_hash=bob.node_hash, secret=secret)
     with pytest.raises(RuntimeError):
         await dm.handle(_packet_for(packet))
 

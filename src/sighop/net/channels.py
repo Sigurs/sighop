@@ -819,12 +819,10 @@ class ChannelMessenger:
                     f"Channel {channel_id} is not loaded in this run, so nothing was sent."
                 )
             if not any(
-                loaded.identity.public_key == entity.identity.public_key
-                for loaded in self.entities
+                loaded.identity.public_key == entity.identity.public_key for loaded in self.entities
             ):
                 raise IdentityNotLoadedError(
-                    f"The identity {entity.name!r} is not loaded in this run, so nothing "
-                    "was sent."
+                    f"The identity {entity.name!r} is not loaded in this run, so nothing was sent."
                 )
             check_sender_name(entity.name)
             check_post_length(entity.name, text)

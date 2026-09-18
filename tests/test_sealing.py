@@ -39,9 +39,7 @@ def _sealed_seed(secret: bytes = SECRET, seed: bytes | None = None) -> bytes:
 
     from sighop.db.sealing import SEAL_VERSION
 
-    return bytes([SEAL_VERSION]) + bytes(
-        SecretBox(secret).encrypt(seed or os.urandom(32))
-    )
+    return bytes([SEAL_VERSION]) + bytes(SecretBox(secret).encrypt(seed or os.urandom(32)))
 
 
 # --- Values ----------------------------------------------------------------

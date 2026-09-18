@@ -412,9 +412,7 @@ async def test_a_valid_driver_configuration_is_stored(database: Database) -> Non
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        response = await _apost(
-            client, app, f"/admin/bots/{bot.id}/config", key="burst", value="3"
-        )
+        response = await _apost(client, app, f"/admin/bots/{bot.id}/config", key="burst", value="3")
     assert response.status_code == 303
 
     listed = await persistence.bots.list_all()
@@ -562,7 +560,13 @@ def test_the_guarded_event_is_separate_from_the_requests_event() -> None:
 
     with _client(app) as client:
         page = client.get(f"/admin/reveal/{stub.entity_id}").text
-        _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
+        _post(
+            client,
+            app,
+            f"/admin/reveal/{stub.entity_id}",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
+        )
 
     assert len(log.named("web_guarded_action")) == 1
     assert len(log.named("web_request")) == 2, "requests and actions are the same event"
@@ -594,23 +598,35 @@ def test_the_reveal_is_one_response_body_and_its_own_event() -> None:
 
     with _client(app) as client:
         page = client.get(f"/admin/reveal/{stub.entity_id}").text
-        revealed = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
+        revealed = _post(
+            client,
+            app,
+            f"/admin/reveal/{stub.entity_id}",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
+        )
         # The nonce is spent, so the same request again reveals nothing.
-        again = _post(client, app, f"/admin/reveal/{stub.entity_id}", nonce=_nonce(page), password=OPERATOR_PASSWORD)
+        again = _post(
+            client,
+            app,
+            f"/admin/reveal/{stub.entity_id}",
+            nonce=_nonce(page),
+            password=OPERATOR_PASSWORD,
+        )
 
     assert revealed.status_code == 200
     assert stub.identity.private_key.hex() in revealed.text
     assert again.status_code == 403
     assert stub.identity.private_key.hex() not in again.text
 
-    audited = [
-        event for event in log.named("web_guarded_action") if event["outcome"] == "success"
-    ]
+    audited = [event for event in log.named("web_guarded_action") if event["outcome"] == "success"]
     assert len(audited) == 1
     assert audited[0]["action"] == REVEAL_KEY
     assert audited[0]["entity_name"] == stub.name
     assert audited[0]["public_key"] == stub.identity.public_key.hex()
-    assert stub.identity.private_key.hex() not in repr(audited[0]), "the event carries the private key"
+    assert stub.identity.private_key.hex() not in repr(audited[0]), (
+        "the event carries the private key"
+    )
 
 
 def test_no_other_route_reveals_key_material() -> None:
@@ -626,9 +642,7 @@ def test_no_other_route_reveals_key_material() -> None:
         for path in pages:
             body = client.get(path).text
             for private_key in private_keys:
-                assert private_key.hex() not in body, (
-                    f"{path} leaked a private key"
-                )
+                assert private_key.hex() not in body, f"{path} leaked a private key"
 
 
 # --- 13.3 Enabling transmission ---------------------------------------------
@@ -642,7 +656,14 @@ def test_enabling_transmission_changes_the_gate_and_the_indication_together() ->
     with _client(app) as client:
         page = client.get("/admin/transmit").text
         assert "opens the transmit gate" in page
-        response = _post(client, app, "/admin/transmit", nonce=_nonce(page), enabled="true", password=OPERATOR_PASSWORD)
+        response = _post(
+            client,
+            app,
+            "/admin/transmit",
+            nonce=_nonce(page),
+            enabled="true",
+            password=OPERATOR_PASSWORD,
+        )
         assert response.status_code == 303
         overview = client.get("/").text
 
@@ -690,7 +711,14 @@ def test_raising_the_ceiling_carries_the_old_and_the_new_value() -> None:
 
     with _client(app) as client:
         page = client.get("/admin/ceiling").text
-        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="0.5", password=OPERATOR_PASSWORD)
+        response = _post(
+            client,
+            app,
+            "/admin/ceiling",
+            nonce=_nonce(page),
+            fraction="0.5",
+            password=OPERATOR_PASSWORD,
+        )
         assert response.status_code == 303
         overview = client.get("/").text
 
@@ -710,7 +738,14 @@ def test_a_ceiling_outside_the_allowed_range_is_refused() -> None:
 
     with _client(app) as client:
         page = client.get("/admin/ceiling").text
-        response = _post(client, app, "/admin/ceiling", nonce=_nonce(page), fraction="2.0", password=OPERATOR_PASSWORD)
+        response = _post(
+            client,
+            app,
+            "/admin/ceiling",
+            nonce=_nonce(page),
+            fraction="2.0",
+            password=OPERATOR_PASSWORD,
+        )
 
     assert response.status_code == 400
     assert state.scheduler.budget.ceiling_fraction == DEFAULT_CEILING_FRACTION
@@ -750,9 +785,7 @@ def _channel_state(database: Database) -> tuple[FastAPI, StubState, RecordingLog
     state.persistence = Persistence(database=database)
     state.channel_secret = SECRET
     log = RecordingLogger()
-    app = create_app(
-        state, auth=authenticator(), hosts=HOSTS, logger=log, sealing_secret=SECRET
-    )
+    app = create_app(state, auth=authenticator(), hosts=HOSTS, logger=log, sealing_secret=SECRET)
     return app, state, log
 
 
@@ -806,13 +839,20 @@ async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Da
         listing = (await client.get("/admin/channels")).text
         refused = await _apost(client, app, "/admin/channels/psk", name="crew-2", key=PSK)
         short = await _apost(
-            client, app, "/admin/channels/psk", name="short", key=base64.b64encode(bytes(8)).decode()
+            client,
+            app,
+            "/admin/channels/psk",
+            name="short",
+            key=base64.b64encode(bytes(8)).decode(),
         )
 
     assert added.status_code == 303 and "Channel crew added" in after_add
     for body in (after_add, listing, refused.text, short.text):
         _psk_absent(body)
-    assert refused.status_code == 400 and "already stored as the channel &#39;crew&#39;" in refused.text
+    assert (
+        refused.status_code == 400
+        and "already stored as the channel &#39;crew&#39;" in refused.text
+    )
     assert 'value="crew-2"' in refused.text, "the name is handed back"
     assert short.status_code == 400 and "decodes to 8 bytes" in short.text
     assert 'type="password" name="key"' in short.text
@@ -831,8 +871,13 @@ async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
     await history.upsert_many(
         [
             ChannelMessageRecord(
-                channel_id=1, direction="in", ref=f"p{index}", text=b"x", wire_timestamp=1,
-                handled_at=NOW, outcome=ChannelOutcome.RECEIVED,
+                channel_id=1,
+                direction="in",
+                ref=f"p{index}",
+                text=b"x",
+                wire_timestamp=1,
+                handled_at=NOW,
+                outcome=ChannelOutcome.RECEIVED,
             )
             for index in range(40)
         ]

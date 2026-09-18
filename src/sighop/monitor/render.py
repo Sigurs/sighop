@@ -128,8 +128,7 @@ def render_detail_line(record: RxRecord) -> str:
             return _INDENT + _render_payload(payload)
         case Uninterpreted(payload_type=payload_type, raw=raw):
             return (
-                f"{_INDENT}{payload_type.name} not interpreted, "
-                f"{len(raw)}B: {_truncate_hex(raw)}"
+                f"{_INDENT}{payload_type.name} not interpreted, {len(raw)}B: {_truncate_hex(raw)}"
             )
         case StructuralFailure(failure=failure) | PayloadFailure(failure=failure):
             return (
@@ -147,8 +146,7 @@ def render_detail_line(record: RxRecord) -> str:
             )
         case ModemUnparsed(reason=reason):
             return (
-                f"{_INDENT}{FAILURE_MARK} unparsed frame: {reason}  "
-                f"raw={_truncate_hex(record.raw)}"
+                f"{_INDENT}{FAILURE_MARK} unparsed frame: {reason}  raw={_truncate_hex(record.raw)}"
             )
     raise AssertionError(f"unhandled outcome {record.outcome!r}")  # pragma: no cover
 
@@ -642,9 +640,7 @@ def render_channel_message_received(event: ChannelMessageReceived) -> str:
 
 
 def render_channel_unknown(event: ChannelUnknown) -> str:
-    return (
-        f"{_INDENT}group text on unknown channel 0x{event.channel_hash:02x}"
-    )
+    return f"{_INDENT}group text on unknown channel 0x{event.channel_hash:02x}"
 
 
 def render_channel_undecryptable(event: ChannelUndecryptable) -> str:
@@ -984,9 +980,7 @@ def render_request_refused(event: RequestRefused) -> str:
 
 def render_retention_pruned(event: RetentionPruned) -> str:
     """Design D15: what retention cost, including what it cost a member."""
-    line = (
-        f"{_INDENT}room {event.room_name!r}  retention removed {event.deleted} messages"
-    )
+    line = f"{_INDENT}room {event.room_name!r}  retention removed {event.deleted} messages"
     if event.deleted_unsynced:
         line += (
             f", {event.deleted_unsynced} of which a member had not yet received "
@@ -1140,11 +1134,7 @@ def render_bot_would_act(event: BotWouldAct) -> str:
 def render_bot_suppressed(event: BotSuppressed) -> str:
     """A decision not to act. A greeter that is greeting nobody has to be
     distinguishable from a mesh that has gone quiet."""
-    who = (
-        ""
-        if event.contact is None
-        else f"  {CLAIMED_MARK}{event.contact.public_key.hex()[:16]}"
-    )
+    who = "" if event.contact is None else f"  {CLAIMED_MARK}{event.contact.public_key.hex()[:16]}"
     detail = f"  {event.detail}" if event.detail else ""
     return f"{_INDENT}.. bot {event.bot_name!r}  suppressed: {event.reason}{who}{detail}"
 

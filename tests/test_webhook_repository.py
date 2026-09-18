@@ -24,7 +24,9 @@ def _value[T](outcome: Succeeded[T] | Failed) -> T:
     return outcome.value
 
 
-async def _create(hooks: WebhookRepository, name: str = "dev-hook", **overrides: Any) -> WebhookRecord:
+async def _create(
+    hooks: WebhookRepository, name: str = "dev-hook", **overrides: Any
+) -> WebhookRecord:
     fields: dict[str, Any] = {
         "name": name,
         "url": URL,

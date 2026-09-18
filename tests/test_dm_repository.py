@@ -130,9 +130,7 @@ async def test_a_resolution_in_a_later_batch_updates_the_same_row(
     messages = DirectMessageRepository(database=database)
     assert isinstance(await messages.upsert(record(ref="m2")), Succeeded)
     assert isinstance(
-        await messages.upsert(
-            record(ref="m2", outcome=RecordedOutcome.UNACKNOWLEDGED, attempts=4)
-        ),
+        await messages.upsert(record(ref="m2", outcome=RecordedOutcome.UNACKNOWLEDGED, attempts=4)),
         Succeeded,
     )
 
@@ -526,9 +524,7 @@ async def test_room_retention_removes_no_recorded_message(database: Database) ->
         Succeeded,
     )
 
-    pruned = await history.prune(
-        room.value.id, retention_days=1, retention_messages=None, now=NOW
-    )
+    pruned = await history.prune(room.value.id, retention_days=1, retention_messages=None, now=NOW)
     assert isinstance(pruned, Succeeded)
     assert pruned.value[0] == 1, "the room's own history must actually have been pruned"
 

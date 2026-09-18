@@ -59,7 +59,9 @@ def test_htmx_is_vendored_with_its_version_and_licence_recorded() -> None:
     assert "License" in notes and "0BSD" in notes, "the vendored licence is not recorded"
 
 
-@pytest.mark.parametrize("path", _templates() or [None], ids=lambda p: "none" if p is None else p.name)
+@pytest.mark.parametrize(
+    "path", _templates() or [None], ids=lambda p: "none" if p is None else p.name
+)
 def test_no_template_references_an_external_origin(path: Path | None) -> None:
     if path is None:
         pytest.skip("no templates yet")
@@ -70,7 +72,9 @@ def test_no_template_references_an_external_origin(path: Path | None) -> None:
     )
 
 
-@pytest.mark.parametrize("path", _templates() or [None], ids=lambda p: "none" if p is None else p.name)
+@pytest.mark.parametrize(
+    "path", _templates() or [None], ids=lambda p: "none" if p is None else p.name
+)
 def test_every_asset_reference_resolves_under_static(path: Path | None) -> None:
     if path is None:
         pytest.skip("no templates yet")
@@ -83,10 +87,14 @@ def test_every_asset_reference_resolves_under_static(path: Path | None) -> None:
             continue
         if not (STATIC_DIR / ref.removeprefix(STATIC_PREFIX)).is_file():
             unresolved.append(ref)
-    assert not unresolved, f"{path.name} names assets that are not files under static/: {unresolved}"
+    assert not unresolved, (
+        f"{path.name} names assets that are not files under static/: {unresolved}"
+    )
 
 
-@pytest.mark.parametrize("path", _templates() or [None], ids=lambda p: "none" if p is None else p.name)
+@pytest.mark.parametrize(
+    "path", _templates() or [None], ids=lambda p: "none" if p is None else p.name
+)
 def test_every_navigation_target_is_a_path_on_this_application(path: Path | None) -> None:
     if path is None:
         pytest.skip("no templates yet")

@@ -492,9 +492,7 @@ async def test_a_forced_position_causes_redelivery_from_that_point() -> None:
     await seed_post(server, storage, author=author, at=NOW - 90)
 
     # Already synced past both.
-    server._set_cursor(
-        server.members[alice.identity.public_key], first + 100
-    )
+    server._set_cursor(server.members[alice.identity.public_key], first + 100)
     assert await server.push_once() is False
 
     # The client says it is back at the beginning.

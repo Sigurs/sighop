@@ -42,9 +42,7 @@ class ConversationLog:
     """
 
     capacity: int = DEFAULT_PER_CONVERSATION
-    _messages: dict[ConversationKey, dict[str, DirectMessageRecord]] = field(
-        default_factory=dict
-    )
+    _messages: dict[ConversationKey, dict[str, DirectMessageRecord]] = field(default_factory=dict)
     _order: dict[ConversationKey, deque[str]] = field(default_factory=dict)
     unread: dict[ConversationKey, int] = field(default_factory=dict)
     offered: int = 0

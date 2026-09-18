@@ -175,9 +175,7 @@ def parse_public_key(text: str) -> bytes:
     except ValueError as exc:
         raise ContactError(f"{text!r} is not hex: {exc}") from exc
     if len(key) != PUB_KEY_SIZE:
-        raise ContactError(
-            f"a public key is {PUB_KEY_SIZE} bytes; {text!r} is {len(key)}"
-        )
+        raise ContactError(f"a public key is {PUB_KEY_SIZE} bytes; {text!r} is {len(key)}")
     return key
 
 
@@ -253,9 +251,7 @@ class ContactStore:
 
     # --- Writing -----------------------------------------------------------
 
-    def observe_advert(
-        self, advert: VerifiedAdvert, *, at: dt.datetime
-    ) -> ContactObservation:
+    def observe_advert(self, advert: VerifiedAdvert, *, at: dt.datetime) -> ContactObservation:
         """Record a contact from an advert whose signature verified.
 
         Takes a `VerifiedAdvert` rather than an `Advert` so an unverified one
@@ -402,11 +398,7 @@ class ContactStore:
         public key, so a peer observed several times during an outage lands
         once rather than replaying each observation (design D15).
         """
-        return tuple(
-            contact
-            for key, contact in self._contacts.items()
-            if key in self._unpersisted
-        )
+        return tuple(contact for key, contact in self._contacts.items() if key in self._unpersisted)
 
     @property
     def awaiting_backfill(self) -> int:
@@ -428,17 +420,14 @@ class ContactStore:
         ]
         if not matches:
             raise UnknownContactError(
-                f"no contact matches {reference!r}; its advert may not have been "
-                "heard yet"
+                f"no contact matches {reference!r}; its advert may not have been heard yet"
             )
         if len(matches) > 1:
             listed = ", ".join(
                 f"{contact.display_name} ({contact.public_key.hex()[:16]})"
                 for contact in sorted(matches, key=lambda c: c.public_key)
             )
-            raise AmbiguousContactError(
-                f"{reference!r} matches {len(matches)} contacts: {listed}"
-            )
+            raise AmbiguousContactError(f"{reference!r} matches {len(matches)} contacts: {listed}")
         return matches[0]
 
     # --- The bus -----------------------------------------------------------

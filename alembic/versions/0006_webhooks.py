@@ -69,9 +69,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_webhook"),
         sa.UniqueConstraint("name", name="uq_webhook_name"),
         sa.CheckConstraint("format IN ('json', 'discord')", name=op.f("ck_webhook_format")),
-        sa.CheckConstraint(
-            "max_hops IS NULL OR max_hops >= 0", name=op.f("ck_webhook_max_hops")
-        ),
+        sa.CheckConstraint("max_hops IS NULL OR max_hops >= 0", name=op.f("ck_webhook_max_hops")),
     )
 
 

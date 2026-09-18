@@ -66,15 +66,10 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
         return page.page(request, "rooms/index.html", rooms=unreadable(NO_DATABASE), reasons={})
     listed = await page.persistence.rooms.list_all()
     if isinstance(listed, Failed):
-        return page.page(
-            request, "rooms/index.html", rooms=unreadable(DEGRADED), reasons={}
-        )
+        return page.page(request, "rooms/index.html", rooms=unreadable(DEGRADED), reasons={})
     served = {str(server.room.id) for server in page.state.rooms}
     loaded = {stub.identity.public_key for stub in page.state.adverts.stubs}
-    reasons = {
-        str(room.id): _unserved_reason(room, served, loaded, page)
-        for room in listed.value
-    }
+    reasons = {str(room.id): _unserved_reason(room, served, loaded, page) for room in listed.value}
     return page.page(
         request,
         "rooms/index.html",
@@ -84,9 +79,7 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
     )
 
 
-def _unserved_reason(
-    room: RoomRecord, served: set[str], loaded: set[bytes], page: Panel
-) -> str:
+def _unserved_reason(room: RoomRecord, served: set[str], loaded: set[bytes], page: Panel) -> str:
     """Why this run is not serving a room, in terms an operator can act on."""
     if str(room.id) in served:
         return ""
@@ -111,16 +104,17 @@ async def history(
     room = await _room(page, room_id)
     if room is None or page.persistence is None:
         return page.page(
-            request, "rooms/history.html", room=None, posts=unreadable(NO_DATABASE),
+            request,
+            "rooms/history.html",
+            room=None,
+            posts=unreadable(NO_DATABASE),
             status_code=404 if page.persistence is not None else 200,
         )
     stored = await page.persistence.messages.history(
         room.id, limit=PAGE_SIZE, newest_first=True, before=before
     )
     if isinstance(stored, Failed):
-        return page.page(
-            request, "rooms/history.html", room=room, posts=unreadable(DEGRADED)
-        )
+        return page.page(request, "rooms/history.html", room=room, posts=unreadable(DEGRADED))
     posts = [_post_view(post, page) for post in stored.value]
     oldest = stored.value[-1].post_timestamp if stored.value else None
     return page.page(
@@ -167,16 +161,12 @@ async def members(room_id: str, request: Request, page: PanelDep) -> HTMLRespons
         )
     listed = await page.persistence.members.load_for_room(room.id)
     if isinstance(listed, Failed):
-        return page.page(
-            request, "rooms/members.html", room=room, members=unreadable(DEGRADED)
-        )
+        return page.page(request, "rooms/members.html", room=room, members=unreadable(DEGRADED))
     rows = [await _member_view(member, room, page) for member in listed.value]
     return page.page(request, "rooms/members.html", room=room, members=read(rows))
 
 
-async def _member_view(
-    member: MemberRecord, room: RoomRecord, page: Panel
-) -> dict[str, object]:
+async def _member_view(member: MemberRecord, room: RoomRecord, page: Panel) -> dict[str, object]:
     """One member, with how many stored messages they have yet to receive.
 
     Two members sharing a node hash are two members: the hash is one byte, and
@@ -350,9 +340,7 @@ async def post(
             reason="no confirmation was minted for this action",
             room_name="" if room is None else room.name,
         )
-        return page.page(
-            request, "admin/refused.html", title="post to a room", status_code=403
-        )
+        return page.page(request, "admin/refused.html", title="post to a room", status_code=403)
 
     assert page.persistence is not None
     author = await _room_author(page, room)
@@ -366,9 +354,7 @@ async def post(
             reason="the identity this room is bound to is not stored",
             room_name=room.name,
         )
-        return page.page(
-            request, "admin/refused.html", title="post to a room", status_code=409
-        )
+        return page.page(request, "admin/refused.html", title="post to a room", status_code=409)
 
     stored = await page.persistence.messages.store(
         room_id=room.id, author_public_key=author, text=encoded
@@ -383,9 +369,7 @@ async def post(
             reason=str(stored.error),
             room_name=room.name,
         )
-        return page.page(
-            request, "admin/refused.html", title="post to a room", status_code=409
-        )
+        return page.page(request, "admin/refused.html", title="post to a room", status_code=409)
     audit(
         page.logger,
         action=POST_TO_ROOM,

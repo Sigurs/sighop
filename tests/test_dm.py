@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
+from sighop.net.airtime import NoRadioReadback
 from sighop.net.bus import NetworkBus, PriorityClass, TxOutcome, TxResult
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.dm import (
@@ -47,7 +48,6 @@ from sighop.net.dm import (
     choose_route,
     compose_body,
 )
-from sighop.net.airtime import NoRadioReadback
 from sighop.net.paths import LearnedPath, PathKey, PathStore
 from sighop.net.readback import RadioReadbackTimeout, wait_for_readback
 from sighop.net.rx import decode_event
@@ -207,9 +207,7 @@ def test_the_composed_plaintext_matches_a_hand_built_vector() -> None:
 def test_the_flags_byte_carries_the_text_type_above_the_attempt() -> None:
     from sighop.protocol.payloads import build_text_message_body
 
-    body = compose_body(
-        timestamp=0, attempt=1, text=b"x", txt_type=TextType.CLI_DATA
-    )
+    body = compose_body(timestamp=0, attempt=1, text=b"x", txt_type=TextType.CLI_DATA)
 
     assert build_text_message_body(body)[4] == (1 & 3) | (int(TextType.CLI_DATA) << 2)
 
@@ -284,9 +282,7 @@ def test_an_unknown_route_refuses_to_send_without_the_flood_flag() -> None:
 
 
 def test_an_unknown_route_floods_when_flooding_was_permitted() -> None:
-    route = choose_route(
-        PathStore(), contact_for(generate_identity()), allow_flood=True
-    )
+    route = choose_route(PathStore(), contact_for(generate_identity()), allow_flood=True)
 
     assert route.flood is True
     assert route.label == "FLOOD"
@@ -321,9 +317,7 @@ def test_the_expected_acknowledgement_is_the_firmware_construction() -> None:
 
     expected = ack_checksum_for(body, entity.identity.public_key)
 
-    assert expected == hashlib.sha256(
-        plaintext + entity.identity.public_key
-    ).digest()[:4]
+    assert expected == hashlib.sha256(plaintext + entity.identity.public_key).digest()[:4]
     assert len(expected) == 4
 
 
@@ -387,7 +381,9 @@ async def test_a_message_is_submitted_at_class_two_with_its_ack_timeout_as_deadl
     for _ in range(4):
         await asyncio.sleep(0)
     sent = next(event for event in events if isinstance(event, MessageSent))
-    dm._handle_ack(ack_record(sent.expected_ack, at=clock.now()), Acknowledgement(sent.expected_ack))
+    dm._handle_ack(
+        ack_record(sent.expected_ack, at=clock.now()), Acknowledgement(sent.expected_ack)
+    )
     outcome = await asyncio.wait_for(task, 2)
 
     assert outcome.result is SendResult.ACKNOWLEDGED
@@ -429,8 +425,7 @@ async def test_a_retry_reuses_the_timestamp_and_changes_the_ciphertext() -> None
     from sighop.protocol.payloads import parse_payload
 
     envelopes = [
-        parse_payload(PayloadType.TXT_MSG, decode(s.packet).payload)
-        for s in submit.submissions
+        parse_payload(PayloadType.TXT_MSG, decode(s.packet).payload) for s in submit.submissions
     ]
     ciphertexts = [envelope.ciphertext for envelope in envelopes]
     assert len(set(ciphertexts)) == len(ciphertexts), (
@@ -461,7 +456,9 @@ async def test_a_late_acknowledgement_for_an_earlier_attempt_still_resolves() ->
         await asyncio.sleep(0)
     first = next(event for event in events if isinstance(event, MessageSent))
     assert first.attempt == 0
-    dm._handle_ack(ack_record(first.expected_ack, at=clock.now()), Acknowledgement(first.expected_ack))
+    dm._handle_ack(
+        ack_record(first.expected_ack, at=clock.now()), Acknowledgement(first.expected_ack)
+    )
     outcome = await asyncio.wait_for(task, 2)
 
     assert outcome.result is SendResult.ACKNOWLEDGED
@@ -513,9 +510,7 @@ async def test_the_grace_window_ends_and_the_send_is_still_unacknowledged() -> N
     submit = RecordingSubmit()
     dm = messenger(entity, paths=paths, submit=submit)
 
-    outcome = await dm.send(
-        entity, contact_for(peer.identity), "hej", ack_grace_ms=1_000
-    )
+    outcome = await dm.send(entity, contact_for(peer.identity), "hej", ack_grace_ms=1_000)
 
     assert outcome.result is SendResult.UNACKNOWLEDGED
     assert len(submit.submissions) == MAX_ATTEMPT + 1
@@ -629,9 +624,7 @@ async def test_a_loopback_message_decrypts_parses_and_is_acknowledged() -> None:
     emitted = parse_payload(PayloadType.ACK, decode(ack_submission.packet).payload)
     import hashlib
 
-    assert emitted.checksum == hashlib.sha256(
-        plaintext + alice.identity.public_key
-    ).digest()[:4]
+    assert emitted.checksum == hashlib.sha256(plaintext + alice.identity.public_key).digest()[:4]
     assert emitted.tail == b"", "we accept 6 bytes and emit 4"
 
 
@@ -683,9 +676,7 @@ async def test_a_destination_hash_collision_picks_the_entity_whose_mac_verifies(
     dm = messenger(twin, bob, contacts=contacts, paths=paths, events=events)
 
     secret = SharedSecretCache().get(alice.identity, bob.identity.public_key)
-    packet, _ = message_packet(
-        sender=alice, recipient_node_hash=bob.node_hash, secret=secret
-    )
+    packet, _ = message_packet(sender=alice, recipient_node_hash=bob.node_hash, secret=secret)
     await dm.handle(_packet_for(packet))
 
     received = next(event for event in events if isinstance(event, MessageReceived))
@@ -720,9 +711,7 @@ async def test_an_undecryptable_message_reports_its_candidate_count() -> None:
     )
     await dm.handle(_packet_for(packet))
 
-    undecryptable = next(
-        event for event in events if isinstance(event, MessageUndecryptable)
-    )
+    undecryptable = next(event for event in events if isinstance(event, MessageUndecryptable))
     assert undecryptable.candidates_tried == 3
     assert undecryptable.dest_hash == bob.node_hash
     assert dm.undecryptable == 1
@@ -960,9 +949,7 @@ def _messenger_awaiting_readback(alice: Entity, bob: Entity, **kwargs):
     paths = PathStore()
     zero_hop_route_to(paths, alice.identity.public_key)
     ready = asyncio.Event()
-    dm = messenger(
-        bob, contacts=contacts, paths=paths, radio=None, radio_ready=ready, **kwargs
-    )
+    dm = messenger(bob, contacts=contacts, paths=paths, radio=None, radio_ready=ready, **kwargs)
     return dm, ready
 
 
@@ -995,7 +982,9 @@ async def test_a_send_composed_before_the_readback_is_sent_not_dropped() -> None
     for _ in range(4):
         await asyncio.sleep(0)
     sent = next(event for event in events if isinstance(event, MessageSent))
-    dm._handle_ack(ack_record(sent.expected_ack, at=clock.now()), Acknowledgement(sent.expected_ack))
+    dm._handle_ack(
+        ack_record(sent.expected_ack, at=clock.now()), Acknowledgement(sent.expected_ack)
+    )
     outcome = await asyncio.wait_for(task, 2)
 
     assert outcome.result is SendResult.ACKNOWLEDGED, outcome.reason

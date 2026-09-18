@@ -60,9 +60,7 @@ def _app_with_probe(
     would be testing two things and reporting one.
     """
     state = stub_state()
-    app = create_app(
-        state, auth=authenticator(), hosts=hosts, logger=logger or RecordingLogger()
-    )
+    app = create_app(state, auth=authenticator(), hosts=hosts, logger=logger or RecordingLogger())
     probe = Probe()
     app.post("/probe")(probe)
     return app, probe, state
@@ -324,9 +322,7 @@ def test_no_safe_request_reveals_private_key_material() -> None:
         for method, path in _safe_routes(app):
             body = client.request(method, path).text
             for private_key in private_keys:
-                assert private_key.hex() not in body, (
-                    f"{method} {path} leaked a private key"
-                )
+                assert private_key.hex() not in body, f"{method} {path} leaked a private key"
                 assert _base64ish(private_key) not in body
 
 

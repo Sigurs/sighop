@@ -51,8 +51,8 @@ correctly-formed secret.
 
 ### Requirement: Persisted entities carry their identity and advert configuration
 The system SHALL store, for each local entity, a stable identifier, the entity type, the name,
-the public key, the node hash, the encrypted seed, its advert configuration, and whether it is
-enabled; and SHALL restore all of it on the next run so that a public key published to another
+the public key, the node hash, the encrypted private key, its advert configuration, and whether it
+is enabled; and SHALL restore all of it on the next run so that a public key published to another
 node stays valid and adverts resume on their configured schedule.
 
 #### Scenario: Restart with persisted entities
@@ -111,12 +111,12 @@ material, and SHALL write it with owner-only permissions.
 
 ### Requirement: Inspection never discloses key material
 The system SHALL provide listing and inspection of stored entities — name, type, public key, node
-hash, advert configuration, enabled state — that discloses neither the seed nor its ciphertext,
-and SHALL keep key material out of log events, error messages and status output.
+hash, advert configuration, enabled state — that discloses neither the private key nor its
+ciphertext, and SHALL keep key material out of log events, error messages and status output.
 
 #### Scenario: Listing stored entities
 - **WHEN** stored entities are listed
-- **THEN** each is shown with its name, type, public key and node hash, and neither the seed nor the stored ciphertext appears
+- **THEN** each is shown with its name, type, public key and node hash, and neither the private key nor the stored ciphertext appears
 
 #### Scenario: An entity operation fails
 - **WHEN** an entity operation fails and is logged
@@ -142,14 +142,14 @@ a room bound to it.
 - **THEN** the stored entity carries that node type and the room-server entity type, rather than being coerced to the default
 
 ### Requirement: A room server identity's private key is protected exactly as any other
-The system SHALL seal a room server identity's seed under the same environment secret, with the
-same refusal to start on a missing or malformed secret, and SHALL apply the same node-hash
+The system SHALL seal a room server identity's private key under the same environment secret, with
+the same refusal to start on a missing or malformed secret, and SHALL apply the same node-hash
 collision rule across room server and ordinary entities, so that being a room server changes
 nothing about how the identity is stored or checked.
 
 #### Scenario: A room server seed at rest
 - **WHEN** a room server identity is stored
-- **THEN** its seed is sealed exactly as any other entity's, and a database dump yields no usable key
+- **THEN** its private key is sealed exactly as any other entity's, and a database dump yields no usable key
 
 #### Scenario: A room server colliding with an ordinary entity
 - **WHEN** a room server identity and another entity share a node hash
@@ -175,14 +175,14 @@ having a bot bound to it.
 - **THEN** the binding is refused and says the entity already has a role
 
 ### Requirement: A bot identity's private key is protected exactly as any other
-The system SHALL seal a bot identity's seed under the same environment secret, with the same
-refusal to start on a missing or malformed secret, and SHALL apply the same node-hash collision
-rule across bot, room server and ordinary entities, so that being a bot changes nothing about how
-the identity is stored or checked.
+The system SHALL seal a bot identity's private key under the same environment secret, with the
+same refusal to start on a missing or malformed secret, and SHALL apply the same node-hash
+collision rule across bot, room server and ordinary entities, so that being a bot changes nothing
+about how the identity is stored or checked.
 
 #### Scenario: A bot seed at rest
 - **WHEN** a bot identity is stored
-- **THEN** its seed is sealed exactly as any other entity's, and a database dump alone does not disclose it
+- **THEN** its private key is sealed exactly as any other entity's, and a database dump alone does not disclose it
 
 #### Scenario: A bot identity colliding with an existing node hash
 - **WHEN** a bot identity is created whose node hash collides with an existing entity's

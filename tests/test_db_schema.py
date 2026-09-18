@@ -156,9 +156,7 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     await _drop_schema(database_url, schema)
     await _create_schema(database_url, schema)
     try:
-        every = (
-            set(TABLES) | set(ROOM_TABLES) | set(BOT_TABLES) | set(DM_TABLES) | set(WEB_TABLES)
-        )
+        every = set(TABLES) | set(ROOM_TABLES) | set(BOT_TABLES) | set(DM_TABLES) | set(WEB_TABLES)
 
         await migrations.upgrade_async(config)
         assert await _tables_in(database_url, schema) >= every
