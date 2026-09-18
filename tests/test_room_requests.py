@@ -10,12 +10,16 @@ has to delete an assertion on purpose.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import inspect
 from typing import Any
+from unittest.mock import patch
 
 from sighop.net.acks import AckRegistry
 from sighop.net.paths import PathStore
 from sighop.net.room import (
+    POST_SYNC_DELAY_SECS,
     RefusalReason,
     RequestAnswered,
     RequestRefused,
@@ -124,6 +128,9 @@ def server_for(
     telemetry: list | None = None,
     runtime_stats=None,
     sync_since: int = 0,
+    radio=EU868_NARROW,
+    radio_ready: asyncio.Event | None = None,
+    logger: RecordingLogger | None = None,
     **room_kwargs: Any,
 ) -> RoomServer:
     room = room_record(**room_kwargs)
@@ -144,11 +151,12 @@ def server_for(
         acks=AckRegistry(logger=RecordingLogger()),
         members=[row],
         clock=TickingClock(START),
-        radio=EU868_NARROW,
+        radio=radio,
+        radio_ready=radio_ready,
         telemetry=telemetry or [],
         runtime_stats=runtime_stats,
         on_event=events.append if events is not None else None,
-        logger=RecordingLogger(),
+        logger=logger or RecordingLogger(),
     )
 
 
@@ -468,6 +476,162 @@ async def test_a_request_from_someone_who_is_not_a_member_is_not_answered() -> N
     assert submit.submissions == []
     refused = next(event for event in events if isinstance(event, RequestRefused))
     assert refused.reason is RefusalReason.NOT_A_MEMBER
+
+
+# --- Composed before the radio readback -------------------------------------
+
+
+async def test_a_reply_composed_before_the_readback_waits_for_it() -> None:
+    """The room half of the acknowledgement bug: a client that logs in first.
+
+    A reply refused here is indistinguishable, from the client's side, from the
+    silence this specification reserves for an unauthorised request.
+    """
+    alice, lounge = Entity("alice"), Entity("lounge")
+    submit = RecordingSubmit()
+    logger = RecordingLogger()
+    ready = asyncio.Event()
+    server = server_for(
+        alice, lounge, submit=submit, radio=None, radio_ready=ready, logger=logger
+    )
+
+    packet, _ = request_packet(member=alice, server=lounge, request_type=RequestType.KEEP_ALIVE)
+    answering = asyncio.create_task(server.handle(_packet_for(packet)))
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert submit.submissions == [], "the reply was priced before the board answered"
+
+    server.radio = EU868_NARROW
+    ready.set()
+    await asyncio.wait_for(answering, 5)
+
+    assert len(submit.submissions) == 1, "the reply was lost to a readback that had not arrived"
+    assert logger.of("room_reply_not_sent") == []
+
+
+async def test_a_push_composed_before_the_readback_waits_for_it() -> None:
+    """A push dropped at startup loses the delivery and tells the member nothing."""
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    logger = RecordingLogger()
+    ready = asyncio.Event()
+    server = server_for(
+        alice,
+        lounge,
+        storage=storage,
+        submit=submit,
+        radio=None,
+        radio_ready=ready,
+        logger=logger,
+    )
+    await storage.messages.store(
+        room_id=server.room.id,
+        author_public_key=Entity("author").identity.public_key,
+        text=b"a post",
+        now=NOW - POST_SYNC_DELAY_SECS - 1,
+        posted_at=START,
+    )
+
+    pushing = asyncio.create_task(server.push_once())
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert submit.submissions == [], "the push was priced before the board answered"
+
+    server.radio = EU868_NARROW
+    ready.set()
+    await asyncio.wait_for(pushing, 5)
+
+    assert len(submit.submissions) == 1, "the push was lost to a readback that had not arrived"
+    assert logger.of("room_push_not_sent") == []
+    assert server.pushes_sent == 1
+    # The delivery state a push that waited must reach is the one it would have
+    # reached without waiting: an outstanding delivery for that post, awaiting
+    # the member's acknowledgement.
+    outstanding = server._state[alice.identity.public_key].delivery
+    assert outstanding is not None and outstanding.member == alice.identity.public_key
+
+
+async def test_a_reply_refuses_when_no_readback_ever_comes() -> None:
+    """4.2: the refusal §4.1 asks for survives, for a board that answers nothing."""
+    alice, lounge = Entity("alice"), Entity("lounge")
+    submit = RecordingSubmit()
+    logger = RecordingLogger()
+    events: list = []
+    server = server_for(
+        alice,
+        lounge,
+        submit=submit,
+        events=events,
+        radio=None,
+        radio_ready=asyncio.Event(),
+        logger=logger,
+    )
+
+    packet, _ = request_packet(member=alice, server=lounge, request_type=RequestType.KEEP_ALIVE)
+    with patch("sighop.net.readback.RADIO_READBACK_WAIT_SECONDS", 0.02):
+        await asyncio.wait_for(server.handle(_packet_for(packet)), 2)
+
+    assert submit.submissions == []
+    refusal = logger.of("room_reply_not_sent")[0]
+    assert "waiting" in str(refusal["reason"]), "the refusal does not name the expired wait"
+    # 4.3: the counter keeps counting what it counted — the timeout is a
+    # `NoRadioReadback`, so it lands in the same bucket the absent board does.
+    assert server.throttle.refusals[str(RefusalReason.NO_RADIO_READBACK)] == 1
+
+
+async def test_a_push_refuses_when_no_readback_ever_comes() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    logger = RecordingLogger()
+    server = server_for(
+        alice,
+        lounge,
+        storage=storage,
+        submit=submit,
+        radio=None,
+        radio_ready=asyncio.Event(),
+        logger=logger,
+    )
+    await storage.messages.store(
+        room_id=server.room.id,
+        author_public_key=Entity("author").identity.public_key,
+        text=b"a post",
+        now=NOW - POST_SYNC_DELAY_SECS - 1,
+        posted_at=START,
+    )
+
+    with patch("sighop.net.readback.RADIO_READBACK_WAIT_SECONDS", 0.02):
+        await asyncio.wait_for(server.push_once(), 2)
+
+    assert submit.submissions == []
+    assert "waiting" in str(logger.of("room_push_not_sent")[0]["reason"])
+    # Design D6's rule, unchanged by the wait: nothing that depends on delivery
+    # advances for a push that was never submitted.
+    assert server._state[alice.identity.public_key].delivery is None
+
+
+def test_the_post_ack_window_degrades_rather_than_waits() -> None:
+    """3.5: a different decision from the four sites, and a correct one.
+
+    This estimates *someone else's* acknowledgement window rather than pricing a
+    transmission of ours, so §4.1 does not apply to it: there is nothing here to
+    refuse, and waiting would hold a post's acknowledgement behind a board whose
+    parameters the estimate does not even need.
+    """
+    alice, lounge = Entity("alice"), Entity("lounge")
+    ready = asyncio.Event()
+    server = server_for(alice, lounge, radio=None, radio_ready=ready)
+    packet, _ = request_packet(member=alice, server=lounge, request_type=RequestType.KEEP_ALIVE)
+
+    assert not inspect.iscoroutinefunction(server._post_ack_window), (
+        "the window estimate became a coroutine; it can now wait, and D6 says it must not"
+    )
+    window = server._post_ack_window(_packet_for(packet))
+
+    assert window > 0, "no window was estimated for a board that had not answered"
+    assert not ready.is_set(), "the estimate touched the readiness signal"
 
 
 # --- 10.1 / 10.2 Retention --------------------------------------------------

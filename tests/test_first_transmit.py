@@ -19,7 +19,9 @@ import pytest
 
 from sighop.cli import build_parser, main
 from sighop.keystore import NodeHashCollisionError, create_keyfile
+from sighop.net.dm import Route, build_message_packet, compose_body
 from sighop.net.paths import LearnedPath, PathKey
+from sighop.protocol.crypto import calc_shared_secret
 from sighop.protocol.identity import generate_identity
 from sighop.radio.modem import EU868_NARROW, ModemEvent, RxEvent, RxMeta, TransmitDone
 from sighop.runtime import Runtime, RuntimeConfig
@@ -712,3 +714,83 @@ async def test_a_one_shot_advert_waits_for_the_radio_readback(tmp_path) -> None:
 
     assert run.scheduler.stats.transmitted == 1
     assert run.scheduler.stats.dropped == 0, "the advert was dropped for want of a readback"
+
+
+async def test_a_message_arriving_before_the_readback_is_still_acknowledged(tmp_path) -> None:
+    """The second sighting of the bug above, on the reactive side.
+
+    The one-shot fix gated `_send_once` on `_ready`. Nothing gated the paths that
+    answer a reception — and `_consume` is started as a sibling of the task that
+    awaits the probe, so every frame the modem buffered while the database opened
+    arrives before the board's parameters do. A stock companion messaged sighop
+    during the `create-entity-with-known-key` exercise and was never answered.
+    """
+    keyfile = create_keyfile(tmp_path / "entity.json", "skogen")
+    peer = generate_identity()
+    clock = ManualClock()
+    probed = asyncio.Event()
+    logger = RecordingLogger()
+
+    packet, _plaintext = build_message_packet(
+        sender=peer,
+        recipient_node_hash=keyfile.node_hash,
+        secret=calc_shared_secret(peer, keyfile.public_key),
+        body=compose_body(timestamp=1_700_000_000, attempt=0, text=b"hej"),
+        route=Route(flood=False),
+    )
+
+    async def source() -> AsyncIterator[ModemEvent]:
+        # Ahead of the startup banner, which is where the live capture had it —
+        # and with a copy behind it, because the exercise saw the message, its
+        # two copies and the peer's advert arrive in the same millisecond.
+        yield RxEvent(
+            packet=packet, rx_meta=RxMeta(snr_db=9.0, rssi_dbm=-40), received_at=clock.now()
+        )
+        yield RxEvent(
+            packet=packet, rx_meta=RxMeta(snr_db=9.0, rssi_dbm=-40), received_at=clock.now()
+        )
+        await asyncio.Event().wait()
+
+    async def slow_startup() -> str:
+        await probed.wait()
+        run.set_radio(EU868_NARROW)
+        return "probed"
+
+    run = Runtime(
+        source=source(),
+        startup=slow_startup,
+        config=RuntimeConfig(
+            transmit_enabled=True,
+            status_interval=3600,
+            advert_tick=3600,
+            entity_keyfiles=(keyfile.path,),
+        ),
+        sender=LoopbackSender(asyncio.Queue(), clock),
+        radio=None,
+        clock=clock,
+        out=io.StringIO(),
+        logger=logger,
+    )
+    run.contacts.add_public_key(peer.public_key)
+    seed_zero_hop(run, peer.public_key, clock.now())
+
+    task = asyncio.create_task(run.run())
+    for _ in range(50):
+        await asyncio.sleep(0)
+
+    probed.set()
+    for _ in range(400):
+        if run.scheduler.stats.transmitted:
+            break
+        await asyncio.sleep(0)
+    run.stop()
+    await asyncio.wait_for(task, 5)
+
+    assert run.messenger.received == 1, "the message did not decrypt; the test is vacuous"
+    assert run.pipeline.dedup.stats.duplicates == 1, (
+        "the duplicate was not seen; decode and dedup stalled behind the waiting ack"
+    )
+    assert logger.of("ack_not_routed") == [], "the acknowledgement was dropped for want of a readback"
+    received = logger.of("direct_message_received")
+    assert received and received[0]["acknowledged"] is True
+    assert run.scheduler.stats.transmitted == 1

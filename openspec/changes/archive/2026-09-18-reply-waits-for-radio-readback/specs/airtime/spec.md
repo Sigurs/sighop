@@ -42,6 +42,10 @@ The system SHALL keep decoding, reporting and recording received packets while a
 waits for a radio readback. A wait SHALL be local to the transmission that needs the parameters, so
 that the receive path — which needs no airtime figure — is never held behind one.
 
+A reception whose own acknowledgement is waiting SHALL be the only one this delays, and it is not an
+exception to the rule above: its report follows its acknowledgement because `direct-messaging`
+requires that ordering, not because the pipeline is blocked.
+
 #### Scenario: Receptions during a wait
 - **WHEN** a reply is waiting for the readback and further packets are received
 - **THEN** those packets are decoded, reported and recorded without waiting for the readback

@@ -15,11 +15,12 @@ parameters within a bounded budget and then be submitted, because a message that
 first moments is exactly as owed an answer as one that arrives an hour later, and a sender that gets
 no acknowledgement retries into silence.
 
-Such a wait SHALL NOT reorder the acknowledgement with respect to consumers. The acknowledgement is
-committed — its outcome no longer reachable by any consumer — before the report is delivered, which
-is what the ordering rule above exists to guarantee; only its submission to the scheduler completes
-later. Waiting for the board is not a consumer delaying an acknowledgement, and the report SHALL NOT
-be held behind it.
+Such a wait SHALL NOT reorder the acknowledgement with respect to consumers, and SHALL NOT be worked
+around by reporting the message before its acknowledgement settles. The report SHALL continue to
+follow the acknowledgement's outcome and SHALL state that outcome accurately: a report SHALL NOT
+describe as acknowledged a message whose acknowledgement was refused, nor describe an acknowledgement
+that is still waiting for the board as though it had been submitted. A report delayed by such a wait
+is delayed by at most the budget, and only for the message whose acknowledgement is waiting.
 
 #### Scenario: Message received and acknowledged
 - **WHEN** an inbound direct message decrypts and parses
@@ -41,6 +42,10 @@ be held behind it.
 - **WHEN** a consumer of the report is slow or raises while an acknowledgement is waiting for the radio readback
 - **THEN** the acknowledgement's outcome is unaffected by that consumer, exactly as when no wait was needed
 
+#### Scenario: The report states the acknowledgement's settled outcome
+- **WHEN** an acknowledgement waited for the readback before being submitted
+- **THEN** the report is delivered once that wait has resolved and reports the message as acknowledged, and no report describes as acknowledged a message whose acknowledgement the expired wait refused
+
 #### Scenario: A message arriving before the radio readback
 - **WHEN** an inbound direct message decrypts before the board has answered its radio readback, and the readback arrives within the waiting budget
 - **THEN** the acknowledgement is submitted to its sender, and nothing reports it as unroutable
@@ -49,6 +54,6 @@ be held behind it.
 - **WHEN** an inbound direct message decrypts and no readback arrives within the waiting budget
 - **THEN** the message is still reported, the acknowledgement is refused with a reason naming the expired wait, and the run keeps receiving
 
-#### Scenario: The report is not delayed by the wait
+#### Scenario: The wait delays only the message being acknowledged
 - **WHEN** an acknowledgement is waiting for the readback
-- **THEN** the message has already been reported to consumers, and the wait delays no report
+- **THEN** decoding, de-duplication, path learning and every other consumer continue, and no reception other than the one being acknowledged is held behind the wait

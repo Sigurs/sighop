@@ -68,6 +68,7 @@ from sighop.db.repositories import (
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckMatch, AckRegistry
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
+from sighop.net.readback import wait_for_readback
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.dm import (
     LocalEntity,
@@ -516,6 +517,7 @@ class RoomServer:
         secrets_cache: SharedSecretCache | None = None,
         clock: Clock | None = None,
         radio: RadioParams | None = None,
+        radio_ready: asyncio.Event | None = None,
         telemetry: Sequence[TelemetryEntry] = (),
         runtime_stats: Callable[[], ServerStats] | None = None,
         on_event: Callable[[RoomEvent], None] | None = None,
@@ -532,6 +534,11 @@ class RoomServer:
         self.secrets = secrets_cache or SharedSecretCache()
         self.clock = clock or SystemClock()
         self.radio = radio
+        self.radio_ready = radio_ready
+        """Set while the board's parameters are current, cleared by a reconnect
+        that loses them. `None` where nobody supplied one — a unit test, or the
+        replay path, which has the radio before it starts — and then a reply
+        never waits."""
         self.telemetry = list(telemetry)
         self.runtime_stats = runtime_stats
         self._on_event = on_event
@@ -1476,7 +1483,10 @@ class RoomServer:
             # Not used for the timeout — a push's window is the firmware's own
             # formula, not an airtime multiple — but a push composed while the
             # radio has not answered its readback would be submitted with no way
-            # to price it, and §4.1's rule is that nothing is inferred.
+            # to price it, and §4.1's rule is that nothing is inferred. Waited
+            # for rather than refused: a push dropped at startup loses the
+            # delivery without telling the member anything is missing.
+            await wait_for_readback(self.radio_ready)
             require_params(self.radio)
         except NoRadioReadback as error:
             self._refuse(RefusalReason.NO_RADIO_READBACK)
@@ -1749,6 +1759,10 @@ class RoomServer:
         priority: PriorityClass = PriorityClass.REPLY,
     ) -> bool:
         try:
+            # A client whose login or keep-alive falls in the run's first
+            # moments is answered, not met with the silence this specification
+            # reserves for an unauthorised request.
+            await wait_for_readback(self.radio_ready)
             airtime = time_on_air_ms(len(packet), require_params(self.radio))
         except NoRadioReadback as error:
             self._refuse(RefusalReason.NO_RADIO_READBACK)

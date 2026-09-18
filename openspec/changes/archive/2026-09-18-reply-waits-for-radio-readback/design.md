@@ -25,6 +25,14 @@ What the code holds today:
 
 - `room.py:1102` `_post_ack_window` also catches `NoRadioReadback`, but degrades to a 100 s window
   instead of dropping. That is a different and correct decision, and it is out of scope.
+- `tx.py:516` `_airtime_ms` asks the same question again at dequeue and drops with
+  `DropReason.NO_RADIO`. Not a fifth site: after this change a submission only happens once the
+  readback exists, and a readback lost between submission and dequeue is a genuine mid-run loss the
+  scheduler is right to drop and count.
+- `dm.py:1086` `_handle_text_message` already awaits `_acknowledge` and carries its result into the
+  durable record, the log line and `MessageReceived.acknowledged`, which `render.py:538` prints as
+  `acked` / `NOT acked`. The report is therefore already sequenced behind the acknowledgement — see
+  D5, which turns on exactly this.
 
 ## Goals / Non-Goals
 
@@ -39,7 +47,9 @@ What the code holds today:
 - Relaxing §4.1. Nothing is ever priced against configured values; this only changes *when*
   `require_params` is asked.
 - Holding the RX pipeline. Receptions are the one thing a run must never be late to record, and they
-  need no airtime figure.
+  need no airtime figure. The single exception is the report of the message *being acknowledged*,
+  which follows its own acknowledgement because the standing ordering rule requires it (D5) — one
+  subscriber's own sequencing, not the pipeline.
 - `_post_ack_window`'s fallback, which is a degraded *estimate* of someone else's window rather than
   a price for our own transmission.
 - Changing `Runtime._ready` or its one-shot consumer. That gate is about *startup completion*; this
@@ -97,19 +107,31 @@ genuinely-absent case; the timeout path names the budget it waited out.
 This matters because the two call for different actions: one is a board or firmware problem, the
 other is a board that is slow or gone mid-run.
 
-### D5 — The acknowledgement's ordering guarantee is preserved by commitment, not by submission
+### D5 — The ordering rule needs no defence, because the report already waits for the acknowledgement
 
 `direct-messaging` requires the acknowledgement to be submitted before the report reaches any
-consumer, "so that no consumer can delay or prevent it". A wait would reorder that if taken
-literally.
+consumer, "so that no consumer can delay or prevent it". The wait does not disturb that rule.
+`_handle_text_message` already awaits `_acknowledge` and carries its result into the report; the
+wait extends an await that is already there rather than reordering anything around it. Nothing new
+is needed to preserve the guarantee — the code is already in the shape the guarantee describes.
 
-The guarantee is about *consumers*, and is kept by committing the acknowledgement — taking its
-decision, and putting it beyond any consumer's reach — before the report is emitted, with only the
-scheduler submission completing after the wait. The report is not held behind the board.
+So `acknowledged`, in the log line and in `MessageReceived`, keeps meaning exactly what it means
+today: the acknowledgement reached the scheduler. It is never emitted before that is settled, and is
+never `true` for a transmission that did not happen.
 
-*Alternative considered:* hold the report until the acknowledgement is submitted. Rejected: it makes
-a slow board delay the operator's view of an inbound message, which is the opposite of what the
-receive path is for.
+The cost is stated rather than hidden: in the startup window, and only there, the report of an
+inbound message is delayed by however long the board takes, bounded by D3. That is the same delay
+the acknowledgement itself takes, for the one message the run is in the middle of answering.
+
+*Alternatives considered:* emit the report as soon as the acknowledgement is **committed** — route
+resolved, packet built, outcome beyond any consumer's reach — and let only the submission complete
+after the wait. Rejected in both forms it can take. Making `acknowledged` tri-state (submitted /
+awaiting the board / refused) is honest, but widens the change into `MessageReceived` and every
+consumer of it, including `render.py:538`, for a state that exists only in a run's first second.
+Redefining `acknowledged` to mean *committed* keeps the diff small but lets the monitor print `acked`
+on one line and `ack_not_routed` on the next. A field that reads true for a transmission that never
+happened is a worse defect than a report that is a second late, and it is the kind that outlives the
+bug it was introduced for.
 
 ## Risks / Trade-offs
 
@@ -120,9 +142,10 @@ receive path is for.
   bounded queue. An inline `await` in `_acknowledge` therefore stalls only that subscriber — decode,
   dedup, path learning and every other subscriber continue. The same holds for rooms.
   → What it *can* do is let the direct-message subscriber's queue back up for the length of the
-  budget, and a full queue drops records. With a budget of seconds against a queue sized for normal
-  traffic this is not reachable in practice, but a test asserts receptions keep flowing during a
-  wait, and the queue-overflow path already reports what it drops.
+  budget — and, by D5, delay that subscriber's own reports for the same length — with a full queue
+  dropping records. With a budget of seconds against a queue sized for normal traffic this is not
+  reachable in practice, but a test asserts the rest of the pipeline keeps flowing during a wait, and
+  the queue-overflow path already reports what it drops.
 - **A reply that arrives after it was worth sending.** A very slow readback could see an ack
   submitted after the sender has already retried. → The budget sits inside the ack window by design,
   and a late acknowledgement is still better than none — the sender's retry is answered by the

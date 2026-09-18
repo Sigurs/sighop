@@ -355,3 +355,49 @@ def test_capture_is_refused_for_a_replay_source(capsys) -> None:
 
     assert code == 2
     assert "cannot be combined with --replay" in capsys.readouterr().err
+
+
+# --- The radio-readiness signal (design D1) --------------------------------
+
+
+async def test_the_radio_signal_follows_the_readback_across_a_reconnect() -> None:
+    """Set when parameters are adopted, cleared when they are lost.
+
+    `set_radio` is the one funnel every readback passes through, startup and
+    reconnect alike, which is why the signal lives on it rather than beside it.
+    """
+    run = runtime(_never_ends())
+    assert run._radio_ready.is_set(), "constructed with parameters and still not ready"
+
+    run.set_radio(None)  # the reconnect that loses the board
+    assert not run._radio_ready.is_set()
+
+    run.set_radio(EU868_NARROW)  # and the one that finds it again
+    assert run._radio_ready.is_set()
+
+
+async def test_the_radio_signal_is_not_the_startup_signal() -> None:
+    """Why D1 refuses to reuse `_ready`.
+
+    A run that has finished starting up and has since lost its board has
+    `_ready` set and no radio. A reply that waited on `_ready` would sail
+    straight through into the refusal this change exists to remove.
+    """
+    run = Runtime(
+        source=_never_ends(),
+        startup=_startup,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600),
+        sender=RecordingSender(),
+        radio=None,
+        clock=ManualClock(),
+        out=io.StringIO(),
+        logger=RecordingLogger(),
+    )
+    assert not run._radio_ready.is_set(), "no readback was ever adopted"
+
+    run._ready.set()  # startup finished
+    run.set_radio(EU868_NARROW)
+    run.set_radio(None)  # and the board went away afterwards
+
+    assert run._ready.is_set()
+    assert not run._radio_ready.is_set(), "the two signals moved together"

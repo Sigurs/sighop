@@ -55,6 +55,7 @@ from typing import Protocol
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckMatch, AckRegistry, AckUnowned
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
+from sighop.net.readback import wait_for_readback
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.paths import PathStore
@@ -607,6 +608,7 @@ class DirectMessenger:
         secrets: SharedSecretCache | None = None,
         clock: Clock | None = None,
         radio: RadioParams | None = None,
+        radio_ready: asyncio.Event | None = None,
         allow_flood: bool = False,
         on_event: Callable[[DirectMessageEvent], None] | None = None,
         logger: Logger | None = None,
@@ -620,6 +622,12 @@ class DirectMessenger:
         self.secrets = secrets or SharedSecretCache()
         self.clock = clock or SystemClock()
         self.radio = radio
+        self.radio_ready = radio_ready
+        """Set while the board's parameters are current, cleared by a reconnect
+        that loses them. `None` where nobody supplied one — every unit test that
+        builds a messenger directly, and the replay path, which has the radio
+        from the capture's provenance before it starts — and then nothing
+        waits, which is exactly the behaviour those had before this existed."""
         self.allow_flood = allow_flood
         self._on_event = on_event
         self._log = logger or get_logger(component="dm")
@@ -855,6 +863,7 @@ class DirectMessenger:
                 )
 
                 try:
+                    await wait_for_readback(self.radio_ready)
                     airtime = time_on_air_ms(len(packet), require_params(self.radio))
                 except NoRadioReadback as exc:
                     return self._resolve_send(
@@ -1164,6 +1173,12 @@ class DirectMessenger:
             return False
         packet = build_ack_packet(checksum=checksum, route=route)
         try:
+            # A message decrypted before the board answered its readback is
+            # exactly as owed an answer as one that arrives an hour later, and a
+            # sender that gets none retries into silence. Waiting here stalls
+            # this subscriber only — `bus.py::subscribe` gives each its own task
+            # and queue — so decode, dedup and path learning carry on.
+            await wait_for_readback(self.radio_ready)
             airtime = time_on_air_ms(len(packet), require_params(self.radio))
         except NoRadioReadback as exc:
             self._log.error("ack_not_routed", packet_id=record.packet_id, reason=str(exc))

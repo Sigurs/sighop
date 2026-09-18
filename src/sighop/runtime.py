@@ -258,12 +258,19 @@ class Runtime:
     )
     _stop: asyncio.Event = field(init=False)
     _ready: asyncio.Event = field(init=False)
+    _radio_ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
     _held: list[str] = field(init=False, default_factory=list)
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="runtime")
         self.out = self.out if self.out is not None else sys.stdout
+        # Before anything that waits on it is built. Starts set only when this
+        # run was handed parameters at construction — a replay, which has them
+        # from the capture's provenance, or a test that supplied them.
+        self._radio_ready = asyncio.Event()
+        if self.radio is not None:
+            self._radio_ready.set()
         self.scheduler = TxScheduler(
             sender=self.sender,
             radio=self.radio,
@@ -322,6 +329,7 @@ class Runtime:
             entities=self.adverts.stubs,
             clock=self.clock,
             radio=self.radio,
+            radio_ready=self._radio_ready,
             allow_flood=self.config.allow_flood,
             on_event=self._on_dm_event,
             logger=self.logger,
@@ -515,14 +523,26 @@ class Runtime:
         self.channels.add_record_sink(sink)  # type: ignore[arg-type]
 
     def set_radio(self, radio: RadioParams | None) -> None:
-        """Adopt a readback — at startup, and again after every reconnect."""
+        """Adopt a readback — at startup, and again after every reconnect.
+
+        The readiness signal is set and cleared here because this is the one
+        funnel every readback passes through, reconnects included. It is
+        deliberately not `_ready`: a reconnect that loses the board leaves
+        `_ready` set and this one clear, and a reply composed then must wait for
+        the new parameters rather than sail through into a refusal (design D1).
+        """
         self.radio = radio
         self.scheduler.set_radio(radio)
         self.pipeline.radio = radio
         self.messenger.set_radio(radio)
         for room in self.rooms:
             room.radio = radio
+            room.radio_ready = self._radio_ready
             room.telemetry = self._telemetry
+        if radio is None:
+            self._radio_ready.clear()
+        else:
+            self._radio_ready.set()
 
     @property
     def _one_shot_requested(self) -> bool:
@@ -856,6 +876,7 @@ class Runtime:
             members=members.value if isinstance(members, Succeeded) else [],
             clock=self.clock,
             radio=self.radio,
+            radio_ready=self._radio_ready,
             telemetry=self._telemetry,
             runtime_stats=self._server_stats,
             on_event=self._on_room_event,

@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import time
+from unittest.mock import patch
 
 import pytest
 
@@ -45,7 +47,9 @@ from sighop.net.dm import (
     choose_route,
     compose_body,
 )
+from sighop.net.airtime import NoRadioReadback
 from sighop.net.paths import LearnedPath, PathKey, PathStore
+from sighop.net.readback import RadioReadbackTimeout, wait_for_readback
 from sighop.net.rx import decode_event
 from sighop.protocol.crypto import SharedSecretCache, ack_checksum_for, encrypt_then_mac
 from sighop.protocol.identity import LocalIdentity, generate_identity
@@ -145,6 +149,9 @@ def messenger(
     events: list | None = None,
     allow_flood: bool = False,
     records=None,
+    radio=EU868_NARROW,
+    radio_ready: asyncio.Event | None = None,
+    logger: RecordingLogger | None = None,
 ) -> DirectMessenger:
     return DirectMessenger(
         contacts=contacts or ContactStore(logger=RecordingLogger()),
@@ -152,10 +159,11 @@ def messenger(
         submit=submit or RecordingSubmit(),
         entities=entities,
         clock=clock or TickingClock(),
-        radio=EU868_NARROW,
+        radio=radio,
+        radio_ready=radio_ready,
         allow_flood=allow_flood,
         on_event=events.append if events is not None else None,
-        logger=RecordingLogger(),
+        logger=logger or RecordingLogger(),
         records=records,
     )
 
@@ -931,3 +939,205 @@ async def test_the_subscriber_attaches_to_the_bus_without_touching_the_decode_st
 
     assert subscription.name == "direct-messages"
     assert bus.subscriber_stats[0].name == "direct-messages"
+
+
+# --- Composed before the radio readback (design D1-D5) ---------------------
+
+
+def _inbound(alice: Entity, bob: Entity, *, text: bytes = b"hej fran andra sidan"):
+    """One message from alice to bob, as a reception."""
+    secret = SharedSecretCache().get(alice.identity, bob.identity.public_key)
+    packet, plaintext = message_packet(
+        sender=alice, recipient_node_hash=bob.node_hash, secret=secret, text=text
+    )
+    return _packet_for(packet), plaintext
+
+
+def _messenger_awaiting_readback(alice: Entity, bob: Entity, **kwargs):
+    """A messenger with no parameters yet and a signal to release them with."""
+    contacts = kwargs.pop("contacts", None) or ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(alice.identity.public_key)
+    paths = PathStore()
+    zero_hop_route_to(paths, alice.identity.public_key)
+    ready = asyncio.Event()
+    dm = messenger(
+        bob, contacts=contacts, paths=paths, radio=None, radio_ready=ready, **kwargs
+    )
+    return dm, ready
+
+
+async def test_a_send_composed_before_the_readback_is_sent_not_dropped() -> None:
+    """3.4: the outbound half. A `--send` racing its own startup."""
+    entity, peer = Entity("us"), Entity("them")
+    paths = PathStore()
+    zero_hop_route_to(paths, peer.identity.public_key)
+    submit = RecordingSubmit()
+    clock = TickingClock()
+    events: list = []
+    ready = asyncio.Event()
+    dm = messenger(
+        entity,
+        paths=paths,
+        submit=submit,
+        clock=clock,
+        events=events,
+        radio=None,
+        radio_ready=ready,
+    )
+
+    task = asyncio.create_task(dm.send(entity, contact_for(peer.identity), "hej"))
+    for _ in range(4):
+        await asyncio.sleep(0)
+    assert submit.submissions == [], "the message was priced before the board answered"
+
+    dm.set_radio(EU868_NARROW)
+    ready.set()
+    for _ in range(4):
+        await asyncio.sleep(0)
+    sent = next(event for event in events if isinstance(event, MessageSent))
+    dm._handle_ack(ack_record(sent.expected_ack, at=clock.now()), Acknowledgement(sent.expected_ack))
+    outcome = await asyncio.wait_for(task, 2)
+
+    assert outcome.result is SendResult.ACKNOWLEDGED, outcome.reason
+
+
+async def test_an_acknowledgement_waits_and_is_then_submitted() -> None:
+    alice, bob = Entity("alice"), Entity("bob")
+    submit = RecordingSubmit()
+    events: list = []
+    dm, ready = _messenger_awaiting_readback(alice, bob, submit=submit, events=events)
+    record, _ = _inbound(alice, bob)
+
+    handling = asyncio.create_task(dm.handle(record))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert submit.submissions == [], "the acknowledgement was priced before the board answered"
+
+    dm.set_radio(EU868_NARROW)
+    ready.set()
+    await asyncio.wait_for(handling, 2)
+
+    assert submit.submissions[0].origin == "ack"
+    received = next(event for event in events if isinstance(event, MessageReceived))
+    assert received.acknowledged is True
+
+
+async def test_a_readback_that_never_comes_still_refuses_inside_the_budget() -> None:
+    """4.2: the refusal §4.1 asks for survives, for the board that answers nothing."""
+    alice, bob = Entity("alice"), Entity("bob")
+    submit = RecordingSubmit()
+    logger = RecordingLogger()
+    events: list = []
+    dm, _ready = _messenger_awaiting_readback(
+        alice, bob, submit=submit, events=events, logger=logger
+    )
+    record, _ = _inbound(alice, bob)
+
+    with patch("sighop.net.readback.RADIO_READBACK_WAIT_SECONDS", 0.02):
+        await asyncio.wait_for(dm.handle(record), 2)
+
+    assert submit.submissions == []
+    refusal = logger.of("ack_not_routed")[0]
+    assert "waiting" in str(refusal["reason"]), "the refusal does not name the expired wait"
+    received = next(event for event in events if isinstance(event, MessageReceived))
+    assert received.acknowledged is False, "a refused acknowledgement was reported as sent"
+
+
+async def test_the_two_refusals_name_their_own_cases() -> None:
+    """4.1: a board that said nothing and a board that was too slow differ."""
+    absent = NoRadioReadback(
+        "no GetRadio readback available; refusing to compute airtime from configured values"
+    )
+    with pytest.raises(RadioReadbackTimeout) as raised:
+        await wait_for_readback(asyncio.Event(), budget=0.01)
+
+    assert str(raised.value) != str(absent)
+    assert "waiting" in str(raised.value) and "waiting" not in str(absent)
+    assert isinstance(raised.value, NoRadioReadback), "existing handlers would stop catching it"
+
+
+async def test_a_wait_that_succeeds_is_not_counted_as_a_refusal() -> None:
+    """4.3: the counters keep counting what they counted."""
+    alice, bob = Entity("alice"), Entity("bob")
+    logger = RecordingLogger()
+    dm, ready = _messenger_awaiting_readback(alice, bob, logger=logger)
+    record, _ = _inbound(alice, bob)
+
+    handling = asyncio.create_task(dm.handle(record))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    dm.set_radio(EU868_NARROW)
+    ready.set()
+    await asyncio.wait_for(handling, 2)
+
+    assert logger.of("ack_not_routed") == []
+    assert dm.received == 1
+
+
+async def test_the_report_follows_the_acknowledgements_settled_outcome() -> None:
+    """5.2, design D5: `acknowledged` keeps meaning "reached the scheduler".
+
+    The report is sequenced behind the acknowledgement, as it always has been,
+    so the field is never emitted before its value is known — and a refused
+    acknowledgement is never reported as a sent one.
+    """
+    alice, bob = Entity("alice"), Entity("bob")
+    events: list = []
+    dm, ready = _messenger_awaiting_readback(alice, bob, events=events)
+    record, _ = _inbound(alice, bob)
+
+    handling = asyncio.create_task(dm.handle(record))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not any(isinstance(event, MessageReceived) for event in events), (
+        "the report was emitted before its acknowledgement settled"
+    )
+
+    dm.set_radio(EU868_NARROW)
+    ready.set()
+    await asyncio.wait_for(handling, 2)
+
+    report = next(event for event in events if isinstance(event, MessageReceived))
+    assert report.acknowledged is True
+
+
+async def test_a_consumer_cannot_affect_an_acknowledgement_that_waited() -> None:
+    """5.3: the ordering rule `direct-messaging` states, under a wait."""
+    alice, bob = Entity("alice"), Entity("bob")
+    submit = RecordingSubmit()
+
+    def raising(event) -> None:
+        if isinstance(event, MessageReceived):
+            raise RuntimeError("a consumer that blows up")
+
+    dm, ready = _messenger_awaiting_readback(alice, bob, submit=submit)
+    dm._on_event = raising
+    record, _ = _inbound(alice, bob)
+
+    handling = asyncio.create_task(dm.handle(record))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    dm.set_radio(EU868_NARROW)
+    ready.set()
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(handling, 2)
+
+    assert submit.submissions[0].origin == "ack", (
+        "the acknowledgement did not survive a consumer that raised"
+    )
+
+
+async def test_the_wait_is_bounded_by_the_budget() -> None:
+    """5.4: a report delayed by a wait is delayed by at most the budget."""
+    alice, bob = Entity("alice"), Entity("bob")
+    events: list = []
+    dm, _ready = _messenger_awaiting_readback(alice, bob, events=events)
+    record, _ = _inbound(alice, bob)
+
+    started = time.monotonic()
+    with patch("sighop.net.readback.RADIO_READBACK_WAIT_SECONDS", 0.05):
+        await asyncio.wait_for(dm.handle(record), 2)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, "the report was held longer than the budget"
+    assert any(isinstance(event, MessageReceived) for event in events)

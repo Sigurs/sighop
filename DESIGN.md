@@ -1941,6 +1941,36 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      parameters. Fixed by gating the one-shot paths on startup completion, with a regression
      test. A `--send` had survived the same bug only by accident, having waited for its peer's
      advert in the meantime.
+
+     **Seen a second time, on the reactive side, and fixed for the class rather than the
+     instance.** Gating the *one-shot* paths on startup left every path that answers a
+     *reception* ungated: `_consume` is started as a sibling of the task that awaits the probe,
+     so frames the modem buffered while the database opened arrive before the parameters do. A
+     stock companion messaged sighop during the `create-entity-with-known-key` exercise and its
+     acknowledgement was dropped with the same refusal. The rule that came out of it, and that
+     the next reactive path inherits: **anything composed in reaction to a reception waits for
+     the readback within a bounded budget before it is refused** —
+     `net/readback.py::wait_for_readback`, watching a signal `Runtime.set_radio` sets and clears
+     so a reconnect is covered too. The refusal survives for a board that answers nothing, and
+     says which case it is. Waiting costs only the waiting subscriber: `bus.py::subscribe` gives
+     each its own task and queue. `_post_ack_window` stays outside the rule on purpose — it
+     estimates *someone else's* window rather than pricing a transmission of ours, so it
+     degrades instead of waiting.
+
+     **Confirmed on the air, 2026-09-18**, V4 KISS modem against the same stock V3 companion
+     (`[redacted]…`) that found the bug, with sighop's adverts suppressed for the exercise and the
+     companion's contact given a zero-hop path so nothing flooded. Both halves of the rule were
+     exercised by varying one number — how long startup was held before it adopted the readback:
+     - **Held 4 s, message at T+2 s.** Received at `16:48:24.450` with `radio` still `None`; the
+       acknowledgement waited ~2.2 s, was submitted the moment the readback landed and reached
+       the air at `16:48:27.436` (`origin=ack`, `queue_wait_ms=749.8`, `airtime_ms=246.8`). The
+       companion reported the message **delivered**, `trip_time=3518 ms`. Under the old code this
+       is the frame that produced `ack_not_routed` and nothing else.
+     - **Held 8 s — deliberately past the 3 s budget.** The refusal arrived instead, naming its
+       own case: `no GetRadio readback after waiting 3s for the board`. The message was still
+       reported, honestly, as `acknowledged=False`, and the run kept receiving.
+
+     `adverts_sent=0` in every run.
    - **Contacts being in-memory has an operational consequence worth stating.** The run that
      sends must hear the peer's advert *in that same run*; a restart forgets every contact.
      That is what `--peer-wait` exists for, and it is milestone 5's `contact` table that
