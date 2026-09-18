@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(openspec status *)",
+      "Bash(openspec --help)",
+      "Bash(openspec list *)",
+      "Bash(openspec new *)",
+      "Bash(openspec instructions *)",
+      "Bash(openspec archive *)",
+      "Bash(git stash *)",
+      "Bash(uv run *)",
+      "Bash(pkill -9 -f \"sighop run\")",
+      "Skill(opsx:archive)",
+      "Skill(opsx:archive:*)",
+      "Read(//dev/modem-0)",
+      "Read(//dev/modem-1)",
+      "mcp__context-engine__context_search",
+      "mcp__context-engine__expand_chunk",
+      "mcp__context-engine__related_context",
+      "mcp__context-engine__session_recall",
+      "mcp__context-engine__session_timeline",
+      "mcp__context-engine__record_decision",
+      "mcp__context-engine__record_code_area"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cce status --oneline"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1666,6 +1666,17 @@ sighop/
 ├── Dockerfile          two stages, digest-pinned python:3.13-alpine, no USER
 ├── .dockerignore       an allowlist
 ├── .trivyignore        suppressions, each with its reason (none today)
+├── .devcontainer/      the development container — nothing here ships:
+│                       devcontainer.json, its glibc Dockerfile (uv pinned to the
+│                       release image's digest, node, openspec, claude, the
+│                       context engine), the host script that resolves this
+│                       machine's radios, post-create, the forward that puts the
+│                       host's Ollama on the container's localhost, and the two
+│                       gitignored agent config files it shadows
+├── .claude/hooks/      cce.sh — the context engine's hook, resolved under $HOME
+│                       instead of one machine's absolute paths, so the tracked
+│                       .claude/settings.json works on the host, in the dev
+│                       container, and on a machine with no engine at all
 └── pyproject.toml
 ```
 

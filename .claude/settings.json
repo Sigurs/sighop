@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CCE_PORT_FILE=/home/sigurs/.cce/projects/sighop-3b2286/serve.port /home/sigurs/.cce/hooks/cce_hook.sh SessionStart"
+            "command": ".claude/hooks/cce.sh SessionStart"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CCE_PORT_FILE=/home/sigurs/.cce/projects/sighop-3b2286/serve.port /home/sigurs/.cce/hooks/cce_hook.sh UserPromptSubmit"
+            "command": ".claude/hooks/cce.sh UserPromptSubmit"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CCE_PORT_FILE=/home/sigurs/.cce/projects/sighop-3b2286/serve.port /home/sigurs/.cce/hooks/cce_hook.sh PostToolUse"
+            "command": ".claude/hooks/cce.sh PostToolUse"
           }
         ]
       }
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CCE_PORT_FILE=/home/sigurs/.cce/projects/sighop-3b2286/serve.port /home/sigurs/.cce/hooks/cce_hook.sh Stop"
+            "command": ".claude/hooks/cce.sh Stop"
           }
         ]
       }
@@ -50,7 +50,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CCE_PORT_FILE=/home/sigurs/.cce/projects/sighop-3b2286/serve.port /home/sigurs/.cce/hooks/cce_hook.sh SessionEnd"
+            "command": ".claude/hooks/cce.sh SessionEnd"
           }
         ]
       }

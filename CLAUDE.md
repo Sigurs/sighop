@@ -93,3 +93,30 @@ change separately. Never echo back unchanged code the user already has.
 Code blocks, file paths, commands, error messages: always written in full.
 Security warnings and destructive action confirmations: use full clarity.
 <!-- /cce-block -->
+
+## In the dev container
+
+Everything above applies unchanged. The dev container (`.devcontainer/`) carries
+the engine and bind-mounts the host's index and memory, so `context_search`,
+`session_recall` and `record_decision` all read and write the same store a host
+session does — there is one index, not two, and a decision recorded in either
+place is recalled in both.
+
+Three things behave differently in there, and none of them relaxes the rule
+above:
+
+- **Indexing stays on the host.** Its git hooks run `cce index`; the container
+  has none. A commit made inside leaves the index slightly stale until the
+  host's next commit or checkout, or an explicit `cce index` from either side.
+- **Do not run a session on the host and one in the container at once.** Both
+  start `cce serve` and both write `serve.port` into the shared project
+  directory, so one side's memory capture silently stops. Searching is
+  unaffected.
+- **Embedding and summarisation go to the host's Ollama**, forwarded onto the
+  container's own `localhost:11434`. If searches start failing with "Start an
+  Ollama server", that forward is down — `.devcontainer/ollama-forward.sh`.
+
+This section sits outside the block above because `cce init` rewrites what is
+inside it. `cce init` also rewrites `.claude/settings.json`, replacing the
+`.claude/hooks/cce.sh` wrapper the container depends on with absolute host
+paths; point the five hook commands back at the wrapper afterwards.

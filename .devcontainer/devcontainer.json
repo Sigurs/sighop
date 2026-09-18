@@ -1,0 +1,138 @@
+// The sighop development container (change devcontainer-dev-environment).
+// See .devcontainer/README.md for the host variables this reads and for what
+// deliberately does not work in here.
+{
+  "name": "sighop",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+
+  // The workspace sits at the SAME absolute path inside as on the host, rather
+  // than at the usual /workspaces/<name>. The context engine keys its index by
+  // `<basename>-<sha256(absolute path)[:6]>`, so a different path inside would
+  // silently open a different, empty index instead of the host's.
+  "workspaceMount": "type=bind,source=${localWorkspaceFolder},target=${localWorkspaceFolder}",
+  "workspaceFolder": "${localWorkspaceFolder}",
+
+  // The GitHub CLI is a Feature because it needs no build-time step of ours;
+  // Node is in the Dockerfile instead, because Features are applied after it
+  // and `npm` has to exist while the image is built (see the Dockerfile).
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "runArgs": [
+    // The radios are bind-mounted below rather than passed with `--device`,
+    // because a by-id name can contain colons (this host's ESP32-S3 carries a
+    // MAC address in its name) and `--device` separates its fields with them —
+    // the same trap compose.yaml documents. A bind mount hands over the device
+    // node; these two rules are what make the kernel let it be opened. 166 is
+    // ttyACM (a board with native USB), 188 is ttyUSB (a USB-serial bridge).
+    "--device-cgroup-rule=c 166:* rmw",
+    "--device-cgroup-rule=c 188:* rmw",
+    // Numeric, never a name: a group name would resolve against this image's
+    // /etc/group, not the host's. 984 is `uucp` on the host this was written
+    // on; `stat -c %g /dev/serial/by-id/...` prints yours.
+    "--group-add=${localEnv:SIGHOP_DEVCONTAINER_TTY_GID:984}",
+    // How the context engine reaches the host's Ollama, which does its
+    // embedding and its summarisation. Ollama has to listen past loopback for
+    // this; `ss -ltn | grep 11434` on the host says whether it does.
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+
+  "mounts": [
+    // --- The radios -------------------------------------------------------
+    // Fixed names inside, whatever the host calls them: commands in here always
+    // say /dev/modem-0 or /dev/modem-1.
+    //
+    // What is mounted are the two symlinks `initializeCommand` leaves in the
+    // host's cache directory, not the by-id names themselves: a by-id name can
+    // contain colons, and `${localEnv:NAME:default}` is split at the first
+    // colon of the default, which truncates the path to one that does not
+    // exist. host-devices.sh holds the names, and the host's own
+    // SIGHOP_DEVCONTAINER_MODEM_0 / _1 override them.
+    "type=bind,source=${localEnv:HOME}/.cache/sighop-devcontainer/modem-0,target=/dev/modem-0",
+    "type=bind,source=${localEnv:HOME}/.cache/sighop-devcontainer/modem-1,target=/dev/modem-1",
+
+    // --- State that outlives a rebuild ------------------------------------
+    // The resolver's download cache and the interpreters it fetches, so a
+    // rebuild re-links an environment instead of re-downloading one.
+    "type=volume,source=sighop-devcontainer-uv-cache,target=/home/vscode/.cache/uv",
+    "type=volume,source=sighop-devcontainer-uv-python,target=/home/vscode/.local/share/uv/python",
+    // The two logins. Neither ever lands in the checkout.
+    "type=volume,source=sighop-devcontainer-claude,target=/home/vscode/.claude",
+    "type=volume,source=sighop-devcontainer-gh,target=/home/vscode/.config/gh",
+
+    // --- The host's context engine ----------------------------------------
+    // The index, the cross-session memory database, the hooks and the global
+    // config, shared with the host rather than duplicated: one store, written
+    // by whichever side is running. Indexing stays on the host (its git hooks
+    // do it); in here this is what `context_search`, `session_recall` and
+    // `record_decision` read and write.
+    "type=bind,source=${localEnv:HOME}/.cce,target=/home/vscode/.cce",
+
+    // --- The two files that name host paths -------------------------------
+    // Both are gitignored, which is why they may be shadowed: a bind mount
+    // over a *tracked* file would leave the working tree permanently modified
+    // inside the container. The copies in .devcontainer/claude/ say the same
+    // thing without an absolute host path in them.
+    "type=bind,source=${localWorkspaceFolder}/.devcontainer/claude/mcp.json,target=${containerWorkspaceFolder}/.mcp.json",
+    "type=bind,source=${localWorkspaceFolder}/.devcontainer/claude/settings.local.json,target=${containerWorkspaceFolder}/.claude/settings.local.json"
+  ],
+
+  "containerEnv": {
+    // Keeps the Claude Code configuration on the volume above instead of in
+    // the home directory a rebuild discards.
+    "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
+    "OPENSPEC_TELEMETRY": "0"
+    // Note: no CCE_OLLAMA_URL. postStartCommand forwards the host's Ollama onto
+    // this container's own localhost:11434 instead, because the engine's search
+    // path reads `config.ollama_url` directly and never sees that variable.
+  },
+
+  // The web panel's default port, and nothing else. The context engine and its
+  // model server run on the host, so there is nothing of theirs to forward.
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "sighop web panel",
+      "onAutoForward": "notify"
+    }
+  },
+
+  // Runs on the host, before the container is created: resolves this host's
+  // radios to the two colon-free names the mounts above use.
+  "initializeCommand": "./.devcontainer/host-devices.sh",
+
+  "postCreateCommand": "./.devcontainer/post-create.sh",
+
+  // Every start, not just the first: the forwarder is a process, not a file.
+  "postStartCommand": "./.devcontainer/ollama-forward.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "charliermarsh.ruff",
+        "ms-python.python",
+        "ms-python.mypy-type-checker"
+      ],
+      "settings": {
+        // The environment lives outside the workspace on purpose (design D3),
+        // so the interpreter has to be named by absolute path.
+        "python.defaultInterpreterPath": "/home/vscode/.venv/bin/python",
+        "python.testing.pytestEnabled": true,
+        "ruff.importStrategy": "fromEnvironment",
+        "mypy-type-checker.importStrategy": "fromEnvironment",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        }
+      }
+    }
+  },
+
+  // Remapped to the host user's uid by default, so files written in here are
+  // owned by whoever owns the checkout outside.
+  "remoteUser": "vscode"
+}
