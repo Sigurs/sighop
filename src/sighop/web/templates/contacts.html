@@ -20,6 +20,7 @@
       <th>route</th>
       <th class="num">snr</th>
       <th>confirmed</th>
+      {% if identities %}<th>message</th>{% endif %}
     </tr>
   </thead>
   <tbody>
@@ -49,10 +50,25 @@
       <td class="mono">
         {{ row.route.confirmed_at.isoformat() if row.route else '—' }}
       </td>
+      {% if identities %}
+      <td>
+        {%- for entity in identities -%}
+        {%- if not loop.first %} · {% endif -%}
+        <a href="/chat/{{ entity.identity.public_key.hex() }}/{{ row.identity.key_hex }}">as {{ entity.name }}</a>
+        {%- endfor -%}
+      </td>
+      {% endif %}
     </tr>
     {% endfor %}
   </tbody>
 </table>
+{% if not identities %}
+<p class="empty">
+  <strong>No identity to send as.</strong> A conversation is between one local
+  identity and one contact, and this run holds no identities, so no conversation
+  can be started from here.
+</p>
+{% endif %}
 {% else %}
 <p class="empty">
   <strong>No contacts heard.</strong> Contacts are learned from verified adverts;

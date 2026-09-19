@@ -36,7 +36,7 @@
     <input type="hidden" name="nonce" value="{{ nonce }}">
     <button type="submit">confirm: delete {{ bot.entity_name }} and everything it has stored</button>
   </form>
-  <p><a href="/admin/bots">cancel, and delete nothing</a></p>
+  <p><a href="/admin/identities/{{ bot.entity_id }}">cancel, and delete nothing</a></p>
 </div>
 {% endif %}
 {% endblock %}

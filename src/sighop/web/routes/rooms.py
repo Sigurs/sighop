@@ -30,13 +30,17 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.db.engine import Failed, Succeeded
-from sighop.db.repositories import MemberRecord, PostRecord, RoomRecord
+from sighop.db.repositories import EntityRecord, MemberRecord, PostRecord, RoomRecord
 from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
+from sighop.protocol.payloads import NodeType
 from sighop.web.deps import Panel, panel
 from sighop.web.guarded import POST_TO_ROOM, audit
 from sighop.web.render import (
     DEGRADED,
     NO_DATABASE,
+    Collection,
+    Refusal,
+    advert_id,
     identity_for_key,
     read,
     refused,
@@ -55,28 +59,96 @@ SEE_OTHER = 303
 
 
 @router.get("", response_class=HTMLResponse)
-async def index(request: Request, page: PanelDep) -> HTMLResponse:
+async def index(request: Request, page: PanelDep, deleted: str = "") -> HTMLResponse:
     """Every room the database holds, served by this run or not.
 
     A room this run is not serving is still browsable: its history is in the
     database and reading it needs no identity. What it cannot do is answer a
     login, and the reason is stated rather than left as an absence.
     """
+    return await render_index(request, page, deleted=deleted)
+
+
+async def render_index(
+    request: Request,
+    page: Panel,
+    *,
+    deleted: str = "",
+    refusal: Refusal | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """The rooms page, for a GET and for a refused room write alike (design D2).
+
+    One builder, so a refused create is shown on the page it was made from and
+    with the same columns — not on a second list that has drifted from this one.
+    """
+    context: dict[str, object] = {
+        "reasons": {},
+        "served": set(),
+        "counts": {},
+        "advert_ids": {},
+        "hosts": [],
+        "database": page.persistence is not None,
+        "deleted": deleted,
+        "refusal": refusal,
+    }
     if page.persistence is None:
-        return page.page(request, "rooms/index.html", rooms=unreadable(NO_DATABASE), reasons={})
-    listed = await page.persistence.rooms.list_all()
-    if isinstance(listed, Failed):
-        return page.page(request, "rooms/index.html", rooms=unreadable(DEGRADED), reasons={})
+        rooms: Collection[RoomRecord] = unreadable(NO_DATABASE)
+    else:
+        listed = await page.persistence.rooms.list_all()
+        if isinstance(listed, Failed):
+            rooms = unreadable(DEGRADED)
+        else:
+            rooms = read(listed.value)
+            context.update(await rooms_context(page, listed.value))
+    return page.page(request, "rooms/index.html", rooms=rooms, **context, status_code=status_code)
+
+
+async def rooms_context(page: Panel, listed: list[RoomRecord]) -> dict[str, object]:
+    """Served state, counts, advert links and bindable hosts for the rooms page."""
     served = {str(server.room.id) for server in page.state.rooms}
     loaded = {stub.identity.public_key for stub in page.state.adverts.stubs}
-    reasons = {str(room.id): _unserved_reason(room, served, loaded, page) for room in listed.value}
-    return page.page(
-        request,
-        "rooms/index.html",
-        rooms=read(listed.value),
-        reasons=reasons,
-        served=served,
+    stubs = page.state.adverts.stubs
+    return {
+        "reasons": {str(room.id): _unserved_reason(room, served, loaded, page) for room in listed},
+        "served": served,
+        "counts": {str(room.id): await room_counts(page, room) for room in listed},
+        "advert_ids": {
+            str(server.room.id): entity_id
+            for server in page.state.rooms
+            if (entity_id := advert_id(stubs, server.entity.identity.public_key)) is not None
+        },
+        "hosts": await _room_server_identities(page, listed),
+    }
+
+
+async def room_counts(page: Panel, room: RoomRecord) -> tuple[int, int]:
+    """Members and stored messages, or -1 for a count that could not be read."""
+    assert page.persistence is not None
+    members = await page.persistence.members.load_for_room(room.id)
+    messages = await page.persistence.messages.count(room.id)
+    return (
+        len(members.value) if isinstance(members, Succeeded) else -1,
+        messages.value if isinstance(messages, Succeeded) else -1,
     )
+
+
+async def _room_server_identities(page: Panel, bound: list[RoomRecord]) -> list[EntityRecord]:
+    """The stored identities a room could be bound to.
+
+    Only the ones that advert as room servers, because that is what a room runs
+    on; offering the rest would be offering a choice the repository refuses.
+    """
+    assert page.persistence is not None
+    listed = await page.persistence.entities.list_all()
+    if isinstance(listed, Failed):
+        return []
+    taken = {room.entity_id for room in bound}
+    return [
+        record
+        for record in listed.value
+        if record.node_type is NodeType.ROOM_SERVER and record.id not in taken
+    ]
 
 
 def _unserved_reason(room: RoomRecord, served: set[str], loaded: set[bytes], page: Panel) -> str:

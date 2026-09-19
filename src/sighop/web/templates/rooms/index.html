@@ -4,16 +4,31 @@
 {% block title %}rooms · sighop{% endblock %}
 
 {% block content %}
-<h1>room history</h1>
+<h1>rooms</h1>
+
+{% if refusal %}
+<p class="unavailable">
+  <strong>Refused.</strong> {{ refusal.reason }} Nothing was stored.
+</p>
+{% endif %}
+{% if deleted %}
+<p class="note">
+  <strong>Room {{ deleted }} deleted</strong> with its members and stored
+  messages. The identity it was bound to is unbound, not removed.
+</p>
+{% endif %}
 
 {{ collection.state(rooms, "rooms") }}
 {% if rooms.readable and rooms.items %}
 <table>
   <thead>
-    <tr><th>room</th><th>served by this run</th><th>history</th><th>members</th></tr>
+    <tr><th>room</th><th>served by this run</th><th class="num">members</th>
+        <th class="num">messages</th><th>guest access</th><th>read-only fallback</th>
+        <th>retention</th><th>read</th><th>configure</th></tr>
   </thead>
   <tbody>
     {% for room in rooms %}
+    {% set counted = counts.get(room.id|string, (0, 0)) %}
     <tr>
       <td>{{ room.name }}</td>
       <td class="mono">
@@ -23,8 +38,34 @@
           <span class="absent">unserved</span> — {{ reasons.get(room.id|string, '') }}
         {%- endif -%}
       </td>
-      <td><a href="/rooms/{{ room.id }}">browse</a></td>
-      <td><a href="/rooms/{{ room.id }}/members">members</a></td>
+      <td class="num">{{ counted[0] }}</td>
+      <td class="num">{{ counted[1] }}</td>
+      <td class="mono">{{ room.guest_access }}</td>
+      <td class="mono">{{ 'yes' if room.allow_read_only else 'no' }}</td>
+      <td class="mono">{{ room.retention }}</td>
+      <td>
+        <a href="/rooms/{{ room.id }}">history</a>
+        ·
+        <a href="/rooms/{{ room.id }}/members">members</a>
+        ·
+        <a href="/rooms/{{ room.id }}/post">post…</a>
+      </td>
+      <td>
+        <a href="/admin/rooms/{{ room.id }}/password">access…</a>
+        ·
+        <a href="/admin/rooms/{{ room.id }}/retention">retention…</a>
+        ·
+        <a href="/admin/rooms/{{ room.id }}/rename">rename…</a>
+        ·
+        <a href="/admin/rooms/{{ room.id }}/delete">delete…</a>
+        {% set room_advert_id = advert_ids.get(room.id|string) %}
+        {% if room_advert_id %}
+        ·
+        <a href="/admin/advert/{{ room_advert_id }}/zero-hop">advert zero-hop…</a>
+        ·
+        <a href="/admin/advert/{{ room_advert_id }}/flood">advert flood…</a>
+        {% endif %}
+      </td>
     </tr>
     {% endfor %}
   </tbody>
@@ -34,5 +75,68 @@
   database and reading it needs no identity. What an unserved room cannot do is
   answer a login or push history to anyone.
 </p>
+{% endif %}
+
+{% if database %}
+<h2>create a room</h2>
+{% if not hosts %}
+<p class="empty">
+  <strong>No identity is available to bind a room to.</strong> A room runs on an
+  identity that adverts as a room server and does not already carry one — one
+  identity is one node to the mesh, and a node is one room. Create one on the
+  <a href="/admin/identities">identities</a> page with node type
+  <span class="mono">ROOM_SERVER</span>.
+</p>
+{% else %}
+<form method="post" action="/admin/rooms/create">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>room name
+      <input type="text" name="name" required
+             value="{{ refusal.value('name') if refusal else '' }}">
+    </label>
+  </p>
+  <p>
+    <label>runs on
+      <select name="entity_id" required>
+        {% set chosen = refusal.value('entity_id') if refusal else '' %}
+        {% for host in hosts %}
+        <option value="{{ host.id }}" {{ 'selected' if host.id|string == chosen }}>
+          {{ host.name }} ({{ host.public_key.hex()[:16] }})
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>
+    <label>administrator password
+      <input type="password" name="admin_password" autocomplete="new-password" required>
+    </label>
+  </p>
+  <p>
+    <label>guest password (optional)
+      <input type="password" name="guest_password" autocomplete="new-password">
+    </label>
+  </p>
+  <p>
+    <label>
+      <input type="checkbox" name="guest_open" value="true">
+      any password admits a guest, including an empty one
+    </label>
+  </p>
+  <p>
+    <label>
+      <input type="checkbox" name="allow_read_only" value="true">
+      a login that matches nothing falls back to read-only
+    </label>
+  </p>
+  <button type="submit">create room</button>
+</form>
+<p class="note">
+  The passwords are stored as Argon2id hashes and cannot be recovered. This is
+  the call <span class="mono">sighop room create</span> makes, so every rule it
+  applies applies here.
+</p>
+{% endif %}
 {% endif %}
 {% endblock %}

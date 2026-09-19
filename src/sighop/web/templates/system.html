@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+
+{% block title %}system · sighop{% endblock %}
+
+{% block content %}
+<h1>system</h1>
+
+<h2>radio</h2>
+{% if readings %}
+<table class="counters">
+  <tbody>
+    {% for reading in readings %}
+    <tr>
+      <td>{{ reading.label }}</td>
+      <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="note">
+  Every value here is the board's own answer to the startup probe. A value the
+  board did not answer is shown as <strong>absent</strong> with the reason —
+  never as zero and never as a default, because "no battery sensor" and "a flat
+  battery" are different facts about the hardware.
+</p>
+{% if probe and probe.radio_matches_configured is false %}
+<p class="unavailable">
+  <strong>The board's readback does not match what was configured.</strong> The
+  duty-cycle budget is enforced against the readback, which is what the radio is
+  actually doing.
+</p>
+{% endif %}
+{% else %}
+<p class="empty">
+  <strong>No probe result.</strong> This run took no startup probe, so there is
+  no readback to show — a replay has no board to ask, and the parameters it uses
+  come from the capture's own header.
+</p>
+{% endif %}
+
+<p class="unavailable">
+  <strong>The board does not persist a radio change.</strong> Anything set here
+  lasts until the board resets, and a reset reverts it to the board's own build
+  defaults — not to what sighop last applied. The duty-cycle budget is enforced
+  against the readback, which is what the radio is actually doing.
+</p>
+<p class="note">
+  Changing a parameter is <span class="mono">sighop run --radio-preset</span> at
+  startup; this build applies the preset once, at the probe, and shows what the
+  board answered.
+</p>
+
+<h2>station controls</h2>
+<table class="counters">
+  <tbody>
+    <tr>
+      <td>transmission</td>
+      <td class="mono">{{ 'enabled' if transmit_enabled else 'disabled' }}</td>
+      <td><a href="/admin/transmit">enable transmission…</a></td>
+    </tr>
+    <tr>
+      <td>airtime ceiling</td>
+      <td class="mono">{{ '%g'|format(ceiling_fraction * 100) }}%</td>
+      <td><a href="/admin/ceiling">raise the airtime ceiling…</a></td>
+    </tr>
+  </tbody>
+</table>
+<p class="note">
+  Each link opens a confirmation that states what the change does and asks for
+  your password; following it changes nothing. The regulatory default ceiling is
+  {{ '%g'|format(regulatory_default * 100) }}%.
+</p>
+
+<h2>schema</h2>
+{% if unavailable %}
+<p class="unavailable">
+  <strong>The applied revision cannot be read.</strong> {{ unavailable }}
+</p>
+<p class="note">
+  This build expects revision <span class="mono">{{ expected }}</span>. Whether
+  the database agrees is not known while it cannot be read, which is a different
+  state from knowing that it disagrees.
+</p>
+{% else %}
+<table class="counters">
+  <tbody>
+    <tr><td>applied</td><td class="mono">{{ applied or '(none)' }}</td></tr>
+    <tr><td>expected</td><td class="mono">{{ expected }}</td></tr>
+    <tr><td>agree</td><td class="mono">{{ 'yes' if agree else 'NO' }}</td></tr>
+  </tbody>
+</table>
+
+{% if agree %}
+<p class="note">
+  The database is at the revision this code expects. Everything durable on every
+  page is read against a schema this build knows.
+</p>
+{% else %}
+<p class="unavailable">
+  <strong>The revisions disagree.</strong> The database reports
+  <span class="mono">{{ applied or '(none)' }}</span> and this build expects
+  <span class="mono">{{ expected }}</span>. Reconcile them with
+  <span class="mono">{{ upgrade_command }}</span>.
+</p>
+{% endif %}
+{% endif %}
+
+<h2>applying a migration</h2>
+<p class="note">{{ migrations_note }}</p>
+<p class="note">
+  The command is <span class="mono">{{ upgrade_command }}</span>.
+</p>
+
+<h2>accounts</h2>
+<p class="note">{{ accounts_note }}</p>
+<p class="note">
+  The command is <span class="mono">{{ account_command }}</span>.
+</p>
+
+<h2>the sealing secret</h2>
+<p class="note">
+  It is not generated here either, and for a smaller reason: it is printed once
+  and must never be regenerated. See the
+  <a href="/admin/identities">identities</a> page.
+</p>
+{% endblock %}

@@ -52,14 +52,13 @@ from sighop.logging import Logger, get_logger
 from sighop.web.auth import Authenticator
 from sighop.web.chat import ChannelLog, ConversationLog
 from sighop.web.deps import Panel
-from sighop.web.feed import Connection, EntityTraffic, FeedHub
+from sighop.web.feed import Connection, FeedHub
 from sighop.web.guard import UNAUTHENTICATED, RequestGuard, current_session
 from sighop.web.render import (
     contact_rows,
-    modem_readings,
     queue_rows,
 )
-from sighop.web.routes import admin, chat, keys, rooms, session, setup
+from sighop.web.routes import admin, chat, keys, rooms, session, setup, system
 from sighop.web.serialize import logged_packet
 from sighop.web.state import PanelState
 
@@ -178,6 +177,7 @@ def create_app(
     app.include_router(keys.router)
     app.include_router(rooms.router)
     app.include_router(chat.router)
+    app.include_router(system.router)
 
     def page(request: Request, name: str, **extra: object) -> HTMLResponse:
         return app.state.panel.page(request, name, **extra)  # type: ignore[no-any-return]
@@ -194,7 +194,6 @@ def create_app(
             delivered=state.pipeline.delivered,
             paths=state.pipeline.paths.destination_count,
             contacts=len(state.contacts),
-            entities=entity_rows(state, feed),
         )
 
     @app.get("/contacts", response_class=HTMLResponse)
@@ -204,16 +203,7 @@ def create_app(
             request,
             "contacts.html",
             rows=contact_rows(state.contacts, state.pipeline.paths),
-        )
-
-    @app.get("/modem", response_class=HTMLResponse)
-    async def modem(request: Request) -> HTMLResponse:
-        """The board's own readback, absences included (§4.1)."""
-        return page(
-            request,
-            "modem.html",
-            readings=modem_readings(state.probe_result, state.radio),
-            probe=state.probe_result,
+            identities=list(state.adverts.stubs),
         )
 
     @app.websocket("/feed")
@@ -348,32 +338,6 @@ async def _error_page(request: Request, exc: Exception) -> HTMLResponse:
         context={},
         status_code=500,
     )
-
-
-def entity_rows(state: PanelState, feed: FeedHub | None) -> list[dict[str, object]]:
-    """Per-entity TX/RX counters (§8), from the traffic the hub has seen.
-
-    With no hub attached the counts are zero and the identities are still
-    listed: "this run holds three identities and none has transmitted" is a
-    different screen from "this run holds no identities".
-    """
-    traffic = feed.traffic if feed is not None else EntityTraffic()
-    rows: list[dict[str, object]] = []
-    for stub in state.adverts.stubs:
-        counts = traffic.for_entity(stub.entity_id, stub.node_hash)
-        rows.append(
-            {
-                "name": stub.name,
-                "entity_id": stub.entity_id,
-                "public_key": stub.identity.public_key.hex(),
-                "node_hash": stub.node_hash,
-                "node_type": stub.node_type.name,
-                "persistent": stub.persistent,
-                "adverts_sent": stub.adverts_sent,
-                **counts,
-            }
-        )
-    return rows
 
 
 # --- The service ------------------------------------------------------------

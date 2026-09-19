@@ -18,6 +18,7 @@ and are not:
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -111,8 +112,9 @@ def test_the_queue_rows_name_the_priority_classes() -> None:
     assert all(row.depth == 0 for row in rows)
 
 
-def test_the_overview_shows_the_persistence_state_and_its_losses() -> None:
-    """11.1: discarded writes are on the page, not only in the status line."""
+def test_the_meter_strip_shows_the_persistence_state_and_its_losses() -> None:
+    """11.1: discarded writes are on the page, not only in the status line — in
+    the strip on every page, which the overview no longer repeats."""
 
     class _Degraded:
         state = "degraded"
@@ -126,8 +128,10 @@ def test_the_overview_shows_the_persistence_state_and_its_losses() -> None:
     with _client(_app(state)) as client:
         body = client.get("/").text
 
-    assert "persistence degraded" in body
-    assert "12 write(s) discarded, 4 refused" in body
+    meter = body[body.index('<section class="meter"') : body.index("</section>")]
+    assert "persistence degraded" in meter
+    assert "12 write(s) discarded, 4 refused" in meter
+    assert "<h2>persistence</h2>" not in body
 
 
 # --- 11.2 Modem health ------------------------------------------------------
@@ -152,7 +156,7 @@ def test_a_value_the_board_did_not_answer_is_shown_as_absent() -> None:
     state = stub_state(probe_result=_probe(battery=absent), radio=EU868_NARROW)
 
     with _client(_app(state)) as client:
-        body = client.get("/modem").text
+        body = client.get("/system").text
 
     assert "battery" in body
     assert "absent (unsupported)" in body
@@ -175,7 +179,7 @@ def test_a_run_with_no_probe_says_so_rather_than_showing_nothing() -> None:
     state = stub_state()
 
     with _client(_app(state)) as client:
-        body = client.get("/modem").text
+        body = client.get("/system").text
 
     assert "No probe result" in body
     assert "no board to ask" in body
@@ -187,12 +191,38 @@ def test_a_readback_that_disagrees_with_the_configuration_is_shown() -> None:
     state = stub_state(probe_result=_probe(battery=4000, radio=other), radio=other)
 
     with _client(_app(state)) as client:
-        body = client.get("/modem").text
+        body = client.get("/system").text
 
     assert "does not match what was configured" in body
 
 
 # --- 11.3 The contact table -------------------------------------------------
+
+
+def test_a_contact_links_to_a_conversation_as_each_loaded_identity() -> None:
+    """consolidate-web-pages 6.1: conversations start from the contact list."""
+    state = stub_state(stub_names=("first", "second"))
+    contact = _contact("peer")
+    state.contacts.restore([contact])
+
+    with _client(_app(state)) as client:
+        body = client.get("/contacts").text
+
+    peer = contact.public_key.hex()
+    for stub in state.adverts.stubs:
+        link = f'<a href="/chat/{stub.identity.public_key.hex()}/{peer}">as {stub.name}</a>'
+        assert link in body
+
+
+def test_with_no_identity_the_contact_list_offers_no_conversation() -> None:
+    state = stub_state()
+    state.contacts.restore([_contact("peer")])
+
+    with _client(_app(state)) as client:
+        body = client.get("/contacts").text
+
+    assert 'href="/chat/' not in body
+    assert "No identity to send as" in body
 
 
 def test_a_zero_hop_route_is_a_route_and_not_the_absence_of_one() -> None:
@@ -303,12 +333,16 @@ def test_the_page_shows_an_entitys_counts_against_a_stub_state() -> None:
     hub.on_reception(_reception(), False)
 
     with _client(_app(state, feed=hub)) as client:
-        body = client.get("/").text
+        body = client.get("/admin/identities").text
+        overview = client.get("/").text
 
-    assert "panel-identity" in body
-    assert stub.identity.public_key.hex()[:16] in body
+    row = body[body.index(stub.identity.public_key.hex()) :]
+    row = row[: row.index("</tr>")]
+    adverts, transmitted, suppressed, _addressed = re.findall(r'<td class="num">(\d+)</td>', row)
+    assert (adverts, transmitted, suppressed) == ("0", "1", "0")
     assert "node hash" in body
     assert "1 in 256" in body, "the RX count is presented as more certain than it is"
+    assert "<h2>identities</h2>" not in overview, "the overview still repeats the counters"
 
 
 def test_a_run_with_no_identities_says_so_rather_than_showing_an_empty_table() -> None:
@@ -316,6 +350,56 @@ def test_a_run_with_no_identities_says_so_rather_than_showing_an_empty_table() -
     state = stub_state()
 
     with _client(_app(state)) as client:
-        body = client.get("/").text
+        body = client.get("/admin/identities").text
 
     assert "No identities loaded" in body
+
+
+# --- consolidate-web-pages: one page per concern ----------------------------
+
+NAVIGATION = (
+    "/",
+    "/contacts",
+    "/chat",
+    "/rooms",
+    "/admin/identities",
+    "/admin/webhooks",
+    "/system",
+)
+
+FORMER_PAGES = (
+    "/modem",
+    "/admin/radio",
+    "/admin/schema",
+    "/admin/rooms",
+    "/admin/bots",
+    "/admin/channels",
+)
+
+
+def test_the_navigation_names_exactly_the_seven_pages() -> None:
+    with _client(_app(stub_state())) as client:
+        body = client.get("/").text
+
+    nav = body[body.index('<nav class="nav">') : body.index("</nav>")]
+    assert tuple(re.findall(r'href="([^"]*)"', nav)) == NAVIGATION
+
+
+def test_a_former_page_is_not_found_and_nothing_links_to_it() -> None:
+    from pathlib import Path
+
+    import sighop.web
+
+    with _client(_app(stub_state())) as client:
+        for path in FORMER_PAGES:
+            assert client.get(path).status_code == 404, path
+
+    templates = Path(sighop.web.__file__).parent / "templates"
+    for template in templates.rglob("*.html"):
+        text = template.read_text()
+        for path in FORMER_PAGES:
+            # The exact page, with or without a query; `/admin/rooms/{id}/…`
+            # confirmation views are still served and still linked.
+            assert not re.search(rf'href="{re.escape(path)}(\?[^"]*)?"', text), (
+                f"{template.name} links to {path}"
+            )

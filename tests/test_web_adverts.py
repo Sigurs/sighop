@@ -519,7 +519,7 @@ async def test_a_served_room_links_to_its_identitys_adverts(database: Database) 
     app, _built_state, _log, _said, _sink = _built(state)
 
     async with _live(app) as client:
-        body = (await client.get("/admin/rooms")).text
+        body = (await client.get("/rooms")).text
 
     assert f'href="/admin/advert/{stub.entity_id}/zero-hop"' in body
     assert f'href="/admin/advert/{stub.entity_id}/flood"' in body
@@ -547,11 +547,13 @@ async def test_a_running_bot_links_to_its_identitys_adverts(database: Database) 
     app, _built_state, _log, _said, _sink = _built(state)
 
     async with _live(app) as client:
-        body = (await client.get("/admin/bots")).text
+        body = (await client.get(f"/admin/identities/{running_entity.id}")).text
+        idle = (await client.get(f"/admin/identities/{stopped_entity.id}")).text
 
     assert f'href="/admin/advert/{stub.entity_id}/zero-hop"' in body
     assert f'href="/admin/advert/{stub.entity_id}/flood"' in body
-    assert body.count("/admin/advert/") == 2, "the stopped bot offers advert links"
+    assert body.count("/admin/advert/") == 2
+    assert "/admin/advert/" not in idle, "the stopped bot offers advert links"
 
 
 # --- Renaming an identity, and the advert it offers --------------------------

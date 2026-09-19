@@ -54,7 +54,7 @@
 {% if other_keys %}
 <p class="note">
   This bot has stored {{ other_keys }} other key(s) that are not greeting
-  records. They are shown in full on the <a href="/admin/bots">bots</a> page.
+  records. They are shown in full on the page of <a href="/admin/identities/{{ bot.entity_id }}">{{ bot.entity_name }}</a>, the identity it runs on.
 </p>
 {% endif %}
 
@@ -82,7 +82,7 @@
 </form>
 
 <p>
-  <a href="/admin/bots">back to bots</a>
+  <a href="/admin/identities/{{ bot.entity_id }}">back to {{ bot.entity_name }}</a>
   ·
   <a href="/admin/bots/{{ bot.id }}/state/clear">clear durable state…</a>
 </p>

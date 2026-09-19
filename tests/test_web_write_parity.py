@@ -187,7 +187,7 @@ def test_the_secret_reaches_the_panel_and_appears_in_no_page() -> None:
     assert app.state.panel.sealing_secret == SECRET
 
     with _client(app) as client:
-        for path in ("/admin/identities", "/admin/rooms", "/admin/bots"):
+        for path in ("/admin/identities", "/rooms", "/chat"):
             assert SECRET.hex() not in client.get(path).text
 
 
@@ -925,6 +925,7 @@ async def test_a_room_created_in_the_browser_matches_one_the_cli_created(
             admin_password="correct-horse-battery-staple",
         )
     assert response.status_code == 303
+    assert response.headers["location"] == "/rooms"
 
     listed = await persistence.rooms.list_all()
     assert isinstance(listed, Succeeded)
@@ -1017,7 +1018,7 @@ async def test_only_unbound_room_server_identities_are_offered(
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
-        body = (await client.get("/admin/rooms")).text
+        body = (await client.get("/rooms")).text
 
     assert f'value="{free.id}"' in body
     assert f'value="{taken.id}"' not in body, "an identity that already has a room"
@@ -1580,7 +1581,7 @@ async def test_the_configuration_textarea_is_gone(database: Database) -> None:
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        body = (await client.get("/admin/bots")).text
+        body = (await client.get(f"/admin/identities/{_bot.entity_id}")).text
 
     assert "<textarea" not in body
     assert 'name="configuration"' not in body
@@ -1604,7 +1605,9 @@ async def test_a_greeting_record_can_be_listed_cleared_set_and_seeded(
 
     async with _live(app) as client:
         # Seed: the contact gains a record saying nothing is owed to it.
-        assert (await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")).status_code == 303
+        seeded = await _apost(client, app, f"/admin/bots/{bot.id}/greeted/seed")
+        assert seeded.status_code == 303
+        assert seeded.headers["location"] == f"/admin/identities/{bot.entity_id}"
         stored = await persistence.bot_state.get(bot.id, key)
         assert isinstance(stored, Succeeded) and stored.value["outcome"] == SEEDED
 
@@ -1808,7 +1811,7 @@ async def test_the_schema_page_shows_both_revisions_and_that_they_agree(
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        body = (await client.get("/admin/schema")).text
+        body = (await client.get("/system")).text
 
     expected = migrations.expected_revision()
     assert expected in body
@@ -1831,7 +1834,7 @@ async def test_a_disagreement_names_both_revisions_and_the_command(
     monkeypatch.setattr(migrations, "expected_revision", lambda: "0099_imaginary")
 
     async with _live(app) as client:
-        body = (await client.get("/admin/schema")).text
+        body = (await client.get("/system")).text
 
     assert "0099_imaginary" in body
     assert (real or "(none)") in body
@@ -1848,7 +1851,7 @@ async def test_the_schema_page_says_migrations_are_not_applied_here(
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        body = (await client.get("/admin/schema")).text
+        body = (await client.get("/system")).text
 
     collapsed = " ".join(body.split())
     assert "not applied from here, and that is deliberate" in collapsed
@@ -1950,7 +1953,7 @@ def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
     app, _state, _log = _built(stub_state())
 
     with _client(app) as client:
-        body = client.get("/admin/schema").text
+        body = client.get("/system").text
 
     assert "no database is configured" in body
     assert "unreachable" not in body
@@ -1976,7 +1979,7 @@ async def test_a_degraded_database_is_its_own_wording_on_the_schema_page(
     monkeypatch.setattr(Database, "read_applied_revision", _refuses)
 
     async with _live(app) as client:
-        body = (await client.get("/admin/schema")).text
+        body = (await client.get("/system")).text
 
     assert "unreachable" in body
     assert "no database is configured" not in body
@@ -2092,7 +2095,7 @@ async def test_every_page_this_change_added_renders_the_meter(
     # 404ing everywhere: a "no such thing" page renders the meter too, and
     # would satisfy the sweep while proving nothing.
     added = [
-        "/admin/schema",
+        "/system",
         f"/admin/identities/{ids['entity_id']}",
         f"/admin/identities/{ids['entity_id']}/export",
         f"/admin/bots/{ids['bot_id']}/greeted",
@@ -2262,9 +2265,9 @@ async def test_the_enlarged_interface_changes_no_replay_count() -> None:
             "/",
             "/contacts",
             "/admin/identities",
-            "/admin/rooms",
-            "/admin/bots",
-            "/admin/schema",
+            "/rooms",
+            "/chat",
+            "/system",
         ):
             assert client.get(path).status_code == 200
 

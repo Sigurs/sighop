@@ -98,10 +98,12 @@ consequence of a password rotation and of a member revocation before either is a
 - **THEN** it is not carried in a query string, not reflected in any served page, and not recorded in the request event
 
 ### Requirement: Bots are configured through the interface
-The system SHALL list the configured bots with their driver, bound identity, enabled state and
-mode, SHALL allow creating one, enabling and disabling it, switching between observing and active,
-and editing its driver configuration, and SHALL state that switching a bot to active means it will
-transmit without further prompting.
+The system SHALL present each configured bot on the page of the identity it runs on, with its
+driver, enabled state and mode, SHALL allow creating one from the page of a bot-type identity that
+carries none, enabling and disabling it, switching between observing and active, and editing its
+driver configuration, and SHALL state that switching a bot to active means it will transmit
+without further prompting. The identities list SHALL indicate which identities carry a bot, and a
+write to a bot SHALL return the operator to that identity's page.
 
 #### Scenario: Switching a bot to active
 - **WHEN** a bot's mode is changed to active
@@ -109,19 +111,27 @@ transmit without further prompting.
 
 #### Scenario: Invalid driver configuration
 - **WHEN** a driver configuration is submitted that the driver rejects
-- **THEN** the change is refused with the driver's own reason and the stored configuration is unchanged
+- **THEN** the change is refused with the driver's own reason, the identity's page is re-shown with that reason, and the stored configuration is unchanged
 
 #### Scenario: A bot's durable state is visible
 - **WHEN** a bot's page is opened
 - **THEN** the state the bot has persisted is readable, including the records that decide whether it will act on a given contact again
 
+#### Scenario: Creating a bot from its identity
+- **WHEN** the page of a bot-type identity that carries no bot is opened
+- **THEN** it offers the form that creates a bot on that identity, choosing only the driver
+
+#### Scenario: An identity that cannot carry a bot
+- **WHEN** the page of an identity that is not bot-type is opened
+- **THEN** no bot section and no create-a-bot form is shown
+
 ### Requirement: Radio parameters are shown as the board reports them, and a change states its scope
 The system SHALL display the radio parameters in force as the board's own readback reports them,
-and SHALL, where it offers to change them, state that the change is not persisted by the board and
-is lost on a board reset.
+on the system page, and SHALL, where it offers to change them, state that the change is not
+persisted by the board and is lost on a board reset.
 
 #### Scenario: Displaying the radio
-- **WHEN** the radio page is opened
+- **WHEN** the system page is opened
 - **THEN** the parameters shown are the board's readback, and any value the board did not answer is shown as absent
 
 #### Scenario: Changing a parameter
@@ -183,11 +193,11 @@ which makes every known contact eligible again.
 - **THEN** the interface states what is forgotten before the change is applied, and reports how many keys were removed
 
 ### Requirement: The schema revision this run is against is visible
-The system SHALL show the revision the database reports and the revision this code expects,
-and SHALL say whether they agree. It SHALL NOT offer to apply migrations.
+The system SHALL show, on the system page, the revision the database reports and the revision this
+code expects, and SHALL say whether they agree. It SHALL NOT offer to apply migrations.
 
 #### Scenario: A database at the expected revision
-- **WHEN** the schema page is opened against a database at the revision the code expects
+- **WHEN** the system page is opened against a database at the revision the code expects
 - **THEN** both revisions are shown and the interface says they agree
 
 #### Scenario: A database at a different revision
@@ -195,7 +205,7 @@ and SHALL say whether they agree. It SHALL NOT offer to apply migrations.
 - **THEN** both are named, the disagreement is stated, and the command that reconciles them is given
 
 #### Scenario: Migrations are not applied from the interface
-- **WHEN** the schema page is used
+- **WHEN** the system page is used
 - **THEN** it offers no action that applies a migration
 
 ### Requirement: Capabilities this build deliberately does not offer are named where they would be looked for
@@ -345,11 +355,13 @@ in a form re-shown after a refused change. Removing a webhook SHALL be confirmed
 - **THEN** the page states that webhooks require durable storage and offers no controls
 
 ### Requirement: Channels are configured through the interface
-The system SHALL list the stored channels with their name, kind, channel hash, guessable marking and
-recorded message count; SHALL allow adding a channel from a hashtag or from a pasted pre-shared key,
-and re-adding the Public channel if it was removed; and SHALL allow removing a channel through an
-explicit confirmation that states how many messages will be deleted. A stored pre-shared key SHALL NOT
-be rendered anywhere in the interface, including in a form re-shown after a refused addition.
+The system SHALL administer channels from the chat page: it SHALL list the stored channels there
+with their name, kind, channel hash, guessable marking and recorded message count, including a
+stored channel this run could not load; SHALL allow adding a channel from a hashtag or from a
+pasted pre-shared key, and re-adding the Public channel if it was removed; and SHALL allow removing
+a channel through an explicit confirmation that states how many messages will be deleted. A write
+to a channel SHALL return the operator to the chat page. A stored pre-shared key SHALL NOT be
+rendered anywhere in the interface, including in a form re-shown after a refused addition.
 
 #### Scenario: Adding a channel
 - **WHEN** a channel is added through the interface
@@ -361,15 +373,15 @@ be rendered anywhere in the interface, including in a form re-shown after a refu
 
 #### Scenario: A refused pre-shared key
 - **WHEN** a pasted pre-shared key is refused
-- **THEN** the form is re-shown with the reason the command line gives and with the key field empty
+- **THEN** the chat page is re-shown with the reason the command line gives and with the key field empty
 
 #### Scenario: Viewing stored channels
-- **WHEN** the channels page is opened
+- **WHEN** the chat page is opened
 - **THEN** no pre-shared key, in any encoding, is present in the page source
 
 #### Scenario: No database configured
-- **WHEN** the channels page is opened on a run with no database
-- **THEN** the page states that channels require durable storage and offers no controls
+- **WHEN** the chat page is opened on a run with no database
+- **THEN** the page states that channels require durable storage and offers no channel administration controls
 
 ### Requirement: Rooms and bots are deleted through the interface, and the cost is counted first
 The system SHALL allow deleting a room and deleting a bot through the interface. Each SHALL be a
@@ -383,6 +395,8 @@ The confirmation for a room SHALL state the number of members and the number of 
 will delete. The confirmation for a bot SHALL state what the bot's durable state records and how
 many stored keys it will delete. Each SHALL state that the deletion is irreversible, and SHALL
 state that the bound identity survives the deletion and becomes unbound rather than being removed.
+A deleted room SHALL return the operator to the rooms page; a deleted bot SHALL return the operator
+to the page of the identity it ran on.
 
 Neither SHALL require the acting user's password, on the same grounds as removing a channel: they
 destroy stored content, not key material and not what the station may do.
@@ -408,7 +422,7 @@ destroy stored content, not key material and not what the station may do.
 - **THEN** nothing is deleted and the refusal is recorded as its own event
 
 #### Scenario: Deletion is never a bare link
-- **WHEN** the rooms or bots administration page is navigated, prefetched or reloaded
+- **WHEN** the rooms page or an identity page carrying a bot is navigated, prefetched or reloaded
 - **THEN** nothing is deleted
 
 ### Requirement: A stored identity is removed through the interface under the rules the command line applies
@@ -526,3 +540,37 @@ SHALL state that this run does not hold that identity.
 #### Scenario: The schedule is not disturbed
 - **WHEN** a loaded identity is renamed without an advert chosen
 - **THEN** the identities page shows its next scheduled flood and its advert count for this run unchanged
+
+### Requirement: The station's radio, schema and gate controls are on one system page
+The system SHALL present, on a single system page, the radio parameters in force as the board's
+readback reports them, the schema revision agreement, the capabilities deliberately left to the
+terminal (applying migrations, managing accounts, generating the sealing secret), and a link to the
+confirmation view for enabling transmission and to the confirmation view for raising the airtime
+ceiling. The board's readback SHALL appear on that page once. No other page SHALL repeat the
+readback table or the schema revision table.
+
+#### Scenario: Opening the system page
+- **WHEN** the system page is opened
+- **THEN** it shows the board's readback, the applied and expected schema revisions and whether they agree, the terminal-only capabilities with their commands, and links to the enable-transmission and raise-ceiling confirmations
+
+#### Scenario: Reaching the gate controls
+- **WHEN** an operator follows the enable-transmission or raise-ceiling link on the system page
+- **THEN** the confirmation view for that action is shown, and nothing is enabled or raised by following the link
+
+#### Scenario: A replay has no readback
+- **WHEN** the system page is opened on a run that took no startup probe
+- **THEN** it states that there is no readback because there was no board to ask, and still shows the schema revision and the gate links
+
+### Requirement: Each loaded identity's traffic is counted on the identities page
+The system SHALL show, for every identity loaded by the running process, on the identities page,
+how many frames it has transmitted, how many of its submissions were suppressed, and how many
+received frames were addressed to its node hash, and SHALL state that the addressed count is by
+one-byte node hash and so is not the same claim as frames for that identity.
+
+#### Scenario: A loaded identity's counters
+- **WHEN** the identities page is opened in a run with a loaded identity that has transmitted
+- **THEN** its transmitted, suppressed and addressed counts are shown in its row of the loaded identities
+
+#### Scenario: The addressed count's caveat
+- **WHEN** the addressed counts are shown
+- **THEN** the page states that they count frames by one-byte node hash, which collides

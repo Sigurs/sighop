@@ -29,7 +29,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from sighop.db.engine import Succeeded
+from sighop.db.engine import Failed, Outcome, Succeeded
 from sighop.net.channels import (
     MAX_CHANNEL_TEXT_LEN,
     ChannelMessageRecord,
@@ -46,7 +46,7 @@ from sighop.net.dm import (
     choose_route,
 )
 from sighop.web.deps import Panel, panel
-from sighop.web.render import identity_for, identity_for_key
+from sighop.web.render import Refusal, identity_for, identity_for_key
 
 PanelDep = Annotated[Panel, Depends(panel)]
 
@@ -100,30 +100,130 @@ and an operator must not read a short conversation as the whole of it."""
 
 
 @router.get("", response_class=HTMLResponse)
-async def index(request: Request, page: PanelDep) -> HTMLResponse:
+async def index(
+    request: Request, page: PanelDep, added: str = "", removed: str = ""
+) -> HTMLResponse:
     """Conversations, keyed by the pair of a local identity and a contact."""
-    rows = await _conversations(page)
-    contacts = sorted(
-        page.state.contacts.contacts(), key=lambda contact: contact.display_name.lower()
-    )
+    return await render_index(request, page, added=added, removed=removed)
+
+
+async def render_index(
+    request: Request,
+    page: Panel,
+    *,
+    added: str = "",
+    removed: str = "",
+    refusal: Refusal | None = None,
+    status_code: int = 200,
+) -> HTMLResponse:
+    """The chat page, for a GET and for a refused channel write alike (design D3).
+
+    One builder, so a refused addition is re-shown on the page the channel
+    list is on — with the key field empty, because it is the same template code.
+    """
     return page.page(
         request,
         "chat/index.html",
-        conversations=rows,
+        conversations=await _conversations(page),
         identities=list(page.state.adverts.stubs),
-        contacts=contacts,
-        # Built here rather than in the template: an identity is drawn by one
-        # macro over one view, and a template that constructed its own would be
-        # a second place §8's verification rule could be got wrong (design D13).
-        contact_views={contact.public_key.hex(): identity_for(contact) for contact in contacts},
-        channels=[
-            {"channel": channel, "new": page.channel_log.new_for(channel.id)}
-            for channel in page.state.channels.channels
-        ],
-        channels_skipped=page.state.channels.channels.skipped,
         recorded=_recorded(page),
         not_recorded=NOT_RECORDED,
+        **await channels_context(page, added=added, removed=removed),
+        refusal=refusal,
+        status_code=status_code,
     )
+
+
+# --- Channels (channel-messaging, `web-admin`) -------------------------------
+#
+# Every write is `ChannelRepository`'s own call (in `routes/admin.py`), so a
+# hashtag or key refused there is one `sighop channel` refuses in the same words.
+# A pasted pre-shared key is never put back into a page, not even into the form
+# re-shown after a refusal, and a stored one is never read back at all.
+
+CHANNELS_NEED_DURABLE_STORAGE = (
+    "Channels are stored configuration and require durable storage. This run has "
+    "no database, so none can be configured, and group text is left undecrypted."
+)
+
+CHANNEL_KEY_NEEDS_THE_SECRET = (
+    "SIGHOP_SECRET_KEY is not available to this panel, and pre-shared keys are "
+    "sealed under it; nothing was added"
+)
+
+CHANNEL_KEY_COMMAND = "sighop channel key"
+
+CHANNEL_KEYS_ARE_A_TERMINAL_ACT = (
+    "A stored pre-shared key is not shown here. To share one, print it in a "
+    f"terminal on the host with `{CHANNEL_KEY_COMMAND} <name>`. The key is the "
+    "credential for reading and posting in the channel, and a key cannot be taken "
+    "back from whoever has seen it, so a stolen session that could display it "
+    "would hand the channel out for good."
+)
+
+
+async def channels_context(page: Panel, *, added: str, removed: str) -> dict[str, object]:
+    """The channel list, the loaded and the stored joined by id, and its forms.
+
+    A loaded channel carries what this run knows (unread markers, the open
+    link); a stored one what the database knows (kind, message count, the
+    rename and remove links). One row per channel either way, so a stored
+    channel this run could not load is listed rather than left to a warning.
+    """
+    from sighop.db.repositories import GUESSABLE_STATEMENT, ChannelRecord
+
+    loaded = {channel.id: channel for channel in page.state.channels.channels}
+    listed: Outcome[list[ChannelRecord]] | None = None
+    counts: dict[int, int] = {}
+    if page.persistence is not None:
+        listed = await page.persistence.channels.list_all()
+        counted = await page.persistence.channels.message_counts()
+        if isinstance(counted, Succeeded):
+            counts = counted.value
+    records = listed.value if isinstance(listed, Succeeded) else []
+    rows: list[dict[str, object]] = [
+        {
+            "id": record.id,
+            "name": record.name,
+            "kind": record.kind,
+            "channel_hash": record.channel_hash,
+            "guessable": record.guessable,
+            "messages": counts.get(record.id, 0),
+            "stored": True,
+            "loaded": record.id in loaded,
+            "new": page.channel_log.new_for(record.id) if record.id in loaded else 0,
+        }
+        for record in records
+    ]
+    stored = {record.id for record in records}
+    rows.extend(
+        {
+            "id": channel.id,
+            "name": channel.name,
+            "kind": None,
+            "channel_hash": channel.channel_hash,
+            "guessable": channel.guessable,
+            "messages": None,
+            "stored": False,
+            "loaded": True,
+            "new": page.channel_log.new_for(channel.id),
+        }
+        for channel in page.state.channels.channels
+        if channel.id not in stored
+    )
+    return {
+        "channels": rows,
+        "channels_unreadable": isinstance(listed, Failed),
+        "channels_skipped": page.state.channels.channels.skipped,
+        "public_stored": any(record.kind == "public" for record in records),
+        "no_database": page.persistence is None,
+        "no_database_note": CHANNELS_NEED_DURABLE_STORAGE,
+        "guessable_statement": GUESSABLE_STATEMENT,
+        "keys_note": CHANNEL_KEYS_ARE_A_TERMINAL_ACT,
+        "key_command": CHANNEL_KEY_COMMAND,
+        "just_added": next((record for record in records if record.name == added), None),
+        "removed": removed,
+    }
 
 
 def _recorded(page: Panel) -> bool:

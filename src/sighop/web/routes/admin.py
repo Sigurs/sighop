@@ -26,20 +26,16 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from sighop.db.engine import Failed, Outcome, Succeeded
 from sighop.db.repositories import (
-    BOT_ENTITY_TYPE,
     BotExistsError,
     BotRecord,
     EntityHasRoleError,
-    EntityRecord,
     EntityRoleError,
     RoomExistsError,
     RoomNameError,
     RoomNameTakenError,
     RoomRecord,
 )
-from sighop.net.dm import LocalEntity
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
-from sighop.protocol.payloads import NodeType
 from sighop.web.deps import Panel, panel
 from sighop.web.guarded import (
     ACTION_DESCRIPTIONS,
@@ -54,7 +50,6 @@ from sighop.web.guarded import (
     audit,
 )
 from sighop.web.render import (
-    DEGRADED,
     NO_DATABASE,
     Refusal,
     collection_for,
@@ -62,6 +57,11 @@ from sighop.web.render import (
     render_advert_request,
     render_ceiling_change,
     render_transmit_change,
+)
+from sighop.web.routes import chat, keys, rooms
+from sighop.web.routes.chat import (
+    CHANNEL_KEY_NEEDS_THE_SECRET,
+    CHANNELS_NEED_DURABLE_STORAGE,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -76,73 +76,6 @@ SEE_OTHER = 303
 
 
 # --- 12.3 / 12.4 Rooms ------------------------------------------------------
-
-
-@router.get("/rooms", response_class=HTMLResponse)
-async def rooms(
-    request: Request,
-    page: PanelDep,
-    *,
-    refusal: Refusal | None = None,
-    status_code: int = 200,
-) -> HTMLResponse:
-    """Rooms with their member and message counts, and their retention."""
-    listed: Outcome[list[RoomRecord]] | None = None
-    counts: dict[str, tuple[int, int]] = {}
-    if page.persistence is not None:
-        listed = await page.persistence.rooms.list_all()
-        if isinstance(listed, Succeeded):
-            for room in listed.value:
-                counts[str(room.id)] = await _room_counts(page, room)
-    return page.page(
-        request,
-        "admin/rooms.html",
-        rooms=collection_for(listed, degraded="rooms cannot be read"),
-        counts=counts,
-        served={str(server.room.id) for server in page.state.rooms},
-        advert_ids={
-            str(server.room.id): entity_id
-            for server in page.state.rooms
-            if (entity_id := _advert_id(page, server.entity)) is not None
-        },
-        hosts=await _room_server_identities(page),
-        refusal=refusal,
-        status_code=status_code,
-    )
-
-
-def _advert_id(page: Panel, entity: LocalEntity | None) -> str | None:
-    """The loaded identity a served room or running bot speaks as, by public key.
-
-    By key rather than by name, as `routes/rooms.py` matches, so the advert
-    links go to the identity that is actually on the air (design D6).
-    """
-    if entity is None:
-        return None
-    for stub in page.state.adverts.stubs:
-        if stub.identity.public_key == entity.identity.public_key:
-            return stub.entity_id
-    return None
-
-
-async def _room_server_identities(page: Panel) -> list[EntityRecord]:
-    """The stored identities a room could be bound to.
-
-    Only the ones that advert as room servers, because that is what a room runs
-    on; offering the rest would be offering a choice the repository refuses.
-    """
-    if page.persistence is None:
-        return []
-    listed = await page.persistence.entities.list_all()
-    if isinstance(listed, Failed):
-        return []
-    bound = await page.persistence.rooms.list_all()
-    taken = {room.entity_id for room in bound.value} if isinstance(bound, Succeeded) else set()
-    return [
-        record
-        for record in listed.value
-        if record.node_type is NodeType.ROOM_SERVER and record.id not in taken
-    ]
 
 
 @router.post("/rooms/create", response_model=None)
@@ -207,32 +140,22 @@ async def create_room(
         return await _refuse_room(request, page, str(exc), **submitted)
     if isinstance(created, Failed):
         return await _refuse_room(request, page, str(created.error), **submitted)
-    return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+    return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
 async def _refuse_room(
     request: Request, page: Panel, reason: str, *, field: str = "", **submitted: str
 ) -> HTMLResponse:
-    """Re-render the room page with the reason and what was typed (task 1.1).
+    """Re-render the rooms page with the reason and what was typed (task 1.1).
 
     The passwords are deliberately not among the preserved values: a password
     that came back in a response body would be a password in a page.
     """
-    return await rooms(
+    return await rooms.render_index(
         request,
         page,
         refusal=refused(reason, field=field, **submitted),
         status_code=400,
-    )
-
-
-async def _room_counts(page: Panel, room: RoomRecord) -> tuple[int, int]:
-    assert page.persistence is not None
-    members = await page.persistence.members.load_for_room(room.id)
-    messages = await page.persistence.messages.count(room.id)
-    return (
-        len(members.value) if isinstance(members, Succeeded) else -1,
-        messages.value if isinstance(messages, Succeeded) else -1,
     )
 
 
@@ -271,7 +194,7 @@ async def rotate_password(
     """
     room = await _room(page, room_id)
     if room is None or page.persistence is None:
-        return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+        return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
     # Through `PasswordHasher`, which runs Argon2id in a thread under a
     # semaphore — never `hash_password` directly, which blocks the event loop
@@ -291,7 +214,7 @@ async def rotate_password(
         # done without building.
         allow_read_only=allow_read_only == "true",
     )
-    return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+    return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
 @router.get("/rooms/{room_id}/retention", response_class=HTMLResponse)
@@ -320,13 +243,13 @@ async def set_retention(
 ) -> RedirectResponse:
     room = await _room(page, room_id)
     if room is None or page.persistence is None:
-        return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+        return RedirectResponse("/rooms", status_code=SEE_OTHER)
     await page.persistence.rooms.set_retention(
         room.id,
         retention_days=_optional_int(retention_days),
         retention_messages=_optional_int(retention_messages),
     )
-    return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+    return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
 def _optional_int(value: str) -> int | None:
@@ -397,7 +320,7 @@ async def rename_room(
         name=name.strip(),
         actor=page.actor(request),
     )
-    return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+    return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
 @router.get("/rooms/{room_id}/delete", response_class=HTMLResponse)
@@ -411,7 +334,7 @@ async def delete_room_form(room_id: str, request: Request, page: PanelDep) -> HT
     members = messages = None
     identity = None
     if room is not None and page.persistence is not None:
-        members, messages = await _room_counts(page, room)
+        members, messages = await rooms.room_counts(page, room)
         held = await page.persistence.entities.get_by_id(room.entity_id)
         identity = held.value if isinstance(held, Succeeded) else None
     return page.page(
@@ -457,7 +380,7 @@ async def delete_room(
             room=room.name,
         )
         return page.page(request, "admin/refused.html", title=title, refusal=None, status_code=403)
-    members, messages = await _room_counts(page, room)
+    members, messages = await rooms.room_counts(page, room)
     deleted = await page.persistence.rooms.delete(room.id)
     if isinstance(deleted, Failed) or not deleted.value:
         reason = str(deleted.error) if isinstance(deleted, Failed) else "no such room"
@@ -490,68 +413,10 @@ async def delete_room(
         f"room {room.name!r} deleted with {members} member(s) and {messages} "
         f"message(s) from the web interface by account {actor!r}"
     )
-    return RedirectResponse(f"/admin/rooms?deleted={quote(room.name)}", status_code=SEE_OTHER)
+    return RedirectResponse(f"/rooms?deleted={quote(room.name)}", status_code=SEE_OTHER)
 
 
 # --- 12.5 / 12.6 Bots -------------------------------------------------------
-
-
-@router.get("/bots", response_class=HTMLResponse)
-async def bots(
-    request: Request,
-    page: PanelDep,
-    *,
-    refusal: Refusal | None = None,
-    status_code: int = 200,
-) -> HTMLResponse:
-    """Every configured bot, with the durable state it has accumulated."""
-    from sighop.bots import drivers as bot_drivers
-
-    listed: Outcome[list[BotRecord]] | None = None
-    state: dict[str, dict[str, object]] = {}
-    if page.persistence is not None:
-        listed = await page.persistence.bots.list_all()
-        if isinstance(listed, Succeeded):
-            for bot in listed.value:
-                stored = await page.persistence.bot_state.list(bot.id)
-                state[str(bot.id)] = stored.value if isinstance(stored, Succeeded) else {}
-    return page.page(
-        request,
-        "admin/bots.html",
-        bots=collection_for(listed, degraded="bots cannot be read"),
-        bot_state=state,
-        running={worker.name for worker in page.state.bots.workers},
-        advert_ids={
-            str(worker.record.id): entity_id
-            for worker in page.state.bots.workers
-            if (entity_id := _advert_id(page, worker.entity)) is not None
-        },
-        drivers=bot_drivers.driver_names(),
-        identities=await _bot_identities(page),
-        refusal=refusal,
-        status_code=status_code,
-    )
-
-
-async def _bot_identities(page: Panel) -> list[EntityRecord]:
-    """The stored identities a bot could run on.
-
-    Only identities stored as bots and not already carrying one: being a bot is
-    an explicit choice at creation and never a side effect of having a bot bound
-    to it, and one identity plays one role.
-    """
-    if page.persistence is None:
-        return []
-    listed = await page.persistence.entities.list_all()
-    if isinstance(listed, Failed):
-        return []
-    bound = await page.persistence.bots.list_all()
-    taken = {bot.entity_id for bot in bound.value} if isinstance(bound, Succeeded) else set()
-    return [
-        record
-        for record in listed.value
-        if record.type == BOT_ENTITY_TYPE and record.id not in taken
-    ]
 
 
 @router.post("/bots/create", response_model=None)
@@ -604,6 +469,7 @@ async def create_bot(
         return await _refuse_bot(request, page, str(exc), **submitted)
     if isinstance(created, Failed):
         return await _refuse_bot(request, page, str(created.error), **submitted)
+    home = _identity_page(created.value.entity_id)
 
     # After the row exists, because `bot_state` has a foreign key to it. A seed
     # that fails leaves a bot owing the whole contact table, so the failure is
@@ -625,18 +491,31 @@ async def create_bot(
                 "node knows; seed it before making it active"
             ),
         )
-    return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+    return RedirectResponse(home, status_code=SEE_OTHER)
 
 
 async def _refuse_bot(
-    request: Request, page: Panel, reason: str, *, field: str = "", **submitted: str
+    request: Request,
+    page: Panel,
+    reason: str,
+    *,
+    field: str = "",
+    entity_id: str = "",
+    **submitted: str,
 ) -> HTMLResponse:
-    return await bots(
+    """Re-render the identity page the bot runs on, with the reason (design D4)."""
+    return await keys.render_identity(
         request,
         page,
-        refusal=refused(reason, field=field, **submitted),
+        entity_id,
+        refusal=refused(reason, field=field, entity_id=entity_id, **submitted),
         status_code=400,
     )
+
+
+def _identity_page(entity_id: uuid.UUID) -> str:
+    """Where a bot write returns to: the page of the identity the bot runs on."""
+    return f"/admin/identities/{entity_id}"
 
 
 def _now_iso() -> str:
@@ -649,9 +528,11 @@ def _now_iso() -> str:
 async def set_bot_enabled(
     bot_id: str, enabled: Annotated[str, Form()], page: PanelDep
 ) -> RedirectResponse:
-    if page.persistence is not None:
-        await page.persistence.bots.set_enabled(uuid.UUID(bot_id), enabled == "true")
-    return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+    bot = await _bot(page, bot_id)
+    if bot is None or page.persistence is None:
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+    await page.persistence.bots.set_enabled(bot.id, enabled == "true")
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 @router.get("/bots/{bot_id}/mode", response_class=HTMLResponse)
@@ -679,13 +560,14 @@ async def set_bot_mode(
     confirm: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     """Observe needs no confirmation; active does, and is refused without one."""
-    if page.persistence is None:
-        return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+    bot = await _bot(page, bot_id)
+    if bot is None or page.persistence is None:
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     if mode == "active" and confirm != "yes":
         # Unchanged, and the operator is sent back to the page that explains it.
         return RedirectResponse(f"/admin/bots/{bot_id}/mode", status_code=SEE_OTHER)
-    await page.persistence.bots.set_mode(uuid.UUID(bot_id), mode)
-    return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+    await page.persistence.bots.set_mode(bot.id, mode)
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 @router.post("/bots/{bot_id}/config", response_model=None)
@@ -711,7 +593,7 @@ async def set_bot_config(
 
     bot = await _bot(page, bot_id)
     if bot is None or page.persistence is None:
-        return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     try:
         # Against the driver named by the *stored* row, so the check is the one
         # the bot will actually run under.
@@ -730,11 +612,12 @@ async def set_bot_config(
             page,
             f"{key}: {exc} The stored configuration is unchanged.",
             field=key,
+            entity_id=str(bot.entity_id),
             bot_id=bot_id,
             **{key: value},
         )
     await page.persistence.bots.set_config(bot.id, {**bot.config, key: parsed})
-    return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 @router.get("/bots/{bot_id}/delete", response_class=HTMLResponse)
@@ -825,7 +708,10 @@ async def delete_bot(
         f"bot {bot.entity_name!r} deleted with {keys} stored key(s) from the "
         f"web interface by account {actor!r}"
     )
-    return RedirectResponse(f"/admin/bots?deleted={quote(bot.entity_name)}", status_code=SEE_OTHER)
+    return RedirectResponse(
+        f"{_identity_page(bot.entity_id)}?bot_deleted={quote(bot.entity_name)}",
+        status_code=SEE_OTHER,
+    )
 
 
 async def _bot(page: Panel, bot_id: str) -> BotRecord | None:
@@ -949,13 +835,14 @@ async def clear_greeting(
     from sighop.bots.greeter import greeted_key
 
     bot = await _bot(page, bot_id)
-    if bot is not None and page.persistence is not None:
-        try:
-            key = greeted_key(bytes.fromhex(public_key))
-        except ValueError:
-            return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
-        await page.persistence.bot_state.delete(bot.id, key)
-    return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
+    if bot is None or page.persistence is None:
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+    try:
+        key = greeted_key(bytes.fromhex(public_key))
+    except ValueError:
+        return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
+    await page.persistence.bot_state.delete(bot.id, key)
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 @router.post("/bots/{bot_id}/greeted/set")
@@ -970,17 +857,18 @@ async def set_greeting(
     from sighop.bots.greeter import greeted_key, operator_entry
 
     bot = await _bot(page, bot_id)
-    if bot is not None and page.persistence is not None:
-        try:
-            raw = bytes.fromhex(public_key)
-        except ValueError:
-            return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
-        contact = page.state.contacts.get(raw)
-        if contact is not None:
-            await page.persistence.bot_state.set(
-                bot.id, greeted_key(raw), operator_entry(contact, at=_now_iso())
-            )
-    return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
+    if bot is None or page.persistence is None:
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+    try:
+        raw = bytes.fromhex(public_key)
+    except ValueError:
+        return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
+    contact = page.state.contacts.get(raw)
+    if contact is not None:
+        await page.persistence.bot_state.set(
+            bot.id, greeted_key(raw), operator_entry(contact, at=_now_iso())
+        )
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 @router.post("/bots/{bot_id}/greeted/seed")
@@ -993,13 +881,14 @@ async def seed_greetings(bot_id: str, page: PanelDep) -> RedirectResponse:
     from sighop.bots.greeter import seeded_entries
 
     bot = await _bot(page, bot_id)
-    if bot is not None and page.persistence is not None:
-        contacts = await page.persistence.contacts.load_all()
-        if isinstance(contacts, Succeeded):
-            await page.persistence.bot_state.set_many(
-                bot.id, seeded_entries(contacts.value, at=_now_iso())
-            )
-    return RedirectResponse(f"/admin/bots/{bot_id}/greeted", status_code=SEE_OTHER)
+    if bot is None or page.persistence is None:
+        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+    contacts = await page.persistence.contacts.load_all()
+    if isinstance(contacts, Succeeded):
+        await page.persistence.bot_state.set_many(
+            bot.id, seeded_entries(contacts.value, at=_now_iso())
+        )
+    return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 
 # --- 6.5 Clearing everything a bot has persisted ----------------------------
@@ -1051,7 +940,7 @@ async def clear_state(
     )
 
 
-# --- 7. The schema, and what is deliberately absent -------------------------
+# --- 7. What is deliberately absent (shown on `/system`) --------------------
 
 MIGRATIONS_ARE_A_TERMINAL_ACT = (
     "Migrations are not applied from here, and that is deliberate rather than "
@@ -1077,58 +966,6 @@ ACCOUNTS_ARE_A_TERMINAL_ACT = (
     "made there ends affected sessions within a minute."
 )
 """Milestone 9 design D2, stated where it would be looked for."""
-
-
-@router.get("/schema", response_class=HTMLResponse)
-async def schema(request: Request, page: PanelDep) -> HTMLResponse:
-    """The revision the database reports, against the one this code expects.
-
-    Read-only, and the first question a degraded panel raises: is this database
-    the one this build knows how to talk to? Everything durable on every page is
-    wrong-by-omission if it is not.
-    """
-    from sighop.db import migrations
-
-    expected = migrations.expected_revision()
-    applied: str | None = None
-    unavailable = ""
-    if page.persistence is None:
-        unavailable = NO_DATABASE
-    else:
-        try:
-            applied = await page.persistence.database.read_applied_revision()
-        except Exception as exc:
-            # Classified by the engine; shown as the degraded state it is, which
-            # is a different screen from "no database is configured".
-            unavailable = f"{DEGRADED} ({exc})"
-    return page.page(
-        request,
-        "admin/schema.html",
-        applied=applied,
-        expected=expected,
-        agree=applied == expected and not unavailable,
-        unavailable=unavailable,
-        upgrade_command=migrations.UPGRADE_COMMAND,
-        migrations_note=MIGRATIONS_ARE_A_TERMINAL_ACT,
-        accounts_note=ACCOUNTS_ARE_A_TERMINAL_ACT,
-        account_command=ACCOUNT_COMMAND,
-    )
-
-
-# --- 12.7 The radio ---------------------------------------------------------
-
-
-@router.get("/radio", response_class=HTMLResponse)
-async def radio(request: Request, page: PanelDep) -> HTMLResponse:
-    """The parameters in force, and what changing one does and does not do."""
-    from sighop.web.render import modem_readings
-
-    return page.page(
-        request,
-        "admin/radio.html",
-        readings=modem_readings(page.state.probe_result, page.state.radio),
-        probe=page.state.probe_result,
-    )
 
 
 # --- 13 Guarded actions -----------------------------------------------------
@@ -1847,78 +1684,14 @@ async def send_webhook_sample(
 #
 # Every write is `ChannelRepository`'s own call, so a hashtag or key this refuses
 # is one `sighop channel` refuses in the same words, and every change is followed
-# by `reload_channels()` so this run decrypts on it at once. A pasted pre-shared
-# key is never put back into a page, not even into the form re-shown after a
-# refusal, and a stored one is never read back at all.
-
-CHANNELS_NEED_DURABLE_STORAGE = (
-    "Channels are stored configuration and require durable storage. This run has "
-    "no database, so none can be configured, and group text is left undecrypted."
-)
-
-CHANNEL_KEY_NEEDS_THE_SECRET = (
-    "SIGHOP_SECRET_KEY is not available to this panel, and pre-shared keys are "
-    "sealed under it; nothing was added"
-)
-
-CHANNEL_KEY_COMMAND = "sighop channel key"
-
-CHANNEL_KEYS_ARE_A_TERMINAL_ACT = (
-    "A stored pre-shared key is not shown here. To share one, print it in a "
-    f"terminal on the host with `{CHANNEL_KEY_COMMAND} <name>`. The key is the "
-    "credential for reading and posting in the channel, and a key cannot be taken "
-    "back from whoever has seen it, so a stolen session that could display it "
-    "would hand the channel out for good."
-)
-
-
-@router.get("/channels", response_class=HTMLResponse)
-async def channels(
-    request: Request,
-    page: PanelDep,
-    *,
-    added: str = "",
-    removed: str = "",
-    refusal: Refusal | None = None,
-    status_code: int = 200,
-) -> HTMLResponse:
-    """Every stored channel with its kind, hash, guessable marking and message count."""
-    from sighop.db.repositories import GUESSABLE_STATEMENT, ChannelRecord
-
-    listed: Outcome[list[ChannelRecord]] | None = None
-    counts: dict[int, int] = {}
-    if page.persistence is not None:
-        listed = await page.persistence.channels.list_all()
-        counted = await page.persistence.channels.message_counts()
-        if isinstance(counted, Succeeded):
-            counts = counted.value
-    records = listed.value if isinstance(listed, Succeeded) else []
-    just_added = next((record for record in records if record.name == added), None)
-    loaded = {channel.id for channel in page.state.channels.channels}
-    return page.page(
-        request,
-        "admin/channels.html",
-        channels=collection_for(listed, degraded="channels cannot be read"),
-        counts=counts,
-        loaded=loaded,
-        skipped=page.state.channels.channels.skipped,
-        public_stored=any(record.kind == "public" for record in records),
-        no_database=page.persistence is None,
-        no_database_note=CHANNELS_NEED_DURABLE_STORAGE,
-        guessable_statement=GUESSABLE_STATEMENT,
-        keys_note=CHANNEL_KEYS_ARE_A_TERMINAL_ACT,
-        key_command=CHANNEL_KEY_COMMAND,
-        just_added=just_added,
-        removed=removed,
-        refusal=refusal,
-        status_code=status_code,
-    )
+# by `reload_channels()` so this run decrypts on it at once. The list and the
+# forms are on `/chat` (design D3); a refusal is re-shown there.
 
 
 async def _refuse_channel(
     request: Request, page: Panel, reason: str, *, field: str = "", **submitted: str
 ) -> HTMLResponse:
-    return await channels(
+    return await chat.render_index(
         request, page, refusal=refused(reason, field=field, **submitted), status_code=400
     )
 
@@ -1932,7 +1705,7 @@ async def _channel_added(
         return await _refuse_channel(request, page, str(outcome.error), field=field, **submitted)
     await page.state.reload_channels()
     name = getattr(outcome.value, "name", "")
-    return RedirectResponse(f"/admin/channels?added={quote(name)}", status_code=SEE_OTHER)
+    return RedirectResponse(f"/chat?added={quote(name)}", status_code=SEE_OTHER)
 
 
 @router.post("/channels/hashtag", response_model=None)
@@ -2054,7 +1827,7 @@ async def rename_channel(
         name=name.strip(),
         actor=page.actor(request),
     )
-    return RedirectResponse("/admin/channels", status_code=SEE_OTHER)
+    return RedirectResponse("/chat", status_code=SEE_OTHER)
 
 
 @router.get("/channels/{channel_id}/remove", response_class=HTMLResponse)
@@ -2131,4 +1904,4 @@ async def remove_channel(
         f"channel {record.name!r} removed with {removed.value} recorded message(s) "
         f"from the web interface by account {actor!r}"
     )
-    return RedirectResponse(f"/admin/channels?removed={quote(record.name)}", status_code=SEE_OTHER)
+    return RedirectResponse(f"/chat?removed={quote(record.name)}", status_code=SEE_OTHER)

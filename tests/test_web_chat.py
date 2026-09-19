@@ -161,6 +161,20 @@ def test_with_no_identity_nothing_can_be_composed() -> None:
     assert "identity must be chosen" in body or "no identities" in body.lower()
 
 
+def test_chat_points_to_contacts_rather_than_repeating_a_grid() -> None:
+    """consolidate-web-pages 6.2: conversations are started from the contact list."""
+    contact = _contact()
+    app, state, _log = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+
+    with _client(app) as client:
+        body = client.get("/chat").text
+
+    assert "start a conversation" not in body
+    assert f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}" not in body
+    assert '<a href="/contacts">contacts</a> page' in body
+
+
 def test_a_conversation_for_an_unknown_pair_is_not_found() -> None:
     """15.1: both halves must exist; inventing either would invent a peer."""
     app, state, _log = _built(contacts=[_contact()])
@@ -543,12 +557,31 @@ class _Direct:
         return self._failed("read_conversation") if self.failing else Succeeded(value=self.stored)
 
 
+class _Channels:
+    """A `ChannelRepository` that follows its `_Direct`: `/chat` lists the stored
+    channels too, and in an outage those reads fail alongside the others."""
+
+    def __init__(self, direct: _Direct) -> None:
+        self.direct = direct
+
+    async def list_all(self):
+        from sighop.db.engine import Succeeded
+
+        return self.direct._failed("list_channels") if self.direct.failing else Succeeded(value=[])
+
+    async def message_counts(self):
+        from sighop.db.engine import Succeeded
+
+        return self.direct._failed("count_messages") if self.direct.failing else Succeeded(value={})
+
+
 class _Persistence:
     state = "ok"
     degraded = False
 
     def __init__(self, direct: _Direct) -> None:
         self.direct_messages = direct
+        self.channels = _Channels(direct)
 
     def as_json(self) -> dict[str, object]:
         return {}

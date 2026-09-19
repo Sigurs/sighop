@@ -20,7 +20,9 @@
   <thead>
     <tr><th>name</th><th>type</th><th class="mono">node hash</th>
         <th class="mono">public key</th><th>source</th>
-        <th>next flood</th><th>last flood</th><th class="num">adverts</th><th>override</th>
+        <th>next flood</th><th>last flood</th><th class="num">adverts</th>
+        <th class="num">transmitted</th><th class="num">suppressed</th>
+        <th class="num">addressed</th><th>override</th>
         <th>actions</th></tr>
   </thead>
   <tbody>
@@ -34,6 +36,10 @@
       <td class="mono">{{ stub.next_flood_at.isoformat() if stub.next_flood_at else '—' }}</td>
       <td class="mono">{{ stub.last_flood_at.isoformat() if stub.last_flood_at else 'none this run' }}</td>
       <td class="num">{{ stub.adverts_sent }}</td>
+      {% set counted = traffic.get(stub.identity.public_key.hex(), {}) %}
+      <td class="num">{{ counted.get('transmitted', 0) }}</td>
+      <td class="num">{{ counted.get('suppressed', 0) }}</td>
+      <td class="num">{{ counted.get('addressed', 0) }}</td>
       <td class="mono">
         {% if stub.override and stub.override.active(advert_now) %}
         {{ '%g s'|format(stub.override.interval_seconds) }} until {{ stub.override.expires_at.isoformat() }}
@@ -57,6 +63,13 @@
   reveal and send nothing by being followed. A flood advert counts as the
   identity's scheduled flood, so its next one moves a full interval out.
 </p>
+<p class="note">
+  <strong>transmitted</strong> and <strong>suppressed</strong> are exact — every
+  submission carries the identity that made it. <strong>addressed</strong> counts
+  frames addressed to this identity's <em>node hash</em>, which is one byte: a
+  hash collides at 1 in 256, so it is not the same claim as "frames for this
+  identity".
+</p>
 {% else %}
 <p class="empty"><strong>No identities loaded.</strong> This run holds none.</p>
 {% endif %}
@@ -79,7 +92,11 @@
       <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
       <td class="mono">{{ 'yes' if record.enabled else 'no' }}</td>
       <td class="mono">{{ record.created_at.isoformat() }}</td>
-      <td class="mono">{{ serving|join(', ') if serving else '—' }}</td>
+      <td class="mono">
+        {%- if serving -%}
+        <a href="/admin/identities/{{ record.id }}">{{ serving|join(', ') }}</a>
+        {%- else -%}—{%- endif -%}
+      </td>
       <td>
         <form method="post" action="/admin/identities/{{ record.id }}/enabled">
           <input type="hidden" name="_token" value="{{ token }}">

@@ -66,47 +66,6 @@
   </tbody>
 </table>
 
-<h2>persistence</h2>
-<p class="note persistence-{{ durability.level }}">
-  {{ durability.text }}{% if durability.losses_text %} — {{ durability.losses_text }}{% endif %}
-</p>
-
-<h2>identities</h2>
-{% if entities %}
-<table>
-  <thead>
-    <tr>
-      <th>name</th><th>type</th><th class="mono">node hash</th><th class="mono">public key</th>
-      <th class="num">adverts</th><th class="num">transmitted</th>
-      <th class="num">suppressed</th><th class="num">addressed</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for entity in entities %}
-    <tr>
-      <td>{{ entity.name }}</td>
-      <td class="mono">{{ entity.node_type }}{% if not entity.persistent %} (ephemeral){% endif %}</td>
-      <td class="mono">{{ '0x%02x'|format(entity.node_hash) }}</td>
-      <td class="mono">{{ entity.public_key[:16] }}</td>
-      <td class="num">{{ entity.adverts_sent }}</td>
-      <td class="num">{{ entity.transmitted }}</td>
-      <td class="num">{{ entity.suppressed }}</td>
-      <td class="num">{{ entity.addressed }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-<p class="note">
-  <strong>transmitted</strong> and <strong>suppressed</strong> are exact — every
-  submission carries the identity that made it. <strong>addressed</strong> counts
-  frames addressed to this identity's <em>node hash</em>, which is one byte: a
-  hash collides at 1 in 256, so it is not the same claim as "frames for this
-  identity".
-</p>
-{% else %}
-<p class="empty"><strong>No identities loaded.</strong> This run holds none.</p>
-{% endif %}
-
 {{ identity.verification_legend() }}
 
 <script src="/static/feed.js" defer></script>

@@ -158,11 +158,11 @@ def test_a_same_origin_next_is_where_sign_in_goes() -> None:
                 **form,
                 "username": OPERATOR,
                 "password": OPERATOR_PASSWORD,
-                "next": "/admin/radio",
+                "next": "/system",
             },
         )
     assert response.status_code == 303
-    assert response.headers["location"] == "/admin/radio"
+    assert response.headers["location"] == "/system"
 
 
 # --- 6.2 Provenance on the sign-in form -------------------------------------
@@ -783,10 +783,10 @@ def test_no_auth_bypass_parameter_exists_in_the_web_package() -> None:
 # --- 10.1 Account management is named where it would be looked for ----------
 
 
-def test_the_schema_page_names_the_account_command_and_why_it_is_not_here() -> None:
+def test_the_system_page_names_the_account_command_and_why_it_is_not_here() -> None:
     app = _app()
     with _signed(app) as client:
-        body = " ".join(client.get("/admin/schema").text.split())
+        body = " ".join(client.get("/system").text.split())
     assert "sighop web user" in body
     assert "Accounts are not managed from here" in body
     assert "stolen session" in body
@@ -821,7 +821,7 @@ async def test_the_corpus_replays_byte_identically_with_authentication_wired_in(
         assert anonymous.get("/contacts").status_code == 303
         for record in records[half:]:
             state.pipeline.ingest(record)
-        for path in ("/", "/contacts", "/admin/identities", "/admin/schema", "/chat"):
+        for path in ("/", "/contacts", "/admin/identities", "/system", "/chat"):
             assert signed.get(path).status_code == 200
     await state.pipeline.bus.aclose()
 

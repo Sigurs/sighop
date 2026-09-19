@@ -74,7 +74,9 @@ from sighop.web.guarded import (
 from sighop.web.render import (
     NO_DATABASE,
     Refusal,
+    advert_id,
     collection_for,
+    entity_rows,
     refused,
     render_advert_request,
 )
@@ -160,6 +162,9 @@ async def identities(
         stored=collection_for(stored, degraded="identities cannot be read"),
         bindings=_bindings(rooms, bots),
         loaded=list(page.state.adverts.stubs),
+        # Joined to the loaded rows by public key, the key the advert links use
+        # (design D5); the node hash would join two identities that collide.
+        traffic={row["public_key"]: row for row in entity_rows(page.state, page.feed)},
         advert_now=page.state.adverts.clock.now(),
         node_types=CREATABLE_NODE_TYPES,
         refusal=refusal,
@@ -354,13 +359,34 @@ async def _refuse(
 
 
 @router.get("/{entity_id}", response_class=HTMLResponse)
-async def identity(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+async def identity(
+    entity_id: str, request: Request, page: PanelDep, bot_deleted: str = ""
+) -> HTMLResponse:
     """`sighop keys show`, for a stored identity rather than for a file.
 
     No private key and no ciphertext: `EntityRecord` holds neither, so there is no
     rendering path along which either could escape.
     """
+    return await render_identity(request, page, entity_id, bot_deleted=bot_deleted)
+
+
+async def render_identity(
+    request: Request,
+    page: Panel,
+    entity_id: str,
+    *,
+    bot_deleted: str = "",
+    refusal: Refusal | None = None,
+    status_code: int | None = None,
+) -> HTMLResponse:
+    """One identity's page, for a GET and for a refused bot write alike (design D4).
+
+    A bot is configured here because a bot *is* the identity it runs on: it has
+    no name of its own, and one identity plays one role, so there is at most one.
+    """
     record = await _entity(page, entity_id)
+    if status_code is None:
+        status_code = 200 if record is not None else 404
     return page.page(
         request,
         "admin/identity.html",
@@ -370,8 +396,44 @@ async def identity(entity_id: str, request: Request, page: PanelDep) -> HTMLResp
         can_seal=page.sealing_secret is not None,
         no_sealing_secret=NO_SEALING_SECRET,
         download_note=DOWNLOAD_IS_NOT_OWNER_ONLY,
-        status_code=200 if record is not None else 404,
+        **await _bot_context(page, record),
+        bot_deleted=bot_deleted,
+        refusal=refusal,
+        status_code=status_code,
     )
+
+
+async def _bot_context(page: Panel, record: EntityRecord | None) -> dict[str, object]:
+    """The bot this identity carries, or the offer to create one.
+
+    Only for an identity stored as a bot: being a bot is an explicit choice at
+    creation and never a side effect of having a bot bound to it.
+    """
+    from sighop.bots import drivers as bot_drivers
+
+    context: dict[str, object] = {"is_bot": False, "bot": None}
+    if record is None or record.type != BOT_ENTITY_TYPE or page.persistence is None:
+        return context
+    context["is_bot"] = True
+    context["drivers"] = bot_drivers.driver_names()
+    listed = await page.persistence.bots.list_all()
+    if isinstance(listed, Failed):
+        context["bots_unreadable"] = True
+        return context
+    bot = next((bot for bot in listed.value if bot.entity_id == record.id), None)
+    if bot is None:
+        return context
+    stored = await page.persistence.bot_state.list(bot.id)
+    running = {worker.name for worker in page.state.bots.workers}
+    context.update(
+        bot=bot,
+        bot_state=stored.value if isinstance(stored, Succeeded) else {},
+        running=bot.entity_name in running,
+        advert_id=advert_id(page.state.adverts.stubs, record.public_key)
+        if bot.entity_name in running
+        else None,
+    )
+    return context
 
 
 async def _bindings_for(page: Panel) -> dict[str, list[str]]:

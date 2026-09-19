@@ -33,7 +33,7 @@
   <button type="submit">switch to observe</button>
 </form>
 
-<p><a href="/admin/bots">back to bots</a></p>
+<p><a href="/admin/identities/{{ bot.entity_id }}">back to {{ bot.entity_name }}</a></p>
 {% else %}
 <h1>bot not found</h1>
 <p class="unavailable">No bot with that identifier is stored.</p>

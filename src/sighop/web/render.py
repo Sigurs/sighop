@@ -20,13 +20,16 @@ Two of those decisions are load-bearing:
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
+from sighop.net.adverts import EntityStub
 from sighop.net.contacts import Contact, ContactStore
 from sighop.net.paths import PathStore
 from sighop.net.tx import DEFAULT_CEILING_FRACTION, SchedulerStatus
+from sighop.web.feed import EntityTraffic, FeedHub
+from sighop.web.state import PanelState
 
 VERIFIED_MARK = "✓"
 UNVERIFIED_MARK = "✗"
@@ -207,6 +210,20 @@ def identity_for(contact: Contact) -> IdentityView:
         name=None if contact.name is None else contact.name.text,
         verification="verified" if contact.advert_verified else "unverified",
     )
+
+
+def advert_id(stubs: Iterable[EntityStub], public_key: bytes | None) -> str | None:
+    """The loaded identity a served room or running bot speaks as, by public key.
+
+    By key rather than by name, as `routes/rooms.py` matches, so the advert
+    links go to the identity that is actually on the air (design D6).
+    """
+    if public_key is None:
+        return None
+    for stub in stubs:
+        if stub.identity.public_key == public_key:
+            return stub.entity_id
+    return None
 
 
 def identity_for_key(public_key: bytes, contacts: ContactStore) -> IdentityView:
@@ -621,3 +638,29 @@ def render_ceiling_change(previous: float, ceiling: float, *, actor: str) -> str
         f"web: airtime ceiling {previous * 100:g}% -> {ceiling * 100:g}%{note} "
         f"(by account {actor!r} from the web interface)"
     )
+
+
+def entity_rows(state: PanelState, feed: FeedHub | None) -> list[dict[str, object]]:
+    """Per-entity TX/RX counters (§8), from the traffic the hub has seen.
+
+    With no hub attached the counts are zero and the identities are still
+    listed: "this run holds three identities and none has transmitted" is a
+    different screen from "this run holds no identities".
+    """
+    traffic = feed.traffic if feed is not None else EntityTraffic()
+    rows: list[dict[str, object]] = []
+    for stub in state.adverts.stubs:
+        counts = traffic.for_entity(stub.entity_id, stub.node_hash)
+        rows.append(
+            {
+                "name": stub.name,
+                "entity_id": stub.entity_id,
+                "public_key": stub.identity.public_key.hex(),
+                "node_hash": stub.node_hash,
+                "node_type": stub.node_type.name,
+                "persistent": stub.persistent,
+                "adverts_sent": stub.adverts_sent,
+                **counts,
+            }
+        )
+    return rows

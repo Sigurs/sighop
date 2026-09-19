@@ -1168,7 +1168,7 @@ All four areas confirmed in scope. Priority order for building:
 1. **Admin & config** — CRUD virtual entities, key management, radio settings, enable/disable bots, room passwords and retention.
 2. **Observability dashboard** — live packet feed (WebSocket), airtime and duty-cycle usage against budget, per-entity TX/RX counters, contact table with learned paths, SNR/RSSI, modem health.
 3. **Room browsing** — message history from Postgres, per-room member lists.
-4. **Chat client** — send DMs and channel messages as any companion entity. This makes sighop usable without a handheld and is the strongest argument for the project. Channels (change `channel-messaging`) are listed beside direct conversations with unread indication and read without choosing an identity; posting requires choosing one, and the Public composer says the post is flooded to the whole mesh. A received sender is a claimed name, never a verified identity, and the conversation says names are not authenticated. `/admin/channels` adds hashtag and pre-shared-key channels, re-adds Public, and removes a channel through confirm-and-nonce stating how many messages go with it.
+4. **Chat client** — send DMs and channel messages as any companion entity. This makes sighop usable without a handheld and is the strongest argument for the project. Channels (change `channel-messaging`) are listed beside direct conversations with unread indication and read without choosing an identity; posting requires choosing one, and the Public composer says the post is flooded to the whole mesh. A received sender is a claimed name, never a verified identity, and the conversation says names are not authenticated. The same channel list on `/chat` administers them: it adds hashtag and pre-shared-key channels, re-adds Public, lists stored channels this run could not load, and removes a channel through confirm-and-nonce stating how many messages go with it. Conversations with a contact are started from the contact list, one link per loaded identity.
 
 ### Design direction: instrument panel
 
@@ -1650,8 +1650,10 @@ sighop/
 │   │                   guarded.py (confirm-then-act and its audit event),
 │   │                   feed.py (one bus subscription, per-connection queues),
 │   │                   chat.py (this run's own conversations and channel
-│   │                   logs), routes/chat.py (direct and channel conversations),
-│   │                   routes/admin.py (including /admin/channels),
+│   │                   logs), routes/chat.py (direct and channel conversations,
+│   │                   and channel administration), routes/admin.py (writes and
+│   │                   confirmations), routes/system.py (readback, schema and
+│   │                   the station's gate controls),
 │   │                   serialize.py, render.py (view models), deps.py,
 │   │                   routes/ (session.py: sign-in and sign-out), templates/,
 │   │                   static/ (vendored htmx, no bundler)

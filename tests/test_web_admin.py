@@ -246,10 +246,17 @@ async def test_the_rooms_page_shows_member_and_message_counts(
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
-        body = (await client.get("/admin/rooms")).text
+        body = (await client.get("/rooms")).text
 
     assert "[redacted]" in body
-    assert "not by this run" in body, "an unserved room is not marked as served"
+    assert "unserved" in body, "an unserved room is not marked as served"
+
+    # One list for reading and configuring (consolidate-web-pages 2.2).
+    row = body[body.index("<td>[redacted]</td>") :]
+    row = row[: row.index("</tr>")]
+    assert f'href="/rooms/{room.value.id}"' in row
+    assert f'href="/admin/rooms/{room.value.id}/delete"' in row
+    assert '<td class="num">1</td>' in row, "the message count is not in the row"
 
 
 @pytest.mark.database
@@ -307,8 +314,9 @@ async def test_a_submitted_password_appears_in_no_response_and_no_event(
             admin_password=secret_password,
         )
         assert response.status_code == 303
+        assert response.headers["location"] == "/rooms"
         assert secret_password not in response.text
-        page = (await client.get("/admin/rooms")).text
+        page = (await client.get("/rooms")).text
 
     assert secret_password not in page
     assert secret_password not in repr(log.events), "a password reached an event"
@@ -336,6 +344,7 @@ async def test_setting_retention_goes_through_the_rooms_repository(
             retention_messages="",
         )
     assert response.status_code == 303
+    assert response.headers["location"] == "/rooms"
 
     listed = await persistence.rooms.list_all()
     assert isinstance(listed, Succeeded)
@@ -363,7 +372,7 @@ async def _room(database: Database):
 
 
 @pytest.mark.database
-async def test_the_bots_page_shows_the_greeting_records(database: Database) -> None:
+async def test_a_bot_identitys_page_shows_the_greeting_records(database: Database) -> None:
     """12.5: the records that decide whether a bot acts on a contact again."""
     persistence, bot = await _bot(database)
     assert isinstance(
@@ -373,7 +382,7 @@ async def test_the_bots_page_shows_the_greeting_records(database: Database) -> N
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
-        body = (await client.get("/admin/bots")).text
+        body = (await client.get(f"/admin/identities/{bot.entity_id}")).text
 
     assert "greeted:aabb" in body
     assert "acknowledged" in body
@@ -399,6 +408,8 @@ async def test_an_invalid_driver_configuration_leaves_the_stored_one_unchanged(
             value="not a number",
         )
     assert response.status_code == 400
+    assert "<h1>dev-greeter</h1>" in response.text, "not the identity's page"
+    assert "whole number" in response.text, "the driver's reason is not on the page"
 
     listed = await persistence.bots.list_all()
     assert isinstance(listed, Succeeded)
@@ -420,6 +431,7 @@ async def test_a_valid_driver_configuration_is_stored(database: Database) -> Non
     async with _live(app) as client:
         response = await _apost(client, app, f"/admin/bots/{bot.id}/config", key="burst", value="3")
     assert response.status_code == 303
+    assert response.headers["location"] == f"/admin/identities/{bot.entity_id}"
 
     listed = await persistence.bots.list_all()
     assert isinstance(listed, Succeeded)
@@ -480,12 +492,12 @@ async def _bot(database: Database):
 # --- 12.7 The radio ---------------------------------------------------------
 
 
-def test_the_radio_page_states_that_the_board_does_not_persist_a_change() -> None:
+def test_the_system_page_states_that_the_board_does_not_persist_a_change() -> None:
     """12.7: and that a reset reverts to the board's build defaults."""
     app, _state, _log = _built()
 
     with _client(app) as client:
-        body = client.get("/admin/radio").text
+        body = client.get("/system").text
 
     assert "does not persist" in body
     assert "build" in body and "defaults" in body
@@ -509,10 +521,57 @@ def test_an_unanswered_radio_parameter_shows_as_absent() -> None:
     app, _state, _log = _built(stub_state(probe_result=probe, radio=EU868_NARROW))
 
     with _client(app) as client:
-        body = client.get("/admin/radio").text
+        body = client.get("/system").text
 
     assert "absent (timeout)" in body
     assert "absent (unsupported)" in body
+
+
+def test_the_system_page_shows_the_readback_once_and_links_the_gate_controls() -> None:
+    """consolidate-web-pages 1.2: one readback table, and both confirmations linked
+    — following the link mints a confirmation and changes nothing."""
+    from sighop.radio.modem import EU868_NARROW
+    from sighop.radio.probe import AbsenceReason, Absent, ProbeResult
+
+    probe = ProbeResult(
+        configured_radio=EU868_NARROW,
+        device_name="board",
+        radio=EU868_NARROW,
+        tx_power_dbm=14,
+        firmware_version=Absent(reason=AbsenceReason.UNSUPPORTED),
+        battery_mv=Absent(reason=AbsenceReason.TIMEOUT),
+        mcu_temp_tenths_c=Absent(reason=AbsenceReason.TIMEOUT),
+        sensors_raw=Absent(reason=AbsenceReason.TIMEOUT),
+    )
+    app, state, log = _built(stub_state(probe_result=probe, radio=EU868_NARROW))
+    ceiling = state.scheduler.budget.ceiling_fraction
+
+    with _client(app) as client:
+        body = client.get("/system").text
+        confirm = client.get("/admin/transmit")
+        client.get("/admin/ceiling")
+
+    assert 'href="/admin/transmit"' in body
+    assert 'href="/admin/ceiling"' in body
+    assert body.count("<td>radio readback</td>") == 1
+    assert body.count("<td>tx power</td>") == 1
+    assert "expects revision" in body
+    assert confirm.status_code == 200
+    assert state.scheduler.transmit_enabled is False
+    assert state.scheduler.budget.ceiling_fraction == ceiling
+    assert log.named("web_guarded_action") == []
+
+
+def test_a_run_without_a_probe_still_shows_the_schema_and_the_gate_links() -> None:
+    app, _state, _log = _built()
+
+    with _client(app) as client:
+        body = client.get("/system").text
+
+    assert "no board to ask" in body
+    assert "expects revision" in body
+    assert 'href="/admin/transmit"' in body
+    assert 'href="/admin/ceiling"' in body
 
 
 # --- 13.1 The guarded-action pattern ----------------------------------------
@@ -844,19 +903,21 @@ def _channel_state(database: Database) -> tuple[FastAPI, StubState, RecordingLog
     return app, state, log
 
 
-def test_with_no_database_the_channels_page_offers_no_controls() -> None:
+def test_with_no_database_the_chat_page_offers_no_channel_controls() -> None:
     app, _state, _log = _built()
     with _client(app) as client:
-        body = client.get("/admin/channels").text
+        body = client.get("/chat").text
     assert "require durable storage" in body
     assert 'action="/admin/channels/' not in body
 
 
 @pytest.mark.database
-async def test_the_channels_page_lists_kind_hash_guessable_and_count(database: Database) -> None:
+async def test_the_chat_page_lists_channel_kind_hash_guessable_and_count(
+    database: Database,
+) -> None:
     app, _state, _log = _channel_state(database)
     async with _live(app) as client:
-        body = (await client.get("/admin/channels")).text
+        body = (await client.get("/chat")).text
     assert "Public" in body and ">public<" in body and ">11<" in body
     assert ">guessable<" in body
     assert "sighop channel key" in body and "not shown here" in body
@@ -875,6 +936,7 @@ async def test_a_hashtag_added_in_the_ui_matches_the_cli_and_is_decrypted_at_onc
         page = (await client.get(added.headers["location"])).text
 
     assert added.status_code == 303
+    assert added.headers["location"] == "/chat?added=%23dev-sighop"
     assert "Channel #dev-sighop added" in page
     assert "anyone who knows or guesses its name" in page
     stored = await ChannelRepository(database=database).get("#dev-sighop")
@@ -891,7 +953,7 @@ async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Da
     async with _live(app) as client:
         added = await _apost(client, app, "/admin/channels/psk", name="crew", key=PSK)
         after_add = (await client.get(added.headers["location"])).text
-        listing = (await client.get("/admin/channels")).text
+        listing = (await client.get("/chat")).text
         refused = await _apost(client, app, "/admin/channels/psk", name="crew-2", key=PSK)
         short = await _apost(
             client,
@@ -944,11 +1006,12 @@ async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
         bare = await _apost(client, app, "/admin/channels/1/remove")
         form = (await client.get("/admin/channels/1/remove")).text
         confirmed = await _apost(client, app, "/admin/channels/1/remove", nonce=_nonce(form))
-        again = (await client.get("/admin/channels")).text
+        again = (await client.get("/chat")).text
 
     assert bare.status_code == 403
     assert "40 recorded message(s) will be deleted" in form
     assert confirmed.status_code == 303
+    assert confirmed.headers["location"] == "/chat?removed=Public"
     listed = await ChannelRepository(database=database).list_all()
     assert isinstance(listed, Succeeded) and listed.value == []
     assert state.channels.channels.channels == ()
@@ -1019,8 +1082,11 @@ async def test_deleting_a_room_removes_it_and_keeps_its_identity(database: Datab
     async with _live(app) as client:
         body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
         response = await _apost(client, app, f"/admin/rooms/{room.id}/delete", nonce=_nonce(body))
+        listing = (await client.get(response.headers["location"])).text
 
     assert response.status_code == 303
+    assert response.headers["location"] == f"/rooms?deleted={room.name}"
+    assert f"Room {room.name} deleted" in listing
     assert (await persistence.rooms.list_all()).value == []
     assert [row.name for row in (await persistence.entities.list_all()).value] == [identity.name]
     assert room.id in state.stopped_rooms, "the run was never told to stop serving it"
@@ -1149,8 +1215,14 @@ async def test_deleting_a_bot_removes_its_state_and_keeps_its_identity(
     async with _live(app) as client:
         body = (await client.get(f"/admin/bots/{bot.id}/delete")).text
         response = await _apost(client, app, f"/admin/bots/{bot.id}/delete", nonce=_nonce(body))
+        after = (await client.get(response.headers["location"])).text
 
     assert response.status_code == 303
+    assert response.headers["location"] == (
+        f"/admin/identities/{identity.id}?bot_deleted={identity.name}"
+    )
+    assert f"Bot {identity.name} deleted" in after
+    assert 'action="/admin/bots/create"' in after, "the freed identity offers no new bot"
     assert (await persistence.bots.list_all()).value == []
     assert (await persistence.bot_state.list(bot.id)).value == {}
     assert [row.name for row in (await persistence.entities.list_all()).value] == [identity.name]
@@ -1185,11 +1257,45 @@ async def test_a_bot_page_says_a_bot_is_named_by_its_identity(database: Database
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        body = (await client.get("/admin/bots")).text
+        body = (await client.get(f"/admin/identities/{identity.id}")).text
 
     assert "no name of its own" in body
-    assert "/admin/identities" in body
-    assert identity.name in body
+    assert "renames the bot" in body
+    assert f'href="/admin/identities/{identity.id}/rename"' in body
+
+
+@pytest.mark.database
+async def test_only_a_free_bot_identity_offers_the_create_a_bot_form(database: Database) -> None:
+    """consolidate-web-pages 4.2: the form is on the identity it would create on."""
+    persistence = Persistence(database=database)
+    free = await persistence.entities.store(
+        name="free-bot",
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.CHAT,
+        entity_type="bot",
+    )
+    chat = await persistence.entities.store(
+        name="plain-chat", identity=generate_identity(), secret=SECRET, node_type=NodeType.CHAT
+    )
+    assert isinstance(free, Succeeded) and isinstance(chat, Succeeded)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        offered = (await client.get(f"/admin/identities/{free.value.id}")).text
+        plain = (await client.get(f"/admin/identities/{chat.value.id}")).text
+        created = await _apost(
+            client, app, "/admin/bots/create", entity_id=str(free.value.id), driver="greeter"
+        )
+        listing = (await client.get("/admin/identities")).text
+
+    assert 'action="/admin/bots/create"' in offered
+    assert f'name="entity_id" value="{free.value.id}"' in offered
+    assert 'action="/admin/bots/create"' not in plain
+    assert "<h2>bot</h2>" not in plain
+    assert created.status_code == 303
+    assert created.headers["location"] == f"/admin/identities/{free.value.id}"
+    assert f'<a href="/admin/identities/{free.value.id}">bot &#39;greeter&#39;</a>' in listing
 
 
 # --- Removing an identity through the panel ----------------------------------
@@ -1436,6 +1542,7 @@ async def test_renaming_a_room_changes_only_the_name(database: Database) -> None
         response = await _apost(client, app, f"/admin/rooms/{room.id}/rename", name="the-study")
 
     assert response.status_code == 303
+    assert response.headers["location"] == "/rooms"
     [after] = (await persistence.rooms.list_all()).value
     assert after.name == "the-study"
     assert after.entity_id == room.entity_id
@@ -1522,9 +1629,9 @@ async def test_the_four_remaining_exclusions_are_still_named_where_looked_for(
     app, _state, _log = _built(stub_state(persistence=persistence))
 
     async with _live(app) as client:
-        schema = (await client.get("/admin/schema")).text
+        schema = (await client.get("/system")).text
         identities = (await client.get("/admin/identities")).text
-        channels = (await client.get("/admin/channels")).text
+        channels = (await client.get("/chat")).text
 
     assert "sighop db upgrade" in schema or "database upgrade" in schema
     assert "terminal" in schema

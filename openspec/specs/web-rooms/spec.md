@@ -66,12 +66,23 @@ member's sync position.
 - **THEN** nothing is transmitted and no member's cursor changes
 
 ### Requirement: Rooms the platform does not serve are shown as unserved
-The system SHALL list every room the database holds, and SHALL distinguish the rooms this run is
-serving from those it is not, giving the reason a room is unserved.
+The system SHALL list every room the database holds on one rooms page, and SHALL distinguish the
+rooms this run is serving from those it is not, giving the reason a room is unserved. The same list
+SHALL carry each room's member and message counts, guest access, read-only fallback and retention,
+and SHALL link each room's history, members, post, access, retention, rename, delete and, for a
+served room, advert actions; the page SHALL also carry the form that creates a room.
 
 #### Scenario: A room whose identity is not loaded
 - **WHEN** a room exists whose identity this run did not load
 - **THEN** the room is listed as unserved with that reason, and its stored history is still browsable
+
+#### Scenario: One list for reading and configuring
+- **WHEN** the rooms page is opened on a run with a stored room
+- **THEN** that room's row shows its counts, access and retention, and links both to its history and members and to its configuration actions
+
+#### Scenario: Returning after a room write
+- **WHEN** a room's access, retention or name is changed, or a room is created or deleted
+- **THEN** the operator is returned to the rooms page
 
 ### Requirement: A room can be posted to as its own identity, and posting is guarded
 The system SHALL allow an operator to post to a room the database holds, as that room's own

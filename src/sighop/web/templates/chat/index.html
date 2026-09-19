@@ -33,53 +33,72 @@
 </table>
 {% else %}
 <p class="empty">
-  <strong>No conversations.</strong> Pick an identity and a contact below to
-  start one.
+  <strong>No conversations.</strong> Start one from the
+  <a href="/contacts">contacts</a> page: each contact links to a conversation as
+  each identity this run holds.
 </p>
 {% endif %}
-
-<h2>start a conversation</h2>
-{% if identities and contacts %}
-<table>
-  <thead><tr><th>contact</th>{% for entity in identities %}<th>as {{ entity.name }}</th>{% endfor %}</tr></thead>
-  <tbody>
-    {% for contact in contacts %}
-    <tr>
-      <td>{{ identity.identity(contact_views[contact.public_key.hex()], key=false) }}</td>
-      {% for entity in identities %}
-      <td><a href="/chat/{{ entity.identity.public_key.hex() }}/{{ contact.public_key.hex() }}">open</a></td>
-      {% endfor %}
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% elif not identities %}
+{% if not identities %}
 <p class="empty">
   <strong>No identity to send as.</strong> A conversation is between one local
   identity and one contact, and this run holds no identities — nothing can be
   composed until one is chosen.
 </p>
-{% else %}
-<p class="empty">
-  <strong>No contacts heard.</strong> A contact arrives from a verified advert.
-</p>
 {% endif %}
 
 <h2>channels</h2>
+{% if refusal %}
+<p class="unavailable"><strong>Refused.</strong> {{ refusal.reason }}</p>
+{% endif %}
+{% if just_added %}
+<p class="note">
+  <strong>Channel {{ just_added.name }} added</strong> with hash
+  <span class="mono">{{ '%02x' % just_added.channel_hash }}</span>; this run decrypts on it now.
+  {% if just_added.guessable %}
+  <strong>It is guessable:</strong> {{ guessable_statement }}.
+  {% endif %}
+</p>
+{% endif %}
+{% if removed %}
+<p class="note"><strong>Channel {{ removed }} removed</strong> with its recorded messages.</p>
+{% endif %}
+{% if channels_unreadable %}
+<p class="unavailable">
+  <strong>Stored channels cannot be read.</strong> The database is unreachable;
+  only the channels this run loaded are listed.
+</p>
+{% endif %}
+
 {% if channels %}
 <p class="note">Reading a channel needs no identity. Channel sender names are not
 authenticated: anyone holding a channel's key can claim any name.</p>
 <table>
-  <thead><tr><th>channel</th><th>hash</th><th>key</th><th></th></tr></thead>
+  <thead>
+    <tr><th>channel</th>{% if not no_database %}<th>kind</th>{% endif %}<th>hash</th><th>key</th>
+        {% if not no_database %}<th class="num">messages</th><th>loaded</th>{% endif %}<th></th></tr>
+  </thead>
   <tbody>
     {% for row in channels %}
     <tr{% if row.new %} class="conversation-new"{% endif %}>
-      <td>{{ row.channel.name }}</td>
-      <td class="mono">{{ '%02x' % row.channel.channel_hash }}</td>
-      <td>{% if row.channel.guessable %}<span class="guessable">guessable</span> — anyone who knows the name can read and post{% else %}pre-shared{% endif %}</td>
+      <td>{{ row.name }}</td>
+      {% if not no_database %}<td class="mono">{{ row.kind or '—' }}</td>{% endif %}
+      <td class="mono">{{ '%02x' % row.channel_hash }}</td>
+      <td>{% if row.guessable %}<span class="guessable">guessable</span> — anyone who knows the name can read and post{% else %}pre-shared{% endif %}</td>
+      {% if not no_database %}
+      <td class="num">{{ row.messages if row.messages is not none else '—' }}</td>
+      <td class="mono">{{ 'yes' if row.loaded else 'not loaded' }}</td>
+      {% endif %}
       <td>
-        <a href="/chat/channel/{{ row.channel.id }}">open</a>
+        {% if row.loaded %}
+        <a href="/chat/channel/{{ row.id }}">open</a>
         {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+        {% endif %}
+        {% if row.stored %}
+        {% if row.loaded %}·{% endif %}
+        <a href="/admin/channels/{{ row.id }}/rename">rename…</a>
+        ·
+        <a href="/admin/channels/{{ row.id }}/remove">remove…</a>
+        {% endif %}
       </td>
     </tr>
     {% endfor %}
@@ -88,13 +107,70 @@ authenticated: anyone holding a channel's key can claim any name.</p>
 {% else %}
 <p class="empty">
   <strong>No channels loaded.</strong> Group text on the air is left undecrypted
-  and appears only in the packet feed. Channels are added under
-  <a href="/admin/channels">channels</a>.
+  and appears only in the packet feed.
 </p>
 {% endif %}
 {% for name in channels_skipped %}
 <p class="unavailable">Channel {{ name }} is stored but not loaded: its pre-shared key does not open under SIGHOP_SECRET_KEY.</p>
 {% endfor %}
+
+{% if no_database %}
+<p class="unavailable"><strong>No channel administration.</strong> {{ no_database_note }}</p>
+{% else %}
+<p class="note">Guessable: {{ guessable_statement }}.</p>
+
+{% set adding_hashtag = refusal if refusal and refusal.field in ('hashtag', '') else none %}
+<h2>add a hashtag channel</h2>
+<form method="post" action="/admin/channels/hashtag">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>hashtag
+      <input class="mono" name="hashtag" required placeholder="#dev-sighop"
+             value="{{ adding_hashtag.value('hashtag') if adding_hashtag else '' }}">
+    </label>
+    <label>name
+      <input name="name" placeholder="defaults to the hashtag"
+             value="{{ adding_hashtag.value('name') if adding_hashtag else '' }}">
+    </label>
+  </p>
+  <p class="note">
+    <strong>A hashtag channel's key is derived from its name:</strong> {{ guessable_statement }}.
+    It addresses a channel; it does not make it private.
+  </p>
+  <button type="submit">add hashtag channel</button>
+</form>
+
+{% set adding_psk = refusal if refusal and refusal.field == 'psk' else none %}
+<h2>add a pre-shared-key channel</h2>
+<form method="post" action="/admin/channels/psk" autocomplete="off">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>name
+      <input name="name" required value="{{ adding_psk.value('name') if adding_psk else '' }}">
+    </label>
+    <label>key (base64, 16 or 32 bytes)
+      {# A password field, and never re-filled: the key is the credential. #}
+      <input class="mono" type="password" name="key" required autocomplete="off">
+    </label>
+  </p>
+  <button type="submit">add pre-shared-key channel</button>
+</form>
+
+{% if not public_stored %}
+<h2>Public</h2>
+<form method="post" action="/admin/channels/public">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p class="note">
+    The stock MeshCore Public channel was removed. Adding it back transmits
+    nothing; posting to it floods the whole mesh, and its key is in every stock client.
+  </p>
+  <button type="submit">add Public again</button>
+</form>
+{% endif %}
+
+<h2>channel keys are not shown here</h2>
+<p class="note">{{ keys_note }}</p>
+{% endif %}
 
 {{ identity.verification_legend() }}
 {% endblock %}
