@@ -64,6 +64,17 @@ ADV_TYPE_MASK = 0x0F
 
 GEO_SCALE = 1_000_000
 
+# examples/simple_repeater/MyMesh.cpp::onControlDataRecv. The control byte's
+# upper nibble is the subtype; firmware only acts on subtypes with bit 7 set
+# (`Mesh.cpp`, zero-hop DIRECT only).
+CONTROL_SUBTYPE_MASK = 0xF0
+CTL_TYPE_NODE_DISCOVER_REQ = 0x80
+CTL_TYPE_NODE_DISCOVER_RESP = 0x90
+DISCOVER_TAG_SIZE = 4
+DISCOVER_KEY_PREFIX_SIZE = 8
+DISCOVER_REQ_SIZES = (6, 10)  # control, filter, tag [, since]
+DISCOVER_RESP_SIZES = (6 + DISCOVER_KEY_PREFIX_SIZE, 6 + PUB_KEY_SIZE)  # control, snr, tag, key
+
 
 class NodeType(IntEnum):
     """Advert appdata flags, low nibble — an enum, not a bit field.
@@ -230,12 +241,75 @@ class TracePayload:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoverRequest:
+    """A CONTROL `NODE_DISCOVER_REQ`: a node asking which nodes of the types in
+    `type_filter` are in direct range (`MyMesh.cpp::sendNodeDiscoverReq`).
+
+    `flags` is the control byte's low nibble, kept whole: bit 0 asks responders
+    for an 8-byte key prefix instead of the full key, and bits 1-3 are unused
+    today but must survive a rebuild. `since` is `None` for the 6-byte form — a
+    present `since=0`, which the repeater firmware itself sends, is not the same
+    frame.
+    """
+
+    flags: int
+    type_filter: int
+    tag: bytes
+    since: int | None = None
+
+    @property
+    def prefix_only(self) -> bool:
+        return bool(self.flags & 0x01)
+
+    @property
+    def selected_node_types(self) -> tuple[NodeType | int, ...]:
+        """The node types the filter bit field (`1 << node type`) selects."""
+        return tuple(_node_type(bit) for bit in range(8) if self.type_filter & (1 << bit))
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoverResponse:
+    """A CONTROL `NODE_DISCOVER_RESP`: a node answering a discovery request.
+
+    Nothing here is authenticated — the payload carries no signature. The key is
+    whatever the sender chose to put there, hence `claimed_key`; the SNR is the
+    responder's own report of how it heard the request. Neither may be treated
+    as an identity or a measurement of ours.
+    """
+
+    node_type: int
+    snr_quarter_db: int
+    tag: bytes
+    claimed_key: bytes
+
+    @property
+    def snr_db(self) -> float:
+        return self.snr_quarter_db / 4
+
+    @property
+    def key_is_prefix(self) -> bool:
+        return len(self.claimed_key) == DISCOVER_KEY_PREFIX_SIZE
+
+    @property
+    def node_type_name(self) -> NodeType | int:
+        return _node_type(self.node_type)
+
+
+def _node_type(value: int) -> NodeType | int:
+    try:
+        return NodeType(value)
+    except ValueError:
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class UnparsedPayload:
     """A payload type this milestone recognizes but does not interpret.
 
-    MULTIPART (reassembly is an explicit v1 non-goal), CONTROL, RAW_CUSTOM and
-    the reserved type values. The bytes are preserved rather than dropped so a
-    frame carrying one still decodes, round-trips and counts in the corpus.
+    MULTIPART (reassembly is an explicit v1 non-goal), CONTROL other than node
+    discovery, RAW_CUSTOM and the reserved type values. The bytes are preserved
+    rather than dropped so a frame carrying one still decodes, round-trips and
+    counts in the corpus.
     """
 
     payload_type: PayloadType
@@ -249,6 +323,8 @@ type ParsedPayload = (
     | Acknowledgement
     | Advert
     | TracePayload
+    | DiscoverRequest
+    | DiscoverResponse
     | UnparsedPayload
 )
 
@@ -271,6 +347,8 @@ def parse_payload(payload_type: PayloadType, payload: bytes) -> DecodeResult[Par
         return parse_advert(payload)
     if payload_type is PayloadType.TRACE:
         return TracePayload(raw=payload)
+    if payload_type is PayloadType.CONTROL:
+        return parse_control(payload)
     return UnparsedPayload(payload_type=payload_type, raw=payload)
 
 
@@ -405,6 +483,50 @@ def parse_advert(payload: bytes) -> DecodeResult[Advert]:
         timestamp=int.from_bytes(payload[PUB_KEY_SIZE : PUB_KEY_SIZE + 4], "little"),
         signature=payload[PUB_KEY_SIZE + 4 : ADVERT_FIXED_SIZE],
         appdata=payload[ADVERT_FIXED_SIZE:],
+    )
+
+
+def parse_control(
+    payload: bytes,
+) -> DecodeResult[DiscoverRequest | DiscoverResponse | UnparsedPayload]:
+    """Parse a CONTROL payload: node discovery is interpreted, every other
+    subtype — and an empty payload — is preserved uninterpreted.
+
+    Lengths are strict, as for ACK: the firmware reads a request of 6 bytes or
+    more and ignores a partial `since`, but bytes a rebuild could not reproduce
+    are better surfaced as a failure than parsed around.
+    """
+    subtype = payload[0] & CONTROL_SUBTYPE_MASK if payload else None
+    if subtype == CTL_TYPE_NODE_DISCOVER_REQ:
+        if len(payload) not in DISCOVER_REQ_SIZES:
+            return _bad_discover_length("NODE_DISCOVER_REQ", payload, DISCOVER_REQ_SIZES)
+        return DiscoverRequest(
+            flags=payload[0] & 0x0F,
+            type_filter=payload[1],
+            tag=payload[2:6],
+            since=int.from_bytes(payload[6:10], "little") if len(payload) == 10 else None,
+        )
+    if subtype == CTL_TYPE_NODE_DISCOVER_RESP:
+        if len(payload) not in DISCOVER_RESP_SIZES:
+            return _bad_discover_length("NODE_DISCOVER_RESP", payload, DISCOVER_RESP_SIZES)
+        return DiscoverResponse(
+            node_type=payload[0] & 0x0F,
+            snr_quarter_db=int.from_bytes(payload[1:2], "little", signed=True),
+            tag=payload[2:6],
+            claimed_key=payload[6:],
+        )
+    return UnparsedPayload(payload_type=PayloadType.CONTROL, raw=payload)
+
+
+def _bad_discover_length(name: str, payload: bytes, sizes: tuple[int, ...]) -> DecodeFailure:
+    return DecodeFailure(
+        reason=FailureReason.BAD_PAYLOAD_LENGTH,
+        offset=0,
+        raw=payload,
+        detail=(
+            f"{name} payload is {len(payload)} bytes; only "
+            f"{' or '.join(str(size) for size in sizes)} are valid"
+        ),
     )
 
 
@@ -587,6 +709,45 @@ def build_ack(ack: Acknowledgement) -> bytes:
     return ack.checksum + ack.tail
 
 
+def build_discover_request(request: DiscoverRequest) -> bytes:
+    if not 0 <= request.flags <= 0x0F:
+        raise EncodeError("discover request flags must fit the control byte's low nibble")
+    if not 0 <= request.type_filter <= 0xFF:
+        raise EncodeError("discover request type filter must be one byte")
+    if len(request.tag) != DISCOVER_TAG_SIZE:
+        raise EncodeError(f"discover request tag must be {DISCOVER_TAG_SIZE} bytes")
+    since = b""
+    if request.since is not None:
+        if not 0 <= request.since <= 0xFFFFFFFF:
+            raise EncodeError("discover request since must fit 4 bytes")
+        since = request.since.to_bytes(4, "little")
+    return (
+        bytes([CTL_TYPE_NODE_DISCOVER_REQ | request.flags, request.type_filter])
+        + request.tag
+        + since
+    )
+
+
+def build_discover_response(response: DiscoverResponse) -> bytes:
+    if not 0 <= response.node_type <= 0x0F:
+        raise EncodeError("discover response node type must fit the control byte's low nibble")
+    if not -128 <= response.snr_quarter_db <= 127:
+        raise EncodeError("discover response SNR must fit one signed byte")
+    if len(response.tag) != DISCOVER_TAG_SIZE:
+        raise EncodeError(f"discover response tag must be {DISCOVER_TAG_SIZE} bytes")
+    if len(response.claimed_key) not in (DISCOVER_KEY_PREFIX_SIZE, PUB_KEY_SIZE):
+        raise EncodeError(
+            f"discover response claimed key must be {DISCOVER_KEY_PREFIX_SIZE} or "
+            f"{PUB_KEY_SIZE} bytes"
+        )
+    return (
+        bytes([CTL_TYPE_NODE_DISCOVER_RESP | response.node_type])
+        + response.snr_quarter_db.to_bytes(1, "little", signed=True)
+        + response.tag
+        + response.claimed_key
+    )
+
+
 def _check_buildable_ciphertext(ciphertext: bytes) -> None:
     if not ciphertext or len(ciphertext) % CIPHER_BLOCK_SIZE:
         raise EncodeError(
@@ -638,6 +799,10 @@ def build_payload(parsed: ParsedPayload) -> bytes:
             return build_advert(parsed)
         case TracePayload():
             return parsed.raw
+        case DiscoverRequest():
+            return build_discover_request(parsed)
+        case DiscoverResponse():
+            return build_discover_response(parsed)
         case UnparsedPayload():
             return parsed.raw
 

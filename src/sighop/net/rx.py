@@ -36,7 +36,10 @@ from sighop.protocol.payloads import (
     Advert,
     AnonRequestEnvelope,
     DirectEnvelope,
+    DiscoverRequest,
+    DiscoverResponse,
     GroupEnvelope,
+    NodeType,
     ParsedPayload,
     UnparsedPayload,
     parse_payload,
@@ -296,6 +299,23 @@ def outcome_fields(record: RxRecord) -> dict[str, object]:
             }
         case Uninterpreted():
             return {"outcome": "uninterpreted_payload"}
+        case Payload(payload=DiscoverRequest() as request):
+            return {
+                "outcome": "discover_request",
+                "control_tag": request.tag.hex(),
+                "discover_filter": request.type_filter,
+                "discover_prefix_only": request.prefix_only,
+            }
+        case Payload(payload=DiscoverResponse() as response):
+            # The key is a claim — the payload carries no signature — so only a
+            # prefix travels in the event, named as what it is.
+            return {
+                "outcome": "discover_response",
+                "control_tag": response.tag.hex(),
+                "discover_node_type": _node_type_label(response.node_type_name),
+                "discover_snr_db": response.snr_db,
+                "discover_key_prefix": response.claimed_key[:8].hex(),
+            }
         case _:
             # An encrypted payload with no key held is a normal outcome, and
             # is reported as one: not decrypted, not failed.
@@ -338,3 +358,49 @@ def emit_packet_rx(
         src_hash=record.src_hash,
         **fields,
     )
+
+
+# --- Node discovery --------------------------------------------------------
+
+DISCOVERY_KEY_LABEL = "unauthenticated"
+"""How every view qualifies a discovery response's key: the payload carries no
+signature, so the key is whatever the sender chose (design D6)."""
+
+
+def discovery_summary(record: RxRecord) -> str | None:
+    """One line saying what a node discovery frame carries, or `None` for any
+    other record."""
+    match record.outcome:
+        case Payload(payload=payload):
+            return describe_discovery(payload)
+    return None
+
+
+def describe_discovery(payload: ParsedPayload) -> str | None:
+    """The discovery wording, from the payload alone; `None` if it is not one.
+
+    The single source of the wording the monitor and the web feed both show, so
+    the "unauthenticated" and "reported" qualifiers cannot drift apart.
+    """
+    match payload:
+        case DiscoverRequest() as request:
+            wants = ", ".join(_node_type_label(t) for t in request.selected_node_types) or "none"
+            line = f"discover request  tag={request.tag.hex()}  wants={wants}"
+            if request.prefix_only:
+                line += "  key-prefix-only"
+            if request.since is not None:
+                line += f"  since={request.since}"
+            return line
+        case DiscoverResponse() as response:
+            key = response.claimed_key.hex()[:16]
+            return (
+                f"discover response  tag={response.tag.hex()}  "
+                f"{_node_type_label(response.node_type_name)}  "
+                f"reported snr={response.snr_db:+.2f} dB  "
+                f"claimed key={key} ({DISCOVERY_KEY_LABEL})"
+            )
+    return None
+
+
+def _node_type_label(node_type: NodeType | int) -> str:
+    return node_type.name if isinstance(node_type, NodeType) else f"type_{node_type}"

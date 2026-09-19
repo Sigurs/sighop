@@ -23,7 +23,7 @@ from typing import Any
 
 from sighop.db.repositories import PacketLogRow
 from sighop.net.bus import Submission, TxOutcome
-from sighop.net.rx import RxRecord, outcome_fields
+from sighop.net.rx import RxRecord, discovery_summary, outcome_fields
 
 RX = "rx"
 TX = "tx"
@@ -60,6 +60,9 @@ def rx_record(record: RxRecord, *, duplicate: bool = False, source: str = LIVE) 
         "duplicate": duplicate,
         "outcome": fields.get("outcome"),
         "reason": _reason(fields),
+        # What a decoded frame carries, where there is a line worth showing —
+        # node discovery today. Live only: the packet log does not keep it.
+        "summary": discovery_summary(record),
         # Present only for what could not be decoded, which is the only case
         # where the bytes themselves are the evidence.
         "raw": record.raw.hex() if record.failed else None,
@@ -130,6 +133,7 @@ def logged_packet(row: PacketLogRow) -> dict[str, Any]:
         "duplicate": row.outcome == "duplicate",
         "outcome": row.outcome,
         "reason": row.reason,
+        "summary": None,
         "raw": None if row.raw is None else row.raw.hex(),
         "priority": row.priority_class,
         "airtime_ms": row.airtime_ms,

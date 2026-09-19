@@ -24,6 +24,8 @@ from sighop.protocol.crypto import VerifiedAdvert, verify_advert
 from sighop.protocol.packet import Packet, PayloadType, RouteType, decode, encode
 from sighop.protocol.payloads import (
     Advert,
+    DiscoverRequest,
+    DiscoverResponse,
     NodeType,
     build_payload,
     parse_payload,
@@ -82,6 +84,15 @@ EXPECTED_ADVERT_COUNT = 98
 # stops reading them fails on evidence rather than on a synthetic fixture.
 EXPECTED_TRANSPORT_FRAMES = 1
 EXPECTED_TRANSPORT_CODES = (117, 0)
+
+# Every CONTROL frame the corpus holds is node discovery (decode-control-discovery),
+# by (kind, payload length). The 14-byte key-prefix response is unsighted and
+# stays synthetic-only.
+EXPECTED_CONTROL_FORMS = {
+    ("discover_request", 6): 3,
+    ("discover_request", 10): 9,
+    ("discover_response", 38): 156,
+}
 
 
 @pytest.fixture(scope="module")
@@ -249,6 +260,29 @@ def test_the_one_transport_routed_frame_decodes_with_its_codes(
     assert packet.route_type is RouteType.TRANSPORT_FLOOD, frame.describe()
     assert packet.transport_codes == EXPECTED_TRANSPORT_CODES, frame.describe()
     assert packet.payload_type is PayloadType.ADVERT, frame.describe()
+
+
+def test_every_corpus_control_frame_decodes_as_discovery(
+    decoded: list[tuple[CorpusFrame, Packet]],
+) -> None:
+    """CONTROL stopped being preserved uninterpreted: every recorded one is a
+    discovery request or response, and none falls back. The byte-identical
+    rebuild is `test_every_corpus_payload_rebuilds_byte_identically`'s."""
+    forms: collections.Counter[tuple[str, int]] = collections.Counter()
+    for frame, packet in decoded:
+        if packet.payload_type is not PayloadType.CONTROL:
+            continue
+        parsed = parse_payload(packet.payload_type, packet.payload)
+        match parsed:
+            case DiscoverRequest():
+                forms["discover_request", len(packet.payload)] += 1
+            case DiscoverResponse():
+                assert parsed.node_type_name is NodeType.REPEATER, frame.describe()
+                forms["discover_response", len(packet.payload)] += 1
+            case _:
+                pytest.fail(f"CONTROL frame did not decode as discovery: {frame.describe()}")
+
+    assert dict(forms) == EXPECTED_CONTROL_FORMS
 
 
 # --- Adverts ---------------------------------------------------------------

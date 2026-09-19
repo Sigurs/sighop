@@ -24,6 +24,7 @@ from sighop.net.rx import (
     Uninterpreted,
     decode_event,
     decode_stream,
+    discovery_summary,
     outcome_fields,
 )
 from sighop.protocol.crypto import AdvertVerificationFailure, VerifiedAdvert
@@ -155,6 +156,69 @@ def test_an_uninterpreted_payload_type_is_an_outcome_not_a_failure():
     assert record.outcome.payload_type is PayloadType.CONTROL
     assert record.outcome.raw == b"\xde\xad"
     assert not record.failed
+
+
+# --- Node discovery ---------------------------------------------------------
+
+DISCOVER_REQ_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
+    "80069a7d3916"
+)
+DISCOVER_RESP_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
+    "922f9a7d3916[redacted]"
+)
+
+
+def test_a_discovery_request_has_its_own_outcome():
+    record = decode_event(RxEvent(packet=DISCOVER_REQ_FRAME, rx_meta=None))
+
+    assert not record.failed
+    assert outcome_fields(record) == {
+        "outcome": "discover_request",
+        "control_tag": "9a7d3916",
+        "discover_filter": 0x06,
+        "discover_prefix_only": False,
+    }
+
+
+def test_a_discovery_response_has_its_own_outcome_and_only_a_key_prefix():
+    record = decode_event(RxEvent(packet=DISCOVER_RESP_FRAME, rx_meta=None))
+
+    assert not record.failed
+    assert outcome_fields(record) == {
+        "outcome": "discover_response",
+        "control_tag": "9a7d3916",
+        "discover_node_type": "REPEATER",
+        "discover_snr_db": 11.75,
+        "discover_key_prefix": "[redacted]13728be1",
+    }
+
+
+def test_a_malformed_discovery_payload_is_a_payload_failure():
+    record = decode_event(RxEvent(packet=DISCOVER_REQ_FRAME + b"\x00", rx_meta=None))
+
+    assert isinstance(record.outcome, PayloadFailure)
+    assert record.payload_type is PayloadType.CONTROL
+
+
+def test_discovery_summary_for_a_request():
+    record = decode_event(RxEvent(packet=DISCOVER_REQ_FRAME, rx_meta=None))
+
+    assert discovery_summary(record) == "discover request  tag=9a7d3916  wants=CHAT, REPEATER"
+
+
+def test_discovery_summary_for_a_response_marks_the_key_as_a_claim():
+    record = decode_event(RxEvent(packet=DISCOVER_RESP_FRAME, rx_meta=None))
+
+    assert discovery_summary(record) == (
+        "discover response  tag=9a7d3916  REPEATER  reported snr=+11.75 dB  "
+        "claimed key=[redacted]13728be1 (unauthenticated)"
+    )
+
+
+def test_discovery_summary_is_absent_for_anything_else():
+    raw = bytes([RouteType.FLOOD | (PayloadType.CONTROL << 2), 0x00]) + b"\xde\xad"
+
+    assert discovery_summary(decode_event(RxEvent(packet=raw, rx_meta=None))) is None
 
 
 def test_a_modem_unparsed_frame_is_forwarded_with_its_reason():

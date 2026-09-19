@@ -73,6 +73,7 @@ from sighop.net.rx import (
     RxRecord,
     StructuralFailure,
     Uninterpreted,
+    describe_discovery,
 )
 from sighop.net.tx import SchedulerStatus
 from sighop.protocol.crypto import AdvertVerification, VerifiedAdvert
@@ -81,6 +82,8 @@ from sighop.protocol.payloads import (
     Acknowledgement,
     AnonRequestEnvelope,
     DirectEnvelope,
+    DiscoverRequest,
+    DiscoverResponse,
     GroupEnvelope,
     NodeType,
     ParsedPayload,
@@ -213,6 +216,11 @@ def _render_payload(payload: ParsedPayload) -> str:
             return f"ack  checksum={checksum.hex()}{suffix}"
         case TracePayload(raw=raw):
             return f"trace  {len(raw)}B: {_truncate_hex(raw)}"
+        case DiscoverRequest() | DiscoverResponse():
+            # Never the verified mark: a discovery response's key is a claim.
+            summary = describe_discovery(payload)
+            assert summary is not None
+            return summary
     raise AssertionError(f"unhandled payload {payload!r}")  # pragma: no cover
 
 

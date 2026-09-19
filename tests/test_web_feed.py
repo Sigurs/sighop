@@ -25,6 +25,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from sighop.db.packetlog import rx_row
 from sighop.db.repositories import PacketLogRow
 from sighop.net.bus import (
     IngressPipeline,
@@ -37,6 +38,7 @@ from sighop.net.bus import (
 from sighop.net.dedup import DedupCache
 from sighop.net.paths import PathStore
 from sighop.net.rx import decode_event
+from sighop.protocol.packet import PayloadType, RouteType
 from sighop.radio.modem import EU868_NARROW, RxEvent, RxMeta, UnparsedEvent
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.feed import DEFAULT_CONNECTION_QUEUE, FeedHub
@@ -277,6 +279,34 @@ def test_an_unparsed_frame_carries_its_bytes_and_its_reason() -> None:
     assert row["outcome"] == "modem_unparsed"
     assert row["reason"] == "not a KISS frame"
     assert row["raw"] == "fffe", "the evidence was dropped on the way to the browser"
+
+
+DISCOVER_RESP_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
+    "922f9a7d3916[redacted]"
+)
+"""DIRECT CONTROL, zero hops: a corpus node discovery response."""
+
+
+def test_a_discovery_response_carries_its_outcome_and_summary() -> None:
+    """decode-control-discovery: the detail column says what the frame is, and
+    that the key it names is a claim."""
+    row = rx_record(_reception(DISCOVER_RESP_FRAME))
+
+    assert row["outcome"] == "discover_response"
+    assert row["reason"] is None
+    assert "tag=9a7d3916" in row["summary"]
+    assert "(unauthenticated)" in row["summary"]
+
+
+def test_a_recorded_discovery_response_keeps_its_outcome_but_no_summary() -> None:
+    row = logged_packet(rx_row(_reception(DISCOVER_RESP_FRAME)))
+
+    assert row["outcome"] == "discover_response"
+    assert row["summary"] is None
+
+
+def test_a_frame_without_a_summary_serialises_none() -> None:
+    assert rx_record(_reception())["summary"] is None
 
 
 def test_a_suppressed_transmission_is_in_the_feed_with_its_outcome() -> None:

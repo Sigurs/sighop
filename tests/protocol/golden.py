@@ -21,6 +21,8 @@ from sighop.protocol.payloads import (
     Advert,
     AnonRequestEnvelope,
     DirectEnvelope,
+    DiscoverRequest,
+    DiscoverResponse,
     GroupEnvelope,
     NodeType,
     TracePayload,
@@ -75,6 +77,18 @@ def render_payload(packet: Packet) -> str:
             return f"ack checksum={parsed.checksum.hex()} tail={tail}"
         case TracePayload():
             return f"trace {_ciphertext(parsed.raw)}"
+        case DiscoverRequest():
+            since = "-" if parsed.since is None else str(parsed.since)
+            return (
+                f"discover_req flags={parsed.flags:x} filter={parsed.type_filter:02x} "
+                f"tag={parsed.tag.hex()} since={since}"
+            )
+        case DiscoverResponse():
+            # The key is public and unauthenticated — a claim, recorded as sent.
+            return (
+                f"discover_resp node_type={parsed.node_type} snr_q={parsed.snr_quarter_db} "
+                f"tag={parsed.tag.hex()} claimed_key={parsed.claimed_key.hex()}"
+            )
         case UnparsedPayload():
             return f"unparsed {_ciphertext(parsed.raw)}"
 

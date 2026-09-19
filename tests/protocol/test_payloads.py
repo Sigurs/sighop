@@ -19,6 +19,8 @@ from sighop.protocol.payloads import (
     AdvertAppData,
     AnonRequestEnvelope,
     DirectEnvelope,
+    DiscoverRequest,
+    DiscoverResponse,
     GroupEnvelope,
     GroupTextBody,
     NodeType,
@@ -32,6 +34,8 @@ from sighop.protocol.payloads import (
     build_ack,
     build_advert,
     build_appdata,
+    build_discover_request,
+    build_discover_response,
     build_group_text_body,
     build_payload,
     build_returned_path_body,
@@ -177,6 +181,117 @@ def test_unsupported_payload_types_are_preserved_not_dropped(
     assert parsed.payload_type is payload_type
     assert parsed.raw == raw
     assert build_payload(parsed) == raw
+
+
+# --- CONTROL: node discovery ------------------------------------------------
+
+# A 38-byte response lifted from the corpus (2026-09-05): a repeater answering
+# the request above it, tag 9a7d3916, reporting it heard the request at +11.75 dB.
+CORPUS_DISCOVER_RESP = bytes.fromhex(
+    "922f9a7d3916[redacted]"
+)
+
+
+def test_discover_request_without_since() -> None:
+    raw = bytes.fromhex("80049a7d3916")
+    request = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(request, DiscoverRequest)
+    assert request.prefix_only is False
+    assert request.selected_node_types == (NodeType.REPEATER,)
+    assert request.tag == bytes.fromhex("9a7d3916")
+    assert request.since is None
+    assert build_payload(request) == raw
+
+
+def test_discover_request_with_since() -> None:
+    raw = bytes.fromhex("8006129320690a000000")
+    request = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(request, DiscoverRequest)
+    assert request.selected_node_types == (NodeType.CHAT, NodeType.REPEATER)
+    assert request.tag == bytes.fromhex("12932069")
+    assert request.since == 10
+    assert build_payload(request) == raw
+
+
+def test_discover_request_since_zero_is_not_absent() -> None:
+    """The repeater firmware itself sends `since=0` in the 10-byte form."""
+    with_zero = build_discover_request(DiscoverRequest(0, 0x04, b"\x01\x02\x03\x04", since=0))
+    without = build_discover_request(DiscoverRequest(0, 0x04, b"\x01\x02\x03\x04"))
+    assert len(with_zero) == 10
+    assert len(without) == 6
+
+
+def test_discover_request_preserves_every_flag_bit() -> None:
+    raw = bytes.fromhex("8f10deadbeef")
+    request = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(request, DiscoverRequest)
+    assert request.prefix_only is True
+    assert request.flags == 0x0F
+    assert request.selected_node_types == (NodeType.SENSOR,)
+    assert build_payload(request) == raw
+
+
+def test_discover_response_with_full_key() -> None:
+    response = ok(parse_payload(PayloadType.CONTROL, CORPUS_DISCOVER_RESP))
+    assert isinstance(response, DiscoverResponse)
+    assert response.node_type_name is NodeType.REPEATER
+    assert response.snr_db == 11.75
+    assert response.tag == bytes.fromhex("9a7d3916")
+    assert response.claimed_key == CORPUS_DISCOVER_RESP[6:]
+    assert response.key_is_prefix is False
+    assert build_payload(response) == CORPUS_DISCOVER_RESP
+
+
+def test_discover_response_with_key_prefix_and_negative_snr() -> None:
+    raw = bytes([0x92, 0xF6]) + b"\x01\x02\x03\x04" + bytes(range(8))
+    response = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(response, DiscoverResponse)
+    assert response.key_is_prefix is True
+    assert response.claimed_key == bytes(range(8))
+    assert response.snr_db == -2.5
+    assert build_payload(response) == raw
+
+
+def test_discover_response_with_an_unnamed_node_type_still_parses() -> None:
+    raw = bytes([0x9C, 0x00]) + bytes(4) + bytes(8)
+    response = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(response, DiscoverResponse)
+    assert response.node_type_name == 0x0C
+    assert build_payload(response) == raw
+
+
+@pytest.mark.parametrize(
+    ("raw", "valid"),
+    [
+        (bytes([0x80]) + bytes(6), "6 or 10"),
+        (bytes([0x80]) + bytes(4), "6 or 10"),
+        (bytes([0x90]) + bytes(19), "14 or 38"),
+        (bytes([0x90]) + bytes(38), "14 or 38"),
+    ],
+)
+def test_discover_payload_of_an_unsent_length_is_rejected(raw: bytes, valid: str) -> None:
+    failure = bad(parse_payload(PayloadType.CONTROL, raw))
+    assert failure.reason is FailureReason.BAD_PAYLOAD_LENGTH
+    assert valid in failure.detail
+
+
+@pytest.mark.parametrize("raw", [b"", b"\xde\xad", bytes([0x00]) + bytes(37), bytes([0xA0, 1])])
+def test_non_discovery_control_is_preserved_uninterpreted(raw: bytes) -> None:
+    parsed = ok(parse_payload(PayloadType.CONTROL, raw))
+    assert isinstance(parsed, UnparsedPayload)
+    assert parsed.payload_type is PayloadType.CONTROL
+    assert build_payload(parsed) == raw
+
+
+def test_build_discover_request_rejects_a_bad_tag() -> None:
+    with pytest.raises(EncodeError, match="tag"):
+        build_discover_request(DiscoverRequest(0, 0x04, b"\x01\x02\x03"))
+
+
+@pytest.mark.parametrize("key_size", [0, 7, 16, 33])
+def test_build_discover_response_rejects_a_bad_key(key_size: int) -> None:
+    with pytest.raises(EncodeError, match="claimed key"):
+        build_discover_response(DiscoverResponse(2, 0, bytes(4), bytes(key_size)))
 
 
 # --- Adverts ---------------------------------------------------------------

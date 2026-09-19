@@ -72,8 +72,9 @@
       cell(row, record.duplicate ? "dup" : "", "mono");
       cell(row, record.outcome, "mono");
       /* An undecodable frame keeps its bytes and its reason: a frame we could
-         not read must not become invisible (§4.1). */
-      cell(row, record.reason || (record.raw ? "raw " + record.raw : ""), "mono");
+         not read must not become invisible (§4.1). A decoded frame shows its
+         summary where it has one (node discovery), live rows only. */
+      cell(row, record.reason || record.summary || (record.raw ? "raw " + record.raw : ""), "mono");
       cell(row, record.packet_id, "mono");
       trim();
     }

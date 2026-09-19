@@ -357,11 +357,11 @@
 2026-09-04.jsonl[003] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788473999 sig=ok flags=0x81 type=CHAT name='Sigurs'
 2026-09-04.jsonl[004] route=FLOOD type=ADVERT v1 tc=- hops=0x3 path=- | advert key=[redacted] ts=1788474003 sig=ok flags=0x81 type=CHAT name='Sigurs'
 2026-09-04.jsonl[005] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=[redacted] | advert key=[redacted] ts=1788474003 sig=ok flags=0x81 type=CHAT name='Sigurs'
-2026-09-04.jsonl[006] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=6 sha=c27fd49631a097e8
-2026-09-04.jsonl[007] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=969f83e387113383
-2026-09-04.jsonl[008] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=6 sha=fc2ff4accac876bd
-2026-09-04.jsonl[009] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=6 sha=5966515af0ca0d7c
-2026-09-04.jsonl[010] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ff4aac5a7f38904f
+2026-09-04.jsonl[006] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=04 tag=9a7d3916 since=-
+2026-09-04.jsonl[007] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=47 tag=9a7d3916 claimed_key=[redacted]
+2026-09-04.jsonl[008] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=10 tag=6e136676 since=-
+2026-09-04.jsonl[009] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=04 tag=d1c213bc since=-
+2026-09-04.jsonl[010] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=48 tag=d1c213bc claimed_key=[redacted]
 2026-09-04.jsonl[011] route=DIRECT type=ANON_REQ v1 tc=- hops=0x1 path=- | anon_req dest=08 sender=[redacted] mac=9e78 len=16 sha=f2b7538633483641
 2026-09-04.jsonl[012] route=DIRECT type=RESPONSE v1 tc=- hops=0x1 path=- | envelope dest=38 src=08 mac=22cb len=16 sha=449b480e0647a191
 2026-09-04.jsonl[013] route=DIRECT type=ANON_REQ v1 tc=- hops=0x1 path=- | anon_req dest=08 sender=[redacted] mac=30ec len=32 sha=8e4a9306acd584c4
@@ -380,7 +380,7 @@
 2026-09-04.jsonl[026] route=DIRECT type=REQ v1 tc=- hops=0x1 path=- | envelope dest=08 src=38 mac=9628 len=16 sha=95c2473a906548ab
 2026-09-04.jsonl[027] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=08 mac=99ea len=48 sha=821e79e825efb0a2
 2026-09-04.jsonl[028] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=08 src=38 mac=9282 len=32 sha=edf22ad8b672e7d1
-2026-09-04.jsonl[029] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=fda5144c740edd1d
+2026-09-04.jsonl[029] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=04 tag=12932069 since=0
 2026-09-04.jsonl[030] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=08 mac=1292 len=32 sha=b2e5f45cf7c85b9a
 2026-09-04.jsonl[031] route=DIRECT type=REQ v1 tc=- hops=0x1 path=- | envelope dest=08 src=38 mac=8874 len=16 sha=6736cbc25f48a4f0
 2026-09-04.jsonl[032] route=DIRECT type=RESPONSE v1 tc=- hops=0x3 path=- | envelope dest=38 src=08 mac=6ae9 len=48 sha=611631ee887c278d
@@ -450,21 +450,21 @@
 2026-09-05.jsonl[005] route=FLOOD type=GRP_TXT v1 tc=- hops=1x1 path=08 | group channel=11 mac=bf6d len=48 sha=28a19d81003fc311
 2026-09-05.jsonl[006] route=FLOOD type=ADVERT v1 tc=- hops=1x2 path=08c1 | advert key=[redacted] ts=1788542935 sig=ok flags=0x92 type=REPEATER loc=12000,24000 name='[redacted]'
 2026-09-05.jsonl[007] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788543127 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
-2026-09-05.jsonl[008] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=20b9f212c7fca55f
-2026-09-05.jsonl[009] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c2195a8c8607b111
+2026-09-05.jsonl[008] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=40 tag=9fbfbfd3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[009] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=20 tag=9fbfbfd3 claimed_key=[redacted]
 2026-09-05.jsonl[010] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=8a23 len=32 sha=0b8a9ccf02424aed
 2026-09-05.jsonl[011] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=8a23 len=32 sha=0b8a9ccf02424aed
-2026-09-05.jsonl[012] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=eed4daec6dca2ebf
-2026-09-05.jsonl[013] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4ca6246b365b0141
+2026-09-05.jsonl[012] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=ce514254 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[013] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-10 tag=ce514254 claimed_key=[redacted]
 2026-09-05.jsonl[014] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=cdc1 len=32 sha=5111653df9cac1c7
 2026-09-05.jsonl[015] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=cdc1 len=32 sha=5111653df9cac1c7
-2026-09-05.jsonl[016] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=78455eb97f10a725
+2026-09-05.jsonl[016] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=26 tag=cc5bf213 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[017] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=63e2 len=32 sha=27ec677c53be90b7
 2026-09-05.jsonl[018] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=63e2 len=32 sha=27ec677c53be90b7
-2026-09-05.jsonl[019] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2b07d5204adfd0e0
+2026-09-05.jsonl[019] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-22 tag=31600015 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[020] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=e9c0 len=32 sha=7694c644cd38a9ad
 2026-09-05.jsonl[021] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=e9c0 len=32 sha=7694c644cd38a9ad
-2026-09-05.jsonl[022] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2c5d047bac0a3181
+2026-09-05.jsonl[022] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-23 tag=6706f0e3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[023] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=025f len=32 sha=252f277a78033c19
 2026-09-05.jsonl[024] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=025f len=32 sha=252f277a78033c19
 2026-09-05.jsonl[025] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=a145 len=32 sha=6badcec8d10acd19
@@ -476,7 +476,7 @@
 2026-09-05.jsonl[031] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=db12 len=48 sha=1150a79aefd8d3bb
 2026-09-05.jsonl[032] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=38 src=e3 mac=cea3 len=48 sha=b1c6f96c8f0c56ce
 2026-09-05.jsonl[033] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=cea3 len=48 sha=b1c6f96c8f0c56ce
-2026-09-05.jsonl[034] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3374a9adb904932b
+2026-09-05.jsonl[034] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-52 tag=6c4b6cd3 claimed_key=[redacted]
 2026-09-05.jsonl[035] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=38 src=e3 mac=3129 len=48 sha=1e13fb31c5e06565
 2026-09-05.jsonl[036] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=38 src=e3 mac=3129 len=48 sha=1e13fb31c5e06565
 2026-09-05.jsonl[037] route=DIRECT type=ANON_REQ v1 tc=- hops=1x1 path=08 | anon_req dest=98 sender=[redacted] mac=57dc len=16 sha=9ac79ba441f0a29e
@@ -485,226 +485,226 @@
 2026-09-05.jsonl[040] route=DIRECT type=RESPONSE v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=98 mac=24ad len=16 sha=4b3110420b751518
 2026-09-05.jsonl[041] route=DIRECT type=RESPONSE v1 tc=- hops=0x1 path=- | envelope dest=e3 src=98 mac=24ad len=16 sha=4b3110420b751518
 2026-09-05.jsonl[042] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=38 src=e3 mac=b37d len=48 sha=80772914f626bc5a
-2026-09-05.jsonl[043] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2865feea9fd9c795
+2026-09-05.jsonl[043] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-51 tag=d600b803 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[044] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=3249 len=32 sha=0373defbebd4564e
 2026-09-05.jsonl[045] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=3249 len=32 sha=0373defbebd4564e
-2026-09-05.jsonl[046] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=553d53bc76f8bb0f
-2026-09-05.jsonl[047] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1c2ab67047bc9e97
+2026-09-05.jsonl[046] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=5 tag=a7bb0d3d claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[047] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-34 tag=a7bb0d3d claimed_key=[redacted]
 2026-09-05.jsonl[048] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=4fcf len=32 sha=e30c1d21bd77d635
 2026-09-05.jsonl[049] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=4fcf len=32 sha=e30c1d21bd77d635
-2026-09-05.jsonl[050] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=586948ba664cd7bb
+2026-09-05.jsonl[050] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-24 tag=7780d557 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[051] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7567 len=32 sha=f645bc89a7b7d2ea
 2026-09-05.jsonl[052] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=7567 len=32 sha=f645bc89a7b7d2ea
-2026-09-05.jsonl[053] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=eb1af34f66ac68e0
+2026-09-05.jsonl[053] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-39 tag=a563e800 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[054] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7501 len=32 sha=463dd8d50362b592
 2026-09-05.jsonl[055] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=7501 len=32 sha=463dd8d50362b592
-2026-09-05.jsonl[056] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6a242e1434017236
-2026-09-05.jsonl[057] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=84ee554346158414
+2026-09-05.jsonl[056] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-12 tag=405cdd26 claimed_key=[redacted]
+2026-09-05.jsonl[057] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-10 tag=fe3fefa2 claimed_key=[redacted]
 2026-09-05.jsonl[058] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=5055 len=32 sha=88385dfe55c35e81
 2026-09-05.jsonl[059] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=5055 len=32 sha=88385dfe55c35e81
-2026-09-05.jsonl[060] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=01988349781e6b5e
-2026-09-05.jsonl[061] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=690bc6eede60f3c7
+2026-09-05.jsonl[060] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-20 tag=7593604b claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[061] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=12 tag=7593604b claimed_key=[redacted]
 2026-09-05.jsonl[062] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=c568 len=32 sha=557417697b850071
 2026-09-05.jsonl[063] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=c568 len=32 sha=557417697b850071
-2026-09-05.jsonl[064] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9ebe714e7799d09f
-2026-09-05.jsonl[065] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=10a5f699d15f51ef
+2026-09-05.jsonl[064] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-16 tag=f23ae11e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[065] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=10 tag=f23ae11e claimed_key=[redacted]
 2026-09-05.jsonl[066] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=8bd5 len=32 sha=cccad598c1601dc8
 2026-09-05.jsonl[067] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=8bd5 len=32 sha=cccad598c1601dc8
-2026-09-05.jsonl[068] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4a007437b23b2656
-2026-09-05.jsonl[069] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=59c00878d9097a90
+2026-09-05.jsonl[068] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=31 tag=8a69a6a5 claimed_key=[redacted]
+2026-09-05.jsonl[069] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=11 tag=8a69a6a5 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[070] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a222 len=32 sha=f0f535af9fc40598
 2026-09-05.jsonl[071] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a222 len=32 sha=f0f535af9fc40598
-2026-09-05.jsonl[072] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=05880e84102ad680
-2026-09-05.jsonl[073] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ade7aaa59b24b56f
+2026-09-05.jsonl[072] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=45 tag=cba8f7b6 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[073] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=48 tag=cba8f7b6 claimed_key=[redacted]
 2026-09-05.jsonl[074] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=550a len=32 sha=041ee62c7502db17
 2026-09-05.jsonl[075] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=550a len=32 sha=041ee62c7502db17
-2026-09-05.jsonl[076] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9cb93fa798fd6504
-2026-09-05.jsonl[077] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=053417959c7260b3
+2026-09-05.jsonl[076] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=38 tag=86b430b5 claimed_key=[redacted]
+2026-09-05.jsonl[077] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=33 tag=86b430b5 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[078] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a6c1 len=32 sha=71c877855e0f360b
 2026-09-05.jsonl[079] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a6c1 len=32 sha=71c877855e0f360b
 2026-09-05.jsonl[080] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=ce08 len=32 sha=ff96cc5bcd0d2c31
 2026-09-05.jsonl[081] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=ce08 len=32 sha=ff96cc5bcd0d2c31
-2026-09-05.jsonl[082] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=8c60bea9c4025fbf
-2026-09-05.jsonl[083] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=80dab424f3b4fda1
+2026-09-05.jsonl[082] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=1 tag=62113e88 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[083] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=41 tag=62113e88 claimed_key=[redacted]
 2026-09-05.jsonl[084] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=81 mac=84a6 len=32 sha=8c014ea75a32df66
 2026-09-05.jsonl[085] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=84a6 len=32 sha=8c014ea75a32df66
 2026-09-05.jsonl[086] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=84a6 len=32 sha=8c014ea75a32df66
-2026-09-05.jsonl[087] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=876f5cd82644fbac
-2026-09-05.jsonl[088] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c02e1d817947ece7
-2026-09-05.jsonl[089] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=7757227dcba0dfc5
+2026-09-05.jsonl[087] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=0ad94c8a since=0
+2026-09-05.jsonl[088] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=22 tag=0ad94c8a claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[089] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=44 tag=0ad94c8a claimed_key=[redacted]
 2026-09-05.jsonl[090] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=81 mac=afe9 len=32 sha=ef40a89eefbbedee
 2026-09-05.jsonl[091] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=afe9 len=32 sha=ef40a89eefbbedee
 2026-09-05.jsonl[092] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=afe9 len=32 sha=ef40a89eefbbedee
-2026-09-05.jsonl[093] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=8bf5b240ecd39f14
-2026-09-05.jsonl[094] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=bce8ff33ae60017f
-2026-09-05.jsonl[095] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6d08ddd7673a6f13
-2026-09-05.jsonl[096] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=f67b32e2d32df724
-2026-09-05.jsonl[097] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=b0de24dbf2f3b63e
+2026-09-05.jsonl[093] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=d85b116f since=0
+2026-09-05.jsonl[094] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=1 tag=d85b116f claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[095] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=49 tag=d85b116f claimed_key=[redacted]
+2026-09-05.jsonl[096] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=25 tag=70a69764 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[097] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=49 tag=70a69764 claimed_key=[redacted]
 2026-09-05.jsonl[098] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=ffa3 len=32 sha=0c89150070c86530
 2026-09-05.jsonl[099] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=ffa3 len=32 sha=0c89150070c86530
-2026-09-05.jsonl[100] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d8f2ef9c79bb9243
-2026-09-05.jsonl[101] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=41c1537b96ca29a1
+2026-09-05.jsonl[100] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=45 tag=935d047e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[101] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=51 tag=935d047e claimed_key=[redacted]
 2026-09-05.jsonl[102] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=81 mac=a1dc len=32 sha=a447091d495239e2
 2026-09-05.jsonl[103] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a1dc len=32 sha=a447091d495239e2
 2026-09-05.jsonl[104] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a1dc len=32 sha=a447091d495239e2
-2026-09-05.jsonl[105] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=71d0418fb9420fad
-2026-09-05.jsonl[106] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=8ff9cc4de67f6d2c
-2026-09-05.jsonl[107] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d60955b3d54e9886
+2026-09-05.jsonl[105] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=cbb4c033 since=0
+2026-09-05.jsonl[106] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=24 tag=cbb4c033 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[107] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=45 tag=cbb4c033 claimed_key=[redacted]
 2026-09-05.jsonl[108] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=6494 len=32 sha=10ff483ed3867cab
 2026-09-05.jsonl[109] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=6494 len=32 sha=10ff483ed3867cab
-2026-09-05.jsonl[110] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=21895fbc9cd6fd8b
-2026-09-05.jsonl[111] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=50b68d2b60248175
+2026-09-05.jsonl[110] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=42 tag=bb70a339 claimed_key=[redacted]
+2026-09-05.jsonl[111] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=33 tag=bb70a339 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[112] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=16ad len=32 sha=df42274fbbc108ea
 2026-09-05.jsonl[113] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=16ad len=32 sha=df42274fbbc108ea
-2026-09-05.jsonl[114] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1043b1dead6f66fb
-2026-09-05.jsonl[115] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=10930aa121ee35ef
+2026-09-05.jsonl[114] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=51 tag=620b644e claimed_key=[redacted]
+2026-09-05.jsonl[115] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=25 tag=620b644e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[116] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=52dd len=32 sha=ac43d9eb485d82ca
 2026-09-05.jsonl[117] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=52dd len=32 sha=ac43d9eb485d82ca
-2026-09-05.jsonl[118] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1bb3fccccf364000
-2026-09-05.jsonl[119] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4ee65f1a90bb8f8f
+2026-09-05.jsonl[118] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=38 tag=0e7677a1 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[119] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=42 tag=0e7677a1 claimed_key=[redacted]
 2026-09-05.jsonl[120] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=785c len=32 sha=f816c98f6ca2644a
 2026-09-05.jsonl[121] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=785c len=32 sha=f816c98f6ca2644a
-2026-09-05.jsonl[122] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1a409a74c3720e59
-2026-09-05.jsonl[123] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=82d54324523f018c
+2026-09-05.jsonl[122] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=99adf6c8 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[123] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=13 tag=99adf6c8 claimed_key=[redacted]
 2026-09-05.jsonl[124] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a656 len=32 sha=a69a0747abb434b3
 2026-09-05.jsonl[125] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a656 len=32 sha=a69a0747abb434b3
-2026-09-05.jsonl[126] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=b724c3dba23faad3
-2026-09-05.jsonl[127] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=cb7ebf493f5cefaa
+2026-09-05.jsonl[126] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=14 tag=d8d3c191 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[127] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=12 tag=d8d3c191 claimed_key=[redacted]
 2026-09-05.jsonl[128] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=c0f9 len=32 sha=e7015644d031ba90
 2026-09-05.jsonl[129] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=c0f9 len=32 sha=e7015644d031ba90
-2026-09-05.jsonl[130] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e2329f735b7bf09e
+2026-09-05.jsonl[130] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-20 tag=39f30d28 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[131] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=728c len=32 sha=373d4a7e8ae3df3a
 2026-09-05.jsonl[132] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=728c len=32 sha=373d4a7e8ae3df3a
-2026-09-05.jsonl[133] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=f2989a0f15ab3b05
-2026-09-05.jsonl[134] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ab05545b4c7bf961
+2026-09-05.jsonl[133] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=4 tag=4c074747 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[134] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-38 tag=4c074747 claimed_key=[redacted]
 2026-09-05.jsonl[135] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=76d0 len=32 sha=0caded3eefef126c
 2026-09-05.jsonl[136] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=76d0 len=32 sha=0caded3eefef126c
-2026-09-05.jsonl[137] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=49c0118ab3549b16
-2026-09-05.jsonl[138] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c747c3a35e28467e
+2026-09-05.jsonl[137] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-27 tag=6b69bfcd claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[138] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-22 tag=6b69bfcd claimed_key=[redacted]
 2026-09-05.jsonl[139] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=76ee len=32 sha=e93130a1b9a7d47b
 2026-09-05.jsonl[140] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=76ee len=32 sha=e93130a1b9a7d47b
-2026-09-05.jsonl[141] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d457c4438ec40cdf
+2026-09-05.jsonl[141] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-14 tag=77cbd93e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[142] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=1eb9 len=32 sha=37dcfff21575eac2
 2026-09-05.jsonl[143] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=1eb9 len=32 sha=37dcfff21575eac2
-2026-09-05.jsonl[144] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=be3cf484528fe990
-2026-09-05.jsonl[145] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c7b09c834474ebd1
+2026-09-05.jsonl[144] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=11 tag=d61b83fd claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[145] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=20 tag=d61b83fd claimed_key=[redacted]
 2026-09-05.jsonl[146] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=6ed4 len=32 sha=a519e7a56081dc9f
 2026-09-05.jsonl[147] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=6ed4 len=32 sha=a519e7a56081dc9f
-2026-09-05.jsonl[148] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2fdcdf89007f6650
-2026-09-05.jsonl[149] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2520fbbf519c111a
+2026-09-05.jsonl[148] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-5 tag=9fedcb9a claimed_key=[redacted]
+2026-09-05.jsonl[149] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-5 tag=9fedcb9a claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[150] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=6d09 len=32 sha=6b9b5ae1387bc16d
 2026-09-05.jsonl[151] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=6d09 len=32 sha=6b9b5ae1387bc16d
-2026-09-05.jsonl[152] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=cea4cf6b1ab2efb2
-2026-09-05.jsonl[153] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4eafdc3e66e3e4d9
+2026-09-05.jsonl[152] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=10 tag=0670fc29 claimed_key=[redacted]
+2026-09-05.jsonl[153] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-35 tag=0670fc29 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[154] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=be24 len=32 sha=e4a7d8f1c7b0a77d
 2026-09-05.jsonl[155] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=be24 len=32 sha=e4a7d8f1c7b0a77d
-2026-09-05.jsonl[156] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=cc3997e058e21bfb
+2026-09-05.jsonl[156] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-32 tag=8709990a claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[157] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=73ae len=32 sha=33289e34fbf6c3f5
 2026-09-05.jsonl[158] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=73ae len=32 sha=33289e34fbf6c3f5
-2026-09-05.jsonl[159] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=26a317b5736d00df
-2026-09-05.jsonl[160] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1427583279cf43f9
+2026-09-05.jsonl[159] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-6 tag=97b0c8f9 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[160] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-42 tag=97b0c8f9 claimed_key=[redacted]
 2026-09-05.jsonl[161] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=5e79 len=32 sha=ddab612928630669
 2026-09-05.jsonl[162] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=5e79 len=32 sha=ddab612928630669
 2026-09-05.jsonl[163] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=e72f len=32 sha=70e737a5d92e4b32
 2026-09-05.jsonl[164] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=e72f len=32 sha=70e737a5d92e4b32
-2026-09-05.jsonl[165] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=545d552b98c88b1f
-2026-09-05.jsonl[166] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=17b6b99b3081365b
+2026-09-05.jsonl[165] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-25 tag=224237ce claimed_key=[redacted]
+2026-09-05.jsonl[166] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-30 tag=3a916799 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[167] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=e4df len=32 sha=10c3229e8ab59db5
 2026-09-05.jsonl[168] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=e4df len=32 sha=10c3229e8ab59db5
-2026-09-05.jsonl[169] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=7b9b5070cc2c05d1
+2026-09-05.jsonl[169] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=2 tag=077f0855 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[170] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=e549 len=32 sha=fc5ac4f256302f22
 2026-09-05.jsonl[171] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=e549 len=32 sha=fc5ac4f256302f22
-2026-09-05.jsonl[172] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ee871b5f8aa073fc
-2026-09-05.jsonl[173] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=93fafbbd6be92ffe
+2026-09-05.jsonl[172] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=17 tag=0ab92c84 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[173] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=22 tag=0ab92c84 claimed_key=[redacted]
 2026-09-05.jsonl[174] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7dc5 len=32 sha=a9a3633364f85025
 2026-09-05.jsonl[175] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7dc5 len=32 sha=a9a3633364f85025
-2026-09-05.jsonl[176] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=f654983c69ad5f4d
-2026-09-05.jsonl[177] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=0ee95dad7bdaed70
+2026-09-05.jsonl[176] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=9 tag=b6bcdad1 claimed_key=[redacted]
+2026-09-05.jsonl[177] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=26 tag=b6bcdad1 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[178] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a3ed len=32 sha=709a16ed5b732a26
 2026-09-05.jsonl[179] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a3ed len=32 sha=709a16ed5b732a26
-2026-09-05.jsonl[180] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=976c8fb1f9f4be43
-2026-09-05.jsonl[181] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=35ca00bd9c886a61
-2026-09-05.jsonl[182] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=8bcda96aca0ce827
+2026-09-05.jsonl[180] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=c42ced19 since=0
+2026-09-05.jsonl[181] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=38 tag=c42ced19 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[182] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=c42ced19 claimed_key=[redacted]
 2026-09-05.jsonl[183] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7ec6 len=32 sha=cccb0bd87408fd75
 2026-09-05.jsonl[184] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7ec6 len=32 sha=cccb0bd87408fd75
-2026-09-05.jsonl[185] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=dc256606bace1c78
-2026-09-05.jsonl[186] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=0958ae0b0229e9a1
+2026-09-05.jsonl[185] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=17 tag=fdd7e375 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[186] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=46 tag=fdd7e375 claimed_key=[redacted]
 2026-09-05.jsonl[187] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7572 len=32 sha=27314d93db3e27d7
 2026-09-05.jsonl[188] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7572 len=32 sha=27314d93db3e27d7
-2026-09-05.jsonl[189] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=7fa178fd24e83b8c
+2026-09-05.jsonl[189] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=86f644b2 claimed_key=[redacted]
 2026-09-05.jsonl[190] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=300d len=32 sha=50d9a53f0c272256
 2026-09-05.jsonl[191] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=300d len=32 sha=50d9a53f0c272256
-2026-09-05.jsonl[192] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6eb6c06a415080eb
+2026-09-05.jsonl[192] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-27 tag=0498506a claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[193] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=0192 len=32 sha=f294016c97e5f035
 2026-09-05.jsonl[194] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=0192 len=32 sha=f294016c97e5f035
-2026-09-05.jsonl[195] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6d3e91130a164fe5
+2026-09-05.jsonl[195] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-12 tag=4be3980a claimed_key=[redacted]
 2026-09-05.jsonl[196] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=e926 len=32 sha=0d213b1504db4976
 2026-09-05.jsonl[197] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=e926 len=32 sha=0d213b1504db4976
 2026-09-05.jsonl[198] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=56e8 len=32 sha=78471ed195bd4623
 2026-09-05.jsonl[199] route=FLOOD type=GRP_TXT v1 tc=- hops=3x3 path=dff5c2[redacted]88f199 | group channel=81 mac=56e8 len=32 sha=78471ed195bd4623
-2026-09-05.jsonl[200] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=fc2a4f90659f7e33
-2026-09-05.jsonl[201] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=593d705a1e6a5177
+2026-09-05.jsonl[200] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=0 tag=8131088d claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[201] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-7 tag=8131088d claimed_key=[redacted]
 2026-09-05.jsonl[202] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7d03 len=32 sha=6a6b341e70b4984a
 2026-09-05.jsonl[203] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7d03 len=32 sha=6a6b341e70b4984a
-2026-09-05.jsonl[204] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4e3cda8bc8872c70
+2026-09-05.jsonl[204] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-39 tag=8056124d claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[205] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=5db1 len=32 sha=781845c60cb9c5c9
 2026-09-05.jsonl[206] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=5db1 len=32 sha=781845c60cb9c5c9
 2026-09-05.jsonl[207] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=03af len=32 sha=acbfb94a330a39fc
 2026-09-05.jsonl[208] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=03af len=32 sha=acbfb94a330a39fc
 2026-09-05.jsonl[209] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=c5e5 len=32 sha=416e8133c13e5dea
 2026-09-05.jsonl[210] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=c5e5 len=32 sha=416e8133c13e5dea
-2026-09-05.jsonl[211] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1f351b6034d870f9
+2026-09-05.jsonl[211] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=3 tag=694cb341 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[212] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=b8a4 len=32 sha=4365632c695dee36
 2026-09-05.jsonl[213] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=b8a4 len=32 sha=4365632c695dee36
-2026-09-05.jsonl[214] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e50cdcb588f6a342
+2026-09-05.jsonl[214] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-38 tag=6f7d280c claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[215] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=228b len=32 sha=9f0aa6bc8c7064fd
 2026-09-05.jsonl[216] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=228b len=32 sha=9f0aa6bc8c7064fd
-2026-09-05.jsonl[217] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=426fde1a6f06764f
-2026-09-05.jsonl[218] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=09fe14d3913c9c7f
+2026-09-05.jsonl[217] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-12 tag=a2c6ab3f claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[218] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-2 tag=a2c6ab3f claimed_key=[redacted]
 2026-09-05.jsonl[219] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=59ec len=32 sha=c239d9509ff311a2
 2026-09-05.jsonl[220] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=59ec len=32 sha=c239d9509ff311a2
-2026-09-05.jsonl[221] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3914bc41daa056af
-2026-09-05.jsonl[222] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=aad80f639f0abc72
+2026-09-05.jsonl[221] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-20 tag=6118fa77 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[222] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-26 tag=6118fa77 claimed_key=[redacted]
 2026-09-05.jsonl[223] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=90ca len=32 sha=2267abad6fc70398
-2026-09-05.jsonl[224] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2832524e71ed6488
+2026-09-05.jsonl[224] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-26 tag=c1601091 claimed_key=[redacted]
 2026-09-05.jsonl[225] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=3f80 len=32 sha=1047de28d28d15e7
 2026-09-05.jsonl[226] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=3f80 len=32 sha=1047de28d28d15e7
 2026-09-05.jsonl[227] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=ceb8 len=32 sha=5f769a4ef2c219f3
-2026-09-05.jsonl[228] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c9f05be0efb1666f
+2026-09-05.jsonl[228] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-20 tag=664076e3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[229] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=9304 len=32 sha=3df566579ca0af81
 2026-09-05.jsonl[230] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=9304 len=32 sha=3df566579ca0af81
-2026-09-05.jsonl[231] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=23c36bfb0282837c
+2026-09-05.jsonl[231] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-50 tag=2c600af4 claimed_key=[redacted]
 2026-09-05.jsonl[232] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=b0d2 len=32 sha=990c02458837cfc3
 2026-09-05.jsonl[233] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=b0d2 len=32 sha=990c02458837cfc3
 2026-09-05.jsonl[234] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788546727 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
-2026-09-05.jsonl[235] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3e007c23f6a5d7ae
+2026-09-05.jsonl[235] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-38 tag=4590072e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[236] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=44d8 len=32 sha=f45f777ae5ab4b49
 2026-09-05.jsonl[237] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=44d8 len=32 sha=f45f777ae5ab4b49
 2026-09-05.jsonl[238] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=c064 len=32 sha=0833c9b55c64ed1e
 2026-09-05.jsonl[239] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=c064 len=32 sha=0833c9b55c64ed1e
 2026-09-05.jsonl[240] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=05cf len=32 sha=1ea23baa70f6c9ae
 2026-09-05.jsonl[241] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=05cf len=32 sha=1ea23baa70f6c9ae
-2026-09-05.jsonl[242] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=595e32b9b2394783
-2026-09-05.jsonl[243] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4437b803904d4dcb
+2026-09-05.jsonl[242] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-12 tag=01b30fe6 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[243] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-14 tag=01b30fe6 claimed_key=[redacted]
 2026-09-05.jsonl[244] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7368 len=32 sha=208bb6cc5a1aa2b2
 2026-09-05.jsonl[245] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7368 len=32 sha=208bb6cc5a1aa2b2
-2026-09-05.jsonl[246] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4285a525ce9891d1
+2026-09-05.jsonl[246] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=2 tag=b6f76ae1 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[247] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=e46d len=32 sha=e6bb01d9518f3c1c
 2026-09-05.jsonl[248] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=e46d len=32 sha=e6bb01d9518f3c1c
-2026-09-05.jsonl[249] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3d836321ed2444e0
+2026-09-05.jsonl[249] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-25 tag=ac3ebbd5 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[250] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=3162 len=32 sha=d4984c932190dfcc
 2026-09-05.jsonl[251] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=3162 len=32 sha=d4984c932190dfcc
-2026-09-05.jsonl[252] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=addad6543b1e37f6
-2026-09-05.jsonl[253] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=311e15ff1d390838
-2026-09-05.jsonl[254] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=aac6e3e490997d3a
+2026-09-05.jsonl[252] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-9 tag=baaf66e0 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[253] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=10 tag=baaf66e0 claimed_key=[redacted]
+2026-09-05.jsonl[254] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-3 tag=4ae43d2e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[255] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=0949 len=32 sha=2001f1ec8e7d00f8
 2026-09-05.jsonl[256] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=0949 len=32 sha=2001f1ec8e7d00f8
-2026-09-05.jsonl[257] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3c848ea6c0061314
+2026-09-05.jsonl[257] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-39 tag=8dd9b691 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[258] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=4f5d len=32 sha=fc397e27e50f49b4
 2026-09-05.jsonl[259] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=4f5d len=32 sha=fc397e27e50f49b4
 2026-09-05.jsonl[260] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c28e461b | group channel=81 mac=3f6b len=32 sha=3c720f09c2f1bf32
 2026-09-05.jsonl[261] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=dff5c2[redacted] | group channel=81 mac=3f6b len=32 sha=3c720f09c2f1bf32
-2026-09-05.jsonl[262] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=647a187c5d86f6d4
+2026-09-05.jsonl[262] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-19 tag=1844a0d8 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[263] route=FLOOD type=ANON_REQ v1 tc=- hops=1x1 path=08 | anon_req dest=85 sender=[redacted] mac=d307 len=32 sha=e9ecc59de386c248
 2026-09-05.jsonl[264] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=85 mac=fd43 len=16 sha=a0b746adf8c98e8f
 2026-09-05.jsonl[265] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=85 src=e3 mac=616e len=16 sha=185e6e5da4b8df6a
@@ -716,15 +716,15 @@
 2026-09-05.jsonl[271] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=a071 len=32 sha=f791d9c29f11d407
 2026-09-05.jsonl[272] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=c0af len=32 sha=fba028bfc84ea03b
 2026-09-05.jsonl[273] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=c0af len=32 sha=fba028bfc84ea03b
-2026-09-05.jsonl[274] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=2e69161d7547dc81
-2026-09-05.jsonl[275] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=7ec460b12b09879b
+2026-09-05.jsonl[274] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=4 tag=6dfbd4dd claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[275] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-6 tag=6dfbd4dd claimed_key=[redacted]
 2026-09-05.jsonl[276] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=c97c len=32 sha=c6b7f456affe758d
 2026-09-05.jsonl[277] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=c97c len=32 sha=c6b7f456affe758d
-2026-09-05.jsonl[278] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e2dc6b919fcc8a95
-2026-09-05.jsonl[279] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=a72b0591a6baa804
+2026-09-05.jsonl[278] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-14 tag=6b041ed2 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[279] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=7 tag=6b041ed2 claimed_key=[redacted]
 2026-09-05.jsonl[280] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=f20b len=32 sha=9be89941a969780d
 2026-09-05.jsonl[281] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=f20b len=32 sha=9be89941a969780d
-2026-09-05.jsonl[282] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=868cc883514873f5
+2026-09-05.jsonl[282] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-17 tag=79035b10 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[283] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=19c4 len=32 sha=180aec58283b94b7
 2026-09-05.jsonl[284] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=19c4 len=32 sha=180aec58283b94b7
 2026-09-05.jsonl[285] route=FLOOD type=ANON_REQ v1 tc=- hops=1x1 path=8e | anon_req dest=77 sender=[redacted] mac=f79a len=32 sha=7ef6bee0c91c4d6b
@@ -732,17 +732,17 @@
 2026-09-05.jsonl[287] route=FLOOD type=PATH v1 tc=- hops=1x1 path=08 | envelope dest=e3 src=77 mac=c5aa len=16 sha=5aefcb09c4d77ba3
 2026-09-05.jsonl[288] route=FLOOD type=PATH v1 tc=- hops=1x1 path=8e | envelope dest=e3 src=77 mac=c5aa len=16 sha=5aefcb09c4d77ba3
 2026-09-05.jsonl[289] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=[redacted] | advert key=[redacted] ts=1788547583 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
-2026-09-05.jsonl[290] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9b710f4f9fc2c813
+2026-09-05.jsonl[290] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=56 tag=f38c5aec claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[291] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=8e461b | advert key=[redacted] ts=1788547583 sig=ok flags=0x92 type=REPEATER loc=13000,25000 name='[redacted]'
-2026-09-05.jsonl[292] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ab0b373ccd5b0e27
+2026-09-05.jsonl[292] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-48 tag=89308430 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[293] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=[redacted] | advert key=[redacted] ts=1788547614 sig=ok flags=0x92 type=REPEATER loc=16000,28000 name='[redacted]'
 2026-09-05.jsonl[294] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=8e461b | advert key=[redacted] ts=1788547614 sig=ok flags=0x92 type=REPEATER loc=16000,28000 name='[redacted]'
 2026-09-05.jsonl[295] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=1f8a len=32 sha=d6621c9232ffa8dc
 2026-09-05.jsonl[296] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=85 src=e3 mac=2268 len=32 sha=a041c4b973c86ed2
 2026-09-05.jsonl[297] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=1f8a len=32 sha=d6621c9232ffa8dc
 2026-09-05.jsonl[298] route=FLOOD type=TXT_MSG v1 tc=- hops=2x1 path=8e08 | envelope dest=85 src=e3 mac=2268 len=32 sha=a041c4b973c86ed2
-2026-09-05.jsonl[299] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d7ddf4f1d747cc56
-2026-09-05.jsonl[300] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ed5fd516e053ee00
+2026-09-05.jsonl[299] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=18 tag=8b9e9022 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[300] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-10 tag=cceef4ab claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[301] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=85 src=e3 mac=c090 len=16 sha=8ed5e13bbe180492
 2026-09-05.jsonl[302] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=85 src=e3 mac=c090 len=16 sha=8ed5e13bbe180492
 2026-09-05.jsonl[303] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=85 src=e3 mac=dc22 len=16 sha=88a1d6a0e96b6ffb
@@ -772,50 +772,50 @@
 2026-09-05.jsonl[327] route=FLOOD type=PATH v1 tc=- hops=1x3 path=8e461b | envelope dest=e3 src=38 mac=462a len=16 sha=b3f35b045b7613ad
 2026-09-05.jsonl[328] route=FLOOD type=PATH v1 tc=- hops=1x3 path=[redacted] | envelope dest=e3 src=38 mac=462a len=16 sha=b3f35b045b7613ad
 2026-09-05.jsonl[329] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=f9d1 len=32 sha=3f621d2d0a34f049
-2026-09-05.jsonl[330] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ed3b47dc064ab339
-2026-09-05.jsonl[331] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=8dc5db30dc1bd57a
+2026-09-05.jsonl[330] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=31 tag=0c553bce claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[331] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-24 tag=0c553bce claimed_key=[redacted]
 2026-09-05.jsonl[332] route=DIRECT type=TXT_MSG v1 tc=- hops=0x3 path=- | envelope dest=38 src=98 mac=c79c len=32 sha=71c18e4136b73ea5
 2026-09-05.jsonl[333] route=DIRECT type=TXT_MSG v1 tc=- hops=2x1 path=dfac | envelope dest=62 src=e3 mac=b9dd len=16 sha=4c28cfe33702072c
 2026-09-05.jsonl[334] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=e7a68d35 tail=00e0
 2026-09-05.jsonl[335] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=e7a68d35 tail=00e0
 2026-09-05.jsonl[336] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=cc72 len=32 sha=e1ab1bd39ad1b464
 2026-09-05.jsonl[337] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=cc72 len=32 sha=e1ab1bd39ad1b464
-2026-09-05.jsonl[338] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=59428d8fe686a7a6
-2026-09-05.jsonl[339] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=bb56614c5915d19e
+2026-09-05.jsonl[338] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-14 tag=093759ae claimed_key=[redacted]
+2026-09-05.jsonl[339] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=25 tag=093759ae claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[340] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e7 src=e3 mac=185d len=16 sha=0e2e4fb7069861be
 2026-09-05.jsonl[341] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=e7 src=e3 mac=185d len=16 sha=0e2e4fb7069861be
 2026-09-05.jsonl[342] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=2122 len=32 sha=45bc7d5728b2676b
-2026-09-05.jsonl[343] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=08376f48ffa095cf
-2026-09-05.jsonl[344] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9a3b6d77d602eb70
+2026-09-05.jsonl[343] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=25 tag=d993f252 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[344] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=24 tag=d993f252 claimed_key=[redacted]
 2026-09-05.jsonl[345] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=6d56 len=32 sha=8ad07f0220e142c3
 2026-09-05.jsonl[346] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=6d56 len=32 sha=8ad07f0220e142c3
 2026-09-05.jsonl[347] route=FLOOD type=TXT_MSG v1 tc=- hops=2x1 path=8508 | envelope dest=e7 src=e3 mac=3a8e len=16 sha=492fe2adcf7c05cd
 2026-09-05.jsonl[348] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=e7 src=e3 mac=3a8e len=16 sha=492fe2adcf7c05cd
 2026-09-05.jsonl[349] route=FLOOD type=GRP_TXT v1 tc=- hops=1x1 path=8e | group channel=81 mac=9bcf len=32 sha=a33de78cef2aec9c
 2026-09-05.jsonl[350] route=FLOOD type=GRP_TXT v1 tc=- hops=1x1 path=08 | group channel=81 mac=9bcf len=32 sha=a33de78cef2aec9c
-2026-09-05.jsonl[351] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=19c3f97eeff99fad
-2026-09-05.jsonl[352] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e30062975620cbf4
+2026-09-05.jsonl[351] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=44 tag=8b3c57ed claimed_key=[redacted]
+2026-09-05.jsonl[352] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=46 tag=8b3c57ed claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[353] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=485b len=32 sha=2dcdcebe3c3ddc2e
 2026-09-05.jsonl[354] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=485b len=32 sha=2dcdcebe3c3ddc2e
 2026-09-05.jsonl[355] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=e7 src=e3 mac=bf84 len=16 sha=b47a5bd355669fcc
 2026-09-05.jsonl[356] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e7 src=e3 mac=bf84 len=16 sha=b47a5bd355669fcc
-2026-09-05.jsonl[357] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e0b07c5b794ca1d3
-2026-09-05.jsonl[358] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4f952ca455d1b2ad
+2026-09-05.jsonl[357] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-13 tag=76e3042e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[358] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=43 tag=76e3042e claimed_key=[redacted]
 2026-09-05.jsonl[359] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=81 mac=16f0 len=32 sha=8e0e83bbd17d4944
 2026-09-05.jsonl[360] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=16f0 len=32 sha=8e0e83bbd17d4944
 2026-09-05.jsonl[361] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=16f0 len=32 sha=8e0e83bbd17d4944
-2026-09-05.jsonl[362] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=3c0aeadaf554df81
-2026-09-05.jsonl[363] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=3fd8fb6b80d66b4e
-2026-09-05.jsonl[364] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4b8c31d78829ac3d
+2026-09-05.jsonl[362] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=9cb9d46b since=0
+2026-09-05.jsonl[363] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=29 tag=9cb9d46b claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[364] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=43 tag=9cb9d46b claimed_key=[redacted]
 2026-09-05.jsonl[365] route=FLOOD type=GRP_TXT v1 tc=- hops=0x3 path=- | group channel=81 mac=defc len=32 sha=92aa342518a06645
 2026-09-05.jsonl[366] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=defc len=32 sha=92aa342518a06645
 2026-09-05.jsonl[367] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=8e | envelope dest=e7 src=e3 mac=5a6f len=16 sha=5dae340ecf40d340
 2026-09-05.jsonl[368] route=FLOOD type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=e7 src=e3 mac=5a6f len=16 sha=5dae340ecf40d340
 2026-09-05.jsonl[369] route=FLOOD type=GRP_TXT v1 tc=- hops=1x1 path=8e | group channel=11 mac=5801 len=32 sha=a42a18b8f89bad77
-2026-09-05.jsonl[370] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=87cc925cbaf12c0d
+2026-09-05.jsonl[370] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=6c2f81a2 since=0
 2026-09-05.jsonl[371] route=FLOOD type=GRP_TXT v1 tc=- hops=1x1 path=08 | group channel=11 mac=5801 len=32 sha=a42a18b8f89bad77
-2026-09-05.jsonl[372] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ae5430ecef76cea2
-2026-09-05.jsonl[373] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=df56c27657a53415
+2026-09-05.jsonl[372] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=28 tag=6c2f81a2 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[373] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=40 tag=6c2f81a2 claimed_key=[redacted]
 2026-09-05.jsonl[374] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=57ce len=32 sha=a65c25e9d9509b60
 2026-09-05.jsonl[375] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=57ce len=32 sha=a65c25e9d9509b60
 2026-09-05.jsonl[376] route=DIRECT type=ANON_REQ v1 tc=- hops=1x1 path=08 | anon_req dest=98 sender=[redacted] mac=3f1e len=16 sha=de36fda295ea9062
@@ -829,8 +829,8 @@
 2026-09-05.jsonl[384] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=9d03 len=32 sha=1d76fee009059493
 2026-09-05.jsonl[385] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=df173913 tail=-
 2026-09-05.jsonl[386] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=df173913 tail=-
-2026-09-05.jsonl[387] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ddc18b37d8b2513f
-2026-09-05.jsonl[388] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ef79b5c802d86a1f
+2026-09-05.jsonl[387] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=48 tag=a93bf93c claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[388] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=48 tag=a93bf93c claimed_key=[redacted]
 2026-09-05.jsonl[389] route=DIRECT type=TXT_MSG v1 tc=- hops=1x1 path=08 | envelope dest=98 src=e3 mac=dee4 len=48 sha=6e6e4766a0286035
 2026-09-05.jsonl[390] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=dee4 len=48 sha=6e6e4766a0286035
 2026-09-05.jsonl[391] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=8b1bac0a tail=-
@@ -841,70 +841,70 @@
 2026-09-05.jsonl[396] route=DIRECT type=TXT_MSG v1 tc=- hops=0x1 path=- | envelope dest=98 src=e3 mac=4f59 len=32 sha=efaf174116ea7e4f
 2026-09-05.jsonl[397] route=DIRECT type=ACK v1 tc=- hops=1x1 path=08 | ack checksum=a30b95aa tail=-
 2026-09-05.jsonl[398] route=DIRECT type=ACK v1 tc=- hops=0x1 path=- | ack checksum=a30b95aa tail=-
-2026-09-05.jsonl[399] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9a212df8c3aa531b
-2026-09-05.jsonl[400] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=272a503dd6643711
+2026-09-05.jsonl[399] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=584faefb claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[400] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=49 tag=584faefb claimed_key=[redacted]
 2026-09-05.jsonl[401] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=86fa len=32 sha=b9978ebdd54397e4
 2026-09-05.jsonl[402] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=86fa len=32 sha=b9978ebdd54397e4
-2026-09-05.jsonl[403] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4840aa77d5f8d7ad
-2026-09-05.jsonl[404] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=23aaac7fd2db14dd
+2026-09-05.jsonl[403] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=29 tag=fd6b226a claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[404] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=36 tag=fd6b226a claimed_key=[redacted]
 2026-09-05.jsonl[405] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=e2ed len=32 sha=df493b0fff3865b7
 2026-09-05.jsonl[406] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=e2ed len=32 sha=df493b0fff3865b7
-2026-09-05.jsonl[407] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=992869e0283416c8
-2026-09-05.jsonl[408] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1807077e9e638045
+2026-09-05.jsonl[407] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=15 tag=fba8819b claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[408] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=0 tag=fba8819b claimed_key=[redacted]
 2026-09-05.jsonl[409] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=dacd len=32 sha=fd6d0e89646c7b75
 2026-09-05.jsonl[410] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=dacd len=32 sha=fd6d0e89646c7b75
-2026-09-05.jsonl[411] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=9e5a2d02addf5376
-2026-09-05.jsonl[412] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=140cfbe1eba06a08
+2026-09-05.jsonl[411] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=23 tag=7601a862 claimed_key=[redacted]
+2026-09-05.jsonl[412] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-10 tag=7601a862 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[413] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=194b len=32 sha=31a7ddd598370c7e
 2026-09-05.jsonl[414] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=194b len=32 sha=31a7ddd598370c7e
 2026-09-05.jsonl[415] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=89b2 len=32 sha=ab83002a5f4bc297
 2026-09-05.jsonl[416] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=89b2 len=32 sha=ab83002a5f4bc297
 2026-09-05.jsonl[417] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=a14b len=32 sha=b80c58b0489fe93c
 2026-09-05.jsonl[418] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=a14b len=32 sha=b80c58b0489fe93c
-2026-09-05.jsonl[419] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d8601f837e78ccbc
-2026-09-05.jsonl[420] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4b0b198e7c3bb6a9
+2026-09-05.jsonl[419] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-17 tag=1b46c1a8 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[420] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-38 tag=615888a3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
 2026-09-05.jsonl[421] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=f03a len=32 sha=d0ce5d1dc2f28f3b
 2026-09-05.jsonl[422] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=f03a len=32 sha=d0ce5d1dc2f28f3b
-2026-09-05.jsonl[423] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=24f5bbeeea1b7bb8
-2026-09-05.jsonl[424] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=535dba57b999360f
-2026-09-05.jsonl[425] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=082c579d0a0cee2b
-2026-09-05.jsonl[426] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=aa4f9f0b4d125958
-2026-09-05.jsonl[427] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=560a2a2a7f6bab4d
+2026-09-05.jsonl[423] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-29 tag=5826065b claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[424] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-50 tag=71a59daf claimed_key=[redacted]
+2026-09-05.jsonl[425] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-48 tag=50dc758d claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[426] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-52 tag=50dc758d claimed_key=[redacted]
+2026-09-05.jsonl[427] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-42 tag=2c4cf1d8 claimed_key=[redacted]
 2026-09-05.jsonl[428] route=FLOOD type=ADVERT v1 tc=- hops=1x3 path=8e461b | advert key=[redacted] ts=1788549529 sig=ok flags=0x92 type=REPEATER loc=15000,27000 name='[redacted]'
 2026-09-05.jsonl[429] route=FLOOD type=ADVERT v1 tc=- hops=2x3 path=857186[redacted] | advert key=[redacted] ts=1788549529 sig=ok flags=0x92 type=REPEATER loc=15000,27000 name='[redacted]'
-2026-09-05.jsonl[430] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=8a95dd4a8813b707
+2026-09-05.jsonl[430] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-45 tag=d6e5cd82 claimed_key=[redacted]
 2026-09-05.jsonl[431] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=df62 len=32 sha=42d793231a3d8e47
 2026-09-05.jsonl[432] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=[redacted]88f199 | group channel=81 mac=df62 len=32 sha=42d793231a3d8e47
-2026-09-05.jsonl[433] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e98395d2fa556173
-2026-09-05.jsonl[434] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=85d810105514007e
+2026-09-05.jsonl[433] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-1 tag=f2cfde6f claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[434] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-4 tag=f2cfde6f claimed_key=[redacted]
 2026-09-05.jsonl[435] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=186c len=32 sha=70b9e83383b41a01
 2026-09-05.jsonl[436] route=FLOOD type=GRP_TXT v1 tc=- hops=2x3 path=8e461b[redacted] | group channel=81 mac=186c len=32 sha=70b9e83383b41a01
-2026-09-05.jsonl[437] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=e9d6cd8a0b1bca88
-2026-09-05.jsonl[438] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6995c7e8ac2280e7
+2026-09-05.jsonl[437] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=16 tag=19a5e656 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[438] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=6 tag=19a5e656 claimed_key=[redacted]
 2026-09-05.jsonl[439] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=8513 len=32 sha=98c692ab9dc23112
 2026-09-05.jsonl[440] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=8513 len=32 sha=98c692ab9dc23112
-2026-09-05.jsonl[441] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=ca16cbd80dad4c99
-2026-09-05.jsonl[442] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=4a1f4db696a6da3e
+2026-09-05.jsonl[441] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=-1 tag=5e7d29f3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[442] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=41 tag=5e7d29f3 claimed_key=[redacted]
 2026-09-05.jsonl[443] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=f69c len=32 sha=3f06b81541276a3d
 2026-09-05.jsonl[444] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=f69c len=32 sha=3f06b81541276a3d
-2026-09-05.jsonl[445] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=cc5874aa2094bd5f
+2026-09-05.jsonl[445] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=37 tag=2349c565 claimed_key=[redacted]
 2026-09-05.jsonl[446] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=8b35 len=32 sha=3a973473643cadbe
 2026-09-05.jsonl[447] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=8b35 len=32 sha=3a973473643cadbe
-2026-09-05.jsonl[448] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=f06fc741a8df1a15
-2026-09-05.jsonl[449] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=d7324225c86967ee
-2026-09-05.jsonl[450] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1368be2d1aee4837
+2026-09-05.jsonl[448] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=e73cea3d since=0
+2026-09-05.jsonl[449] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=39 tag=e73cea3d claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[450] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=52 tag=e73cea3d claimed_key=[redacted]
 2026-09-05.jsonl[451] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=7e39 len=32 sha=1d884e2241a0ab44
 2026-09-05.jsonl[452] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=7e39 len=32 sha=1d884e2241a0ab44
-2026-09-05.jsonl[453] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=6b4c7ab2550a43dc
-2026-09-05.jsonl[454] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=5749a1ecf747d74d
+2026-09-05.jsonl[453] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=26 tag=a020cbfe claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[454] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=42 tag=a020cbfe claimed_key=[redacted]
 2026-09-05.jsonl[455] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=8e461b | group channel=81 mac=82eb len=32 sha=ddbf722d0d99e59b
 2026-09-05.jsonl[456] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=82eb len=32 sha=ddbf722d0d99e59b
-2026-09-05.jsonl[457] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1e6554424c3d36d1
-2026-09-05.jsonl[458] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=382cd15971cc2bcf
+2026-09-05.jsonl[457] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=27 tag=837432d3 claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[458] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=25 tag=837432d3 claimed_key=[redacted]
 2026-09-05.jsonl[459] route=FLOOD type=GRP_TXT v1 tc=- hops=1x3 path=[redacted] | group channel=81 mac=f53f len=32 sha=afd6bad4573a8135
-2026-09-05.jsonl[460] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=10 sha=25c7d635073e82f9
-2026-09-05.jsonl[461] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=c8eadea711ffe5ed
-2026-09-05.jsonl[462] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | unparsed len=38 sha=1e36e4a969153092
+2026-09-05.jsonl[460] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_req flags=0 filter=06 tag=4a19d30e since=0
+2026-09-05.jsonl[461] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=28 tag=4a19d30e claimed_key=8e461bdb9af393a599902a30d5edb8cd05a09d70cb738d4b4b8169812df949f4
+2026-09-05.jsonl[462] route=DIRECT type=CONTROL v1 tc=- hops=0x1 path=- | discover_resp node_type=2 snr_q=46 tag=4a19d30e claimed_key=[redacted]
 2026-09-05.jsonl[463] route=DIRECT type=ADVERT v1 tc=- hops=0x1 path=- | advert key=[redacted] ts=1788550327 sig=ok flags=0x92 type=REPEATER loc=11000,23000 name='[redacted]'
 2026-09-05.jsonl[464] route=DIRECT type=TRACE v1 tc=- hops=1x1 path=cb | trace len=10 sha=4eb2cbb20ef53e4b
 2026-09-05.jsonl[465] route=FLOOD type=ANON_REQ v1 tc=- hops=1x1 path=8e | anon_req dest=b3 sender=[redacted] mac=6057 len=16 sha=9a196eab3d18046c

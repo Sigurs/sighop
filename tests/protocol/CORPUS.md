@@ -60,8 +60,14 @@ writes to them or their sidecars. Nothing regenerates them.
   including the packed `path_length` encoding, all three live path hash sizes,
   hop counts 0-5, and the one transport-routed frame's transport codes.
 - **Payload shapes.** Every payload parses to its envelope and rebuilds
-  byte-identically across eleven payload types, CONTROL included — preserved
-  uninterpreted, which is itself the recorded behaviour.
+  byte-identically across eleven payload types, CONTROL included.
+- **CONTROL is node discovery.** All 168 CONTROL frames decode as MeshCore node
+  discovery (`MyMesh.cpp::onControlDataRecv`): 3 six-byte and 9 ten-byte
+  `NODE_DISCOVER_REQ`, 156 thirty-eight-byte `NODE_DISCOVER_RESP`, every
+  response from a REPEATER, every frame DIRECT with zero hops. None falls back to
+  uninterpreted (`test_corpus.py::test_every_corpus_control_frame_decodes_as_discovery`).
+  A response's key is recorded as the sender claimed it — the payload carries no
+  signature, so the corpus proves the layout, not who sent it.
 - **Adverts.** All 92 ADVERT frames pass Ed25519 signature verification, and
   their appdata decodes to consistent flags, node types and UTF-8 names.
 - **That the multi-byte hash reading is the correct one.** Forcing 1-byte hashes
@@ -102,6 +108,9 @@ Shapes absent from the corpus, each covered by a synthetic fixture instead:
 | The reserved `0b11` hash size code | `test_packet.py::test_reserved_hash_size_code_is_rejected` |
 | Payload versions other than v1 | `test_packet.py::test_non_v1_payload_version_is_rejected` |
 | MULTIPART, RAW_CUSTOM, reserved payload types | `test_payloads.py::test_unsupported_payload_types_are_preserved_not_dropped` |
+| CONTROL subtypes other than node discovery, and an empty CONTROL payload | `test_payloads.py::test_non_discovery_control_is_preserved_uninterpreted` |
+| The 14-byte key-prefix discovery response, and a response from a non-REPEATER node type | `test_payloads.py::test_discover_response_with_key_prefix_and_negative_snr`, `::test_discover_response_with_an_unnamed_node_type_still_parses` |
+| A discovery request with the prefix-only flag or a filter other than `0x04`/`0x06`/`0x10` | `test_payloads.py::test_discover_request_preserves_every_flag_bit` |
 | Adverts setting feature 1 / feature 2 (`0x20` / `0x40`) | `test_payloads.py::test_feature_fields_decode_in_wire_order` |
 | Adverts with no name flag, or a non-UTF-8 name | `test_payloads.py::test_advert_with_no_name_flag_preserves_trailing_bytes`, `::test_name_that_is_not_valid_utf8_is_flagged_not_discarded` |
 | Every decrypted body layout (text, group text, returned path, room login) | `test_payloads.py`, over synthetic plaintext |
@@ -127,6 +136,9 @@ The 2026-09-05 session added three more, and settled how ordinary one of the
   session against six in the entire corpus before it, 154 of them at 38 bytes.
   The shape has not changed; its frequency has. Preserving CONTROL
   uninterpreted is now a path taken by roughly a fifth of the corpus.
+  (Since `decode-control-discovery` it is no longer preserved uninterpreted:
+  every one of these frames is decoded as node discovery — see *What the corpus
+  proves*.)
 
 ## Recorded composition
 

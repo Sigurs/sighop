@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from sighop.monitor.render import (
+    VERIFIED_MARK,
     Summary,
     render_detail_line,
     render_frame_line,
@@ -181,6 +182,28 @@ def test_an_uninterpreted_payload_is_labelled_as_such():
 
     assert "CONTROL not interpreted" in detail
     assert "dead" in detail
+
+
+def test_a_discovery_request_names_the_node_types_it_asks_for():
+    detail = render_detail_line(
+        record_for(packet_bytes(PayloadType.CONTROL, bytes.fromhex("80069a7d3916")))
+    )
+
+    assert "discover request" in detail
+    assert "tag=9a7d3916" in detail
+    assert "wants=CHAT, REPEATER" in detail
+
+
+def test_a_discovery_response_marks_its_key_unauthenticated_and_unverified():
+    payload = bytes([0x92, 0x2F]) + bytes.fromhex("9a7d3916") + bytes(range(32))
+    detail = render_detail_line(record_for(packet_bytes(PayloadType.CONTROL, payload)))
+
+    assert "discover response" in detail
+    assert "tag=9a7d3916" in detail
+    assert "REPEATER" in detail
+    assert "reported snr=+11.75 dB" in detail
+    assert "claimed key=0001020304050607 (unauthenticated)" in detail
+    assert VERIFIED_MARK not in detail
 
 
 def test_a_decode_failure_shows_the_rule_the_offset_and_the_bytes():
