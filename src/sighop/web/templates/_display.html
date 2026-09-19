@@ -1,0 +1,42 @@
+{# How the panel draws a status, a public key and a timestamp (`web-display`).
+
+   Dense views show a glyph and the few figures that tell one row from another;
+   what the status *means* moves to hover (`title`) and to a visually hidden
+   span, so a screen reader reads the statement rather than a bare glyph, and
+   nothing a spec requires to be stated leaves the page. The glyph, not the
+   colour, is what tells one status from another. #}
+
+{# One `render.Status`. The visible part is hidden from assistive technology
+   because the explanation already carries its numbers and its reason. #}
+{% macro status(s) -%}
+<span class="status status-{{ s.kind }}" title="{{ s.explanation }}">
+  {%- if s.glyph %}<span class="status-glyph" aria-hidden="true">{{ s.glyph }}</span>{% endif -%}
+  {%- if s.figures %}<span class="status-figures" aria-hidden="true">{{ s.figures|join(' · ') }}</span>{% endif -%}
+  {%- if s.reason %}<span class="status-reason" aria-hidden="true">{{ s.reason }}</span>{% endif -%}
+  <span class="visually-hidden">{{ s.explanation }}</span>
+</span>
+{%- endmacro %}
+
+{% macro statuses(list) -%}
+{%- for s in list %}{{ status(s) }}{% if not loop.last %} {% endif %}{% endfor -%}
+{%- endmacro %}
+
+{# A public key: its first three bytes, the whole key on hover and behind the
+   copy control. Display only — links and form values keep the full key, and a
+   revealed private key never comes through here. `type="button"` so the
+   control never submits a form it sits in. #}
+{% macro key(value) -%}
+{%- set full = value if value is string else value.hex() -%}
+<span class="key"><code class="mono" title="{{ full }}">{{ full[:6] }}…</code>
+  {#- #}<button type="button" class="copy" data-copy="{{ full }}" title="copy full key" aria-label="copy full key">⧉</button></span>
+{%- endmacro %}
+
+{# A timestamp. The server writes compact UTC, marked UTC; `display.js`
+   rewrites it relative to now in the viewer's own clock and keeps it current. #}
+{% macro when(value, empty='—') -%}
+{%- if value is none -%}
+{{ empty }}
+{%- else -%}
+<time class="when" datetime="{{ value|iso_utc }}" title="{{ value|iso_utc }}">{{ value|utc_short }}</time>
+{%- endif -%}
+{%- endmacro %}

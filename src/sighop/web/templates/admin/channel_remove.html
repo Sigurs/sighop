@@ -20,7 +20,7 @@
     </tbody>
   </table>
   {% if messages is not none %}
-  <p><strong>{{ messages }} recorded message(s) will be deleted.</strong></p>
+  <p><strong>{{ plural(messages, 'recorded message') }} will be deleted.</strong></p>
   {% endif %}
   <p class="note">
     Recorded as its own event naming your account. This run stops decrypting the

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}greeting records · sighop{% endblock %}
 
@@ -26,13 +27,13 @@
   <tbody>
     {% for record in records %}
     <tr>
-      <td class="mono">{{ record.short_key }}</td>
+      <td>{{ display.key(record.public_key) }}</td>
       <td>{{ record.name or '—' }}</td>
       <td class="mono">
         {{ record.outcome }}{% if not record.settled %}
-        after {{ record.attempts }} attempt(s){% endif %}
+        after {{ plural(record.attempts, 'attempt') }}{% endif %}
       </td>
-      <td class="mono">{{ record.at or '—' }}</td>
+      <td class="mono">{{ display.when(record.at, record.at_raw or '—') }}</td>
       <td>
         <form method="post" action="/admin/bots/{{ bot.id }}/greeted/clear">
           <input type="hidden" name="_token" value="{{ token }}">
@@ -53,7 +54,7 @@
 
 {% if other_keys %}
 <p class="note">
-  This bot has stored {{ other_keys }} other key(s) that are not greeting
+  This bot has stored {{ plural(other_keys, 'other key') }} that are not greeting
   records. They are shown in full on the page of <a href="/admin/identities/{{ bot.entity_id }}">{{ bot.entity_name }}</a>, the identity it runs on.
 </p>
 {% endif %}

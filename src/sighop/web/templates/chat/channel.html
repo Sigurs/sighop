@@ -1,12 +1,13 @@
 {% extends "base.html" %}
 {% import "_claimed.html" as claims %}
+{% import "_display.html" as display %}
 
 {% block title %}{{ channel.name }} · channel · sighop{% endblock %}
 
 {% block content %}
 <h1>{{ channel.name }}
   <span class="mono">[{{ '%02x' % channel.channel_hash }}]</span>
-  {% if channel.guessable %}<span class="guessable">guessable</span>{% endif %}
+  {% if channel.guessable %}{{ display.status(guessable_status) }}{% endif %}
 </h1>
 
 <p class="note">{{ claims_note }}</p>

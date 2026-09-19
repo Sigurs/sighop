@@ -46,7 +46,14 @@ from sighop.net.dm import (
     choose_route,
 )
 from sighop.web.deps import Panel, panel
-from sighop.web.render import Refusal, identity_for, identity_for_key
+from sighop.web.render import (
+    Refusal,
+    Status,
+    duration,
+    identity_for,
+    identity_for_key,
+    plural,
+)
 
 PanelDep = Annotated[Panel, Depends(panel)]
 
@@ -219,6 +226,7 @@ async def channels_context(page: Panel, *, added: str, removed: str) -> dict[str
         "no_database": page.persistence is None,
         "no_database_note": CHANNELS_NEED_DURABLE_STORAGE,
         "guessable_statement": GUESSABLE_STATEMENT,
+        "guessable_status": GUESSABLE,
         "keys_note": CHANNEL_KEYS_ARE_A_TERMINAL_ACT,
         "key_command": CHANNEL_KEY_COMMAND,
         "just_added": next((record for record in records if record.name == added), None),
@@ -371,6 +379,7 @@ async def _channel_context(page: Panel, loaded: LoadedChannel) -> dict[str, Any]
         "max_text_len": MAX_CHANNEL_TEXT_LEN,
         "claims_note": CLAIMS_NOTE,
         "guessable_note": GUESSABLE_NOTE,
+        "guessable_status": GUESSABLE,
         "public_note": PUBLIC_NOTE,
         "post_note": POST_NOTE,
         "recorded": _recorded(page),
@@ -401,9 +410,9 @@ def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str
     rendered = record.rendered()
     handled = int(record.handled_at.timestamp())
     wire_time = (
-        ""
+        None
         if record.wire_timestamp == handled
-        else dt.datetime.fromtimestamp(record.wire_timestamp, dt.UTC).isoformat()
+        else dt.datetime.fromtimestamp(record.wire_timestamp, dt.UTC)
     )
     return {
         "ref": record.ref,
@@ -417,29 +426,64 @@ def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str
         "raw": record.text.hex(),
         "handled_at": record.handled_at,
         "wire_time": wire_time,
-        "state": _channel_state_text(record),
+        "state": _channel_state(record),
     }
 
 
-def _channel_state_text(record: ChannelMessageRecord) -> str:
-    """A channel message's state, in the only terms a channel offers."""
+def _channel_state(record: ChannelMessageRecord) -> tuple[Status, ...]:
+    """A channel message's state, in the only terms a channel offers.
+
+    That no acknowledgement exists is said in the transmitted glyph's hover and
+    once on the page (`POST_NOTE`), not spelled out again on every row.
+    """
     if record.inbound:
-        hops = "?" if record.hop_count is None else str(record.hop_count)
-        return f"received, {hops} hop(s)"
-    repeats = (
-        "no repeat heard — which does not mean it was not received"
-        if record.repeats_heard == 0
-        else f"repeat heard {record.repeats_heard}x — a repeater forwarded it"
-    )
+        if record.hop_count is None:
+            return (Status("received", "↓", ("?",), "received over an unknown number of hops"),)
+        hops = plural(record.hop_count, "hop")
+        return (Status("received", "↓", (str(record.hop_count),), f"received over {hops}"),)
     match record.outcome:
         case ChannelOutcome.AWAITING:
-            return "awaiting transmission"
+            return (Status("awaiting", "◷", explanation="awaiting transmission"),)
         case ChannelOutcome.TRANSMITTED:
-            return f"transmitted; no acknowledgement exists for channel messages; {repeats}"
+            transmitted = "transmitted; no acknowledgement exists for channel messages"
+            if record.repeats_heard == 0:
+                return (
+                    Status(
+                        "transmitted",
+                        "↑",
+                        explanation=(
+                            f"{transmitted}; no repeat heard — which does not mean "
+                            "it was not received"
+                        ),
+                    ),
+                )
+            times = plural(record.repeats_heard, "time")
+            return (
+                Status("transmitted", "↑", explanation=transmitted),
+                Status(
+                    "repeats",
+                    "⟲",
+                    (str(record.repeats_heard),),
+                    f"repeat heard {times} — a repeater forwarded it",
+                ),
+            )
         case ChannelOutcome.NOT_TRANSMITTED:
-            return f"not transmitted — {record.outcome_reason or 'no reason given'}; not retried"
+            reason = record.outcome_reason or "no reason given"
+            return (
+                Status(
+                    "not-transmitted",
+                    "✕",
+                    explanation=f"not transmitted — {reason}; not retried",
+                    reason=reason,
+                ),
+            )
         case _:
-            return "outcome unknown — the run stopped before it resolved"
+            return (UNKNOWN,)
+
+
+UNKNOWN = Status("unknown", "⁇", explanation="outcome unknown — the run stopped before it resolved")
+
+GUESSABLE = Status("guessable", "◌", explanation=GUESSABLE_NOTE)
 
 
 # --- One conversation -------------------------------------------------------
@@ -537,33 +581,64 @@ def _message_view(record: DirectMessageRecord) -> dict[str, object]:
         "outcome": str(record.outcome),
         "attempts": record.attempts,
         "ack_latency_ms": record.ack_latency_ms,
-        "state": _state_text(record),
+        "state": _state(record),
     }
 
 
-def _state_text(record: DirectMessageRecord) -> str:
+def _state(record: DirectMessageRecord) -> tuple[Status, ...]:
     """A message's delivery state, in the terms the protocol actually offers."""
     if record.inbound:
-        return "received"
+        return (Status("received", "↓", explanation="received"),)
+    attempts = plural(record.attempts, "attempt")
     match record.outcome:
         case RecordedOutcome.IN_FLIGHT:
+            if record.attempts == 0:
+                return (Status("awaiting", "◷", explanation="awaiting transmission"),)
             return (
-                "awaiting transmission"
-                if record.attempts == 0
-                else f"attempt {record.attempts} in progress"
+                Status(
+                    "attempt",
+                    "↻",
+                    (str(record.attempts),),
+                    f"attempt {record.attempts} in progress",
+                ),
             )
         case RecordedOutcome.ACKNOWLEDGED:
-            latency = "" if record.ack_latency_ms is None else f", {record.ack_latency_ms:.0f} ms"
-            return f"delivered — acknowledged after {record.attempts} attempt(s){latency}"
+            if record.ack_latency_ms is None:
+                figures: tuple[str, ...] = (str(record.attempts),)
+                latency = ""
+            else:
+                figures = (str(record.attempts), duration(record.ack_latency_ms / 1000))
+                latency = f", {figures[1]}"
+            return (
+                Status(
+                    "delivered",
+                    "✓✓",
+                    figures,
+                    f"delivered — acknowledged after {attempts}{latency}",
+                ),
+            )
         case RecordedOutcome.UNACKNOWLEDGED:
             return (
-                f"unacknowledged after {record.attempts} attempt(s) — the platform "
-                "cannot tell whether it arrived"
+                Status(
+                    "unacknowledged",
+                    "⚠\ufe0e",
+                    (str(record.attempts),),
+                    (
+                        f"unacknowledged after {attempts} — the platform cannot tell "
+                        "whether it arrived"
+                    ),
+                ),
             )
         case RecordedOutcome.DROPPED:
-            return "never reached the air — the scheduler dropped it"
+            return (
+                Status(
+                    "dropped",
+                    "⊘",
+                    explanation="never reached the air — the scheduler dropped it",
+                ),
+            )
         case _:
-            return str(record.outcome)
+            return (Status("unknown", "⁇", explanation=str(record.outcome)),)
 
 
 def _route_note(page: Panel, contact: Contact) -> dict[str, object]:

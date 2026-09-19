@@ -17,6 +17,7 @@ out of the platform.
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 import uuid
 from typing import Annotated
@@ -519,8 +520,6 @@ def _identity_page(entity_id: uuid.UUID) -> str:
 
 
 def _now_iso() -> str:
-    import datetime as dt
-
     return dt.datetime.now(dt.UTC).isoformat()
 
 
@@ -816,15 +815,26 @@ def _greeting_rows(
         rows.append(
             {
                 "public_key": public_key.hex(),
-                "short_key": public_key.hex()[:16],
                 "name": str(record.get("name", "")),
                 "outcome": outcome,
                 "settled": outcome in SETTLED,
                 "attempts": record.get("attempts", 0),
-                "at": str(record.get("at", "")),
+                "at": _recorded_at(record.get("at")),
+                "at_raw": str(record.get("at", "")),
             }
         )
     return rows, others
+
+
+def _recorded_at(value: object) -> dt.datetime | None:
+    """A greeting record's `at`, as a time the page can draw, or `None` when the
+    stored text is not one (the page then shows the text as it is)."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 @router.post("/bots/{bot_id}/greeted/clear")

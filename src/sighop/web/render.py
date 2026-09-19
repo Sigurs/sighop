@@ -23,6 +23,7 @@ import datetime as dt
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from typing import TYPE_CHECKING
 
 from sighop.net.adverts import EntityStub
 from sighop.net.contacts import Contact, ContactStore
@@ -31,15 +32,98 @@ from sighop.net.tx import DEFAULT_CEILING_FRACTION, SchedulerStatus
 from sighop.web.feed import EntityTraffic, FeedHub
 from sighop.web.state import PanelState
 
+if TYPE_CHECKING:
+    from jinja2 import Environment
+
 VERIFIED_MARK = "✓"
 UNVERIFIED_MARK = "✗"
 KEY_ONLY_MARK = "?"
 """The same glyphs `monitor/render.py` uses, so a screenshot of the panel and a
-line in the terminal say the same thing the same way. A glyph *and* a word,
-never colour alone: the marking has to survive a screenshot, a colourblind
-operator and a monochrome theme (design D13)."""
+line in the terminal say the same thing the same way. Three glyph shapes, never
+colour alone: the marking has to survive a screenshot, a colourblind operator
+and a monochrome theme (design D13). The word each stands for is on hover and
+in a legend rather than on every row (`web-display`)."""
 
 REGULATORY_NOTE = "the 10% default on EU 868 is a regulatory limit, not a tuning knob"
+
+CLAIMED_MARK = "“"
+"""A channel sender's claimed name. Not `UNVERIFIED_MARK`: a claim is a different
+thing from a contact whose advert did not verify, and the two must not share a
+glyph (`web-dashboard`)."""
+
+
+# --- Display conventions (`web-display`) -------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Status:
+    """One state as the panel draws it: a glyph, its numbers, and what it means.
+
+    `figures` are only what tells one occurrence from another (attempts,
+    latency, hops, repeats). `explanation` is the full statement, on hover and
+    for a screen reader. `reason` is specific to this occurrence — a refusal or
+    failure reason — and so stays visible rather than moving to hover.
+    """
+
+    kind: str
+    glyph: str
+    figures: tuple[str, ...] = ()
+    explanation: str = ""
+    reason: str = ""
+
+
+def plural(count: int, word: str, many: str | None = None) -> str:
+    """`1 attempt`, `2 attempts` — never `2 attempt(s)`."""
+    return f"{count} {word if count == 1 else (many or word + 's')}"
+
+
+def duration(seconds: float) -> str:
+    """A duration in the largest sensible unit: `3.0 s`, `1 m 30 s`, `2 h 5 m`."""
+    if seconds < 1:
+        return f"{seconds * 1000:.0f} ms"
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    whole = round(seconds)
+    for size, unit, smaller, small_unit in (
+        (86400, "d", 3600, "h"),
+        (3600, "h", 60, "m"),
+        (60, "m", 1, "s"),
+    ):
+        if whole >= size:
+            major, rest = divmod(whole, size)
+            minor = rest // smaller
+            return f"{major} {unit}" + (f" {minor} {small_unit}" if minor else "")
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _as_utc(value: dt.datetime) -> dt.datetime:
+    """A stored naive time is UTC here, as everywhere else in the platform."""
+    return value.replace(tzinfo=dt.UTC) if value.tzinfo is None else value.astimezone(dt.UTC)
+
+
+def iso_utc(value: dt.datetime) -> str:
+    """The exact value, for `datetime=` and hover; what `display.js` reads."""
+    return _as_utc(value).isoformat()
+
+
+def utc_short(value: dt.datetime) -> str:
+    """What a timestamp reads when the page's script does not run."""
+    return _as_utc(value).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def install_display(env: Environment) -> None:
+    """The `web-display` helpers, on every Jinja environment the panel builds.
+
+    The macros that use them live in `templates/_display.html`.
+    """
+    for name, helper in (
+        ("plural", plural),
+        ("duration", duration),
+        ("iso_utc", iso_utc),
+        ("utc_short", utc_short),
+    ):
+        env.filters[name] = helper
+        env.globals[name] = helper
 
 
 # --- The duty-cycle meter ---------------------------------------------------
@@ -166,7 +250,7 @@ class IdentityView:
 
     @property
     def short_key(self) -> str:
-        return self.public_key.hex()[:16]
+        return self.public_key.hex()[:6]
 
     @property
     def node_hash(self) -> int:
@@ -368,7 +452,7 @@ class PersistenceView:
         """Writes that will never land, said plainly or not at all."""
         if not (self.discarded or self.refused):
             return ""
-        return f"{self.discarded} write(s) discarded, {self.refused} refused"
+        return f"{plural(self.discarded, 'write')} discarded, {self.refused} refused"
 
     @property
     def level(self) -> str:
@@ -433,7 +517,18 @@ class RouteView:
     def text(self) -> str:
         if self.zero_hop:
             return "direct, zero hops"
-        return f"{self.hop_count} hop(s) via {self.path}"
+        return f"{plural(self.hop_count, 'hop')} via {self.path}"
+
+    @property
+    def status(self) -> Status:
+        """The route as drawn: ⇢, the hop count and the path, the rest on hover."""
+        explanation = self.text if not self.ambiguous else f"{self.text}; {self.caveat}"
+        return Status(
+            kind="route-ambiguous" if self.ambiguous else "route",
+            glyph="⇢",
+            figures=(str(self.hop_count), "direct" if self.zero_hop else self.path),
+            explanation=explanation,
+        )
 
     @property
     def caveat(self) -> str:

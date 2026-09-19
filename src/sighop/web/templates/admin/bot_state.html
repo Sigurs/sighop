@@ -11,7 +11,7 @@
 
 {% if cleared is not none %}
 <p class="note">
-  <strong>Cleared {{ cleared }} key(s)</strong> from
+  <strong>Cleared {{ plural(cleared, 'key') }}</strong> from
   <span class="mono">{{ bot.entity_name }}</span>.
 </p>
 <p class="unavailable">{{ state_note }}</p>
@@ -20,7 +20,7 @@
 <div class="guarded">
   <p class="unavailable"><strong>{{ state_note }}</strong></p>
   <p class="note">
-    This bot has stored <strong>{{ keys }}</strong> key(s). All of them go,
+    This bot has stored <strong>{{ plural(keys, 'key') }}</strong>. All of them go,
     greeting records included, and there is no way to put them back.
   </p>
   <form method="post" action="/admin/bots/{{ bot.id }}/state/clear">

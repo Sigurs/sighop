@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 {% import "_collection.html" as collection %}
 
 {% block title %}identities · sighop{% endblock %}
@@ -31,10 +32,10 @@
       <td>{{ stub.name }}</td>
       <td class="mono">{{ stub.node_type.name }}</td>
       <td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td>
-      <td class="mono">{{ stub.identity.public_key.hex() }}</td>
+      <td>{{ display.key(stub.identity.public_key) }}</td>
       <td class="mono">{{ 'keyfile' if stub.persistent else 'ephemeral (generated this run)' }}</td>
-      <td class="mono">{{ stub.next_flood_at.isoformat() if stub.next_flood_at else '—' }}</td>
-      <td class="mono">{{ stub.last_flood_at.isoformat() if stub.last_flood_at else 'none this run' }}</td>
+      <td class="mono">{{ display.when(stub.next_flood_at) }}</td>
+      <td class="mono">{{ display.when(stub.last_flood_at, 'none this run') }}</td>
       <td class="num">{{ stub.adverts_sent }}</td>
       {% set counted = traffic.get(stub.identity.public_key.hex(), {}) %}
       <td class="num">{{ counted.get('transmitted', 0) }}</td>
@@ -42,7 +43,7 @@
       <td class="num">{{ counted.get('addressed', 0) }}</td>
       <td class="mono">
         {% if stub.override and stub.override.active(advert_now) %}
-        {{ '%g s'|format(stub.override.interval_seconds) }} until {{ stub.override.expires_at.isoformat() }}
+        {{ stub.override.interval_seconds|duration }} until {{ display.when(stub.override.expires_at) }}
         {% else %}—{% endif %}
       </td>
       <td>
@@ -88,10 +89,10 @@
     <tr>
       <td><a href="/admin/identities/{{ record.id }}">{{ record.name }}</a></td>
       <td class="mono">{{ record.type }}</td>
-      <td class="mono">{{ record.public_key.hex() }}</td>
+      <td>{{ display.key(record.public_key) }}</td>
       <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
       <td class="mono">{{ 'yes' if record.enabled else 'no' }}</td>
-      <td class="mono">{{ record.created_at.isoformat() }}</td>
+      <td class="mono">{{ display.when(record.created_at) }}</td>
       <td class="mono">
         {%- if serving -%}
         <a href="/admin/identities/{{ record.id }}">{{ serving|join(', ') }}</a>

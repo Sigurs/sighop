@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 {% import "_identity.html" as identity %}
 {% import "_collection.html" as collection %}
 
@@ -27,7 +28,7 @@
     <tr>
       <td class="num mono">{{ post.post_timestamp }}</td>
       <td>{{ identity.identity(post.author) }}</td>
-      <td class="mono">{{ post.posted_at.isoformat() }}</td>
+      <td class="mono">{{ display.when(post.posted_at) }}</td>
       <td>
         {% if post.displayable %}
           {{ post.text }}

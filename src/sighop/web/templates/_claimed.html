@@ -4,18 +4,22 @@
    keys we hold and adverts that were checked. A channel sender is a name inside
    a plaintext that anyone holding the channel key could have written, so it is
    never linked, never coloured as verified, and never looked up against the
-   contact table — a claim equal to a verified contact's name is still a claim. #}
+   contact table — a claim equal to a verified contact's name is still a claim.
+
+   Its glyph is “, not the ✗ of an unverified contact: a claim and a contact
+   whose advert did not verify are different things and must not share a mark
+   (`web-dashboard`). The words go to hover and to a visually hidden span. #}
 {% macro claimed(name) -%}
 {%- if name is none -%}
 <span class="claimed-name" title="this message names no sender">
-  <span class="claimed-mark" aria-hidden="true">✗</span>
+  <span class="claimed-mark" aria-hidden="true">“</span>
   <span class="claimed-status">no sender named</span>
 </span>
 {%- else -%}
 <span class="claimed-name" title="a name the message claims; channel sender names are not authenticated">
-  <span class="claimed-mark" aria-hidden="true">✗</span>
+  <span class="claimed-mark" aria-hidden="true">“</span>
   <span class="claimed-label">{{ name }}</span>
-  <span class="claimed-status">claimed, unverified</span>
+  <span class="claimed-status visually-hidden">claimed, unverified</span>
 </span>
 {%- endif -%}
 {%- endmacro %}

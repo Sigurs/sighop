@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}private key · sighop{% endblock %}
 
@@ -12,7 +13,7 @@
 </p>
 
 <h2>public key</h2>
-<p class="mono">{{ public_key }}</p>
+<p>{{ display.key(public_key) }}</p>
 
 <h2>private key</h2>
 <p class="mono revealed">{{ private_key }}</p>

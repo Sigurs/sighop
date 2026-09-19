@@ -207,9 +207,10 @@ def test_an_acknowledged_send_shows_its_attempts_and_latency() -> None:
     with _client(app) as client:
         body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
-    assert "delivered" in body
-    assert "2 attempt(s)" in body
-    assert "812 ms" in body
+    state_cell = body.split('class="message-state"')[1].split("</td>")[0]
+    assert "status-delivered" in state_cell and "✓✓" in state_cell
+    assert '<span class="status-figures" aria-hidden="true">2 · 812 ms</span>' in state_cell
+    assert 'title="delivered — acknowledged after 2 attempts, 812 ms"' in state_cell
 
 
 def test_a_send_that_is_never_acknowledged_is_not_shown_as_delivered() -> None:
@@ -229,8 +230,11 @@ def test_a_send_that_is_never_acknowledged_is_not_shown_as_delivered() -> None:
     with _client(app) as client:
         body = client.get(f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}").text
 
-    assert "unacknowledged after 4 attempt(s)" in body
-    assert "cannot tell whether it arrived" in body
+    state_cell = body.split('class="message-state"')[1].split("</td>")[0]
+    assert "status-unacknowledged" in state_cell and "✓✓" not in state_cell
+    assert '<span class="status-figures" aria-hidden="true">4</span>' in state_cell
+    assert "unacknowledged after 4 attempts" in state_cell
+    assert "cannot tell whether it arrived" in state_cell
     assert "delivered" not in body.split("conversation")[-1]
 
 
@@ -881,7 +885,7 @@ def test_channels_are_listed_guessable_and_readable_without_an_identity() -> Non
         channel = client.get("/chat/channel/1")
 
     assert "Public" in index and "#dev-sighop" in index
-    assert index.count(">guessable<") == 2
+    assert index.count('class="status status-guessable"') == 2
     assert 'href="/chat/channel/2"' in index and "1 new" in index
     assert "Channel messaging is not supported" not in index
     assert channel.status_code == 200
@@ -895,7 +899,9 @@ def test_a_message_arriving_in_an_open_channel_appears_on_refresh() -> None:
         log.offer(_received(2, "p1", "alice", b"arrived just now"))
         after = client.get("/chat/channel/2/messages").text
     assert "arrived just now" not in before
-    assert "arrived just now" in after and "received, 2 hop(s)" in after
+    assert "arrived just now" in after
+    assert '<span class="status-figures" aria-hidden="true">2</span>' in after
+    assert 'title="received over 2 hops"' in after
     assert 'hx-trigger="every 3s"' in after
 
 
@@ -979,9 +985,19 @@ def test_a_transmitted_post_states_repeats_and_that_no_acknowledgement_exists() 
     )
     with _client(app) as client:
         body = client.get("/chat/channel/2/messages").text
-    assert "no acknowledgement exists for channel messages" in body
-    assert "repeat heard 3x" in body
-    assert "which does not mean it was not received" in body
+        page = client.get("/chat/channel/2?identity=" + stub.identity.public_key.hex()).text
+    rows = body.split('<tr class="message')[1:]
+    repeated = next(row for row in rows if "status-repeats" in row)
+    quiet = next(row for row in rows if "status-repeats" not in row)
+    # The transmitted glyph's hover says no acknowledgement exists; the row
+    # itself no longer spells it out in visible text.
+    assert 'title="transmitted; no acknowledgement exists for channel messages"' in repeated
+    assert '<span class="status-figures" aria-hidden="true">3</span>' in repeated
+    assert 'title="repeat heard 3 times — a repeater forwarded it"' in repeated
+    assert "status-transmitted" in quiet
+    assert "which does not mean it was not received" in quiet
+    # Stated once on the page, in the channel's standing note.
+    assert page.count("No acknowledgement exists for channel messages") == 1
 
 
 def test_a_post_over_the_limit_is_refused_with_the_text_kept_and_nothing_recorded() -> None:

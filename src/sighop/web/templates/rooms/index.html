@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 {% import "_collection.html" as collection %}
 
 {% block title %}rooms · sighop{% endblock %}
@@ -102,7 +103,7 @@
         {% set chosen = refusal.value('entity_id') if refusal else '' %}
         {% for host in hosts %}
         <option value="{{ host.id }}" {{ 'selected' if host.id|string == chosen }}>
-          {{ host.name }} ({{ host.public_key.hex()[:16] }})
+          {{ host.name }} ({{ host.public_key.hex()[:6] }}…)
         </option>
         {% endfor %}
       </select>

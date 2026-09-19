@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}{{ title }} · sighop{% endblock %}
 
@@ -21,11 +22,11 @@
     <tbody>
       <tr><td>identity</td><td>{{ stub.name }}</td></tr>
       <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td></tr>
-      <tr><td>public key</td><td class="mono">{{ stub.identity.public_key.hex() }}</td></tr>
+      <tr><td>public key</td><td>{{ display.key(stub.identity.public_key) }}</td></tr>
       <tr><td>next scheduled flood</td>
-          <td class="mono">{{ stub.next_flood_at.isoformat() if stub.next_flood_at else 'none' }}</td></tr>
+          <td class="mono">{{ display.when(stub.next_flood_at, 'none') }}</td></tr>
       <tr><td>last flood</td>
-          <td class="mono">{{ stub.last_flood_at.isoformat() if stub.last_flood_at else 'none this run' }}</td></tr>
+          <td class="mono">{{ display.when(stub.last_flood_at, 'none this run') }}</td></tr>
       <tr><td>transmit gate</td>
           <td class="mono">{{ 'open' if transmit_enabled else 'closed' }}</td></tr>
       <tr><td>radio readback</td>

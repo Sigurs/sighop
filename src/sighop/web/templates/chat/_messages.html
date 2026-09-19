@@ -2,6 +2,7 @@
    without a reload and a send's state moves as it progresses. A GET: opening,
    scrolling and refreshing a conversation transmit nothing. #}
 {% import "_identity.html" as identity %}
+{% import "_display.html" as display %}
 <div id="conversation" hx-get="/chat/{{ entity_key }}/{{ peer_key }}/messages"
      hx-trigger="every 3s" hx-swap="outerHTML">
 {# Inside the refreshed partial, so a database that goes away mid-conversation
@@ -19,7 +20,7 @@
   <tbody>
     {% for message in messages %}
     <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
-      <td class="mono">{{ message.handled_at.isoformat() }}</td>
+      <td class="mono">{{ display.when(message.handled_at) }}</td>
       <td>
         {%- if message.inbound -%}
           {{ identity.identity(peer, key=false) }}
@@ -35,7 +36,7 @@
           <span class="mono">{{ message.raw }}</span>
         {% endif %}
       </td>
-      <td class="mono message-state">{{ message.state }}</td>
+      <td class="message-state">{{ display.statuses(message.state) }}</td>
     </tr>
     {% endfor %}
   </tbody>

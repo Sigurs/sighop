@@ -130,7 +130,7 @@ def test_the_meter_strip_shows_the_persistence_state_and_its_losses() -> None:
 
     meter = body[body.index('<section class="meter"') : body.index("</section>")]
     assert "persistence degraded" in meter
-    assert "12 write(s) discarded, 4 refused" in meter
+    assert "12 writes discarded, 4 refused" in meter
     assert "<h2>persistence</h2>" not in body
 
 
@@ -284,10 +284,15 @@ def test_the_contact_table_carries_identity_route_and_signal_together() -> None:
     with _client(_app(state)) as client:
         body = client.get("/contacts").text
 
-    assert contact.public_key.hex() in body, "the whole public key is not shown"
+    full = contact.public_key.hex()
+    assert f'<code class="mono" title="{full}">{full[:6]}…</code>' in body, (
+        "the key is not abbreviated"
+    )
+    assert f'data-copy="{full}"' in body, "the copy control does not carry the whole key"
     assert f"0x{contact.node_hash:02x}" in body
     assert "REPEATER" in body
-    assert "2 hop(s) via bed0" in body
+    assert '<span class="status-figures" aria-hidden="true">2 · bed0</span>' in body
+    assert 'title="2 hops via bed0"' in body
     assert "+12.25" in body
     assert "[redacted]" in body
 

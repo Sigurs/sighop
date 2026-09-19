@@ -430,3 +430,125 @@ table.feed td {
   letter-spacing: 0.05em;
   color: var(--fg-dim);
 }
+
+/* --- Display conventions (web-display) ------------------------------------
+   A status is a glyph and its figures; what it means is on hover and in a
+   visually hidden span for screen readers. Glyphs are text, never emoji, so
+   they take the colour below and survive a monochrome theme — and every
+   status has its own glyph, so colour is never the only signal. */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.status,
+.identity-mark,
+.claimed-mark {
+  font-variant-emoji: text;
+}
+
+.status {
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}
+
+.status + .status {
+  margin-left: 0.6em;
+}
+
+.status-glyph {
+  margin-right: 0.3em;
+}
+
+.status-reason {
+  margin-left: 0.3em;
+  white-space: normal;
+}
+
+.status-delivered,
+.status-received,
+.status-rx {
+  color: var(--ok);
+}
+
+.status-received .status-glyph,
+.status-rx .status-glyph {
+  color: var(--rx);
+}
+
+.status-transmitted .status-glyph,
+.status-tx .status-glyph {
+  color: var(--tx);
+}
+
+.status-awaiting,
+.status-attempt,
+.status-repeats,
+.status-route,
+.status-guessable {
+  color: var(--fg-dim);
+}
+
+.status-unacknowledged,
+.status-route-ambiguous {
+  color: var(--warn);
+}
+
+.status-dropped,
+.status-not-transmitted {
+  color: var(--alarm);
+}
+
+.status-unknown {
+  color: var(--fg-dim);
+  font-style: italic;
+}
+
+.key {
+  white-space: nowrap;
+}
+
+.key code {
+  font-family: var(--mono);
+  cursor: help;
+}
+
+.copy {
+  margin-left: 0.25em;
+  padding: 0 0.3em;
+  font: inherit;
+  font-size: 0.85em;
+  line-height: 1.2;
+  color: var(--fg-dim);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.copy:hover,
+.copy:focus-visible {
+  color: var(--fg);
+  border-color: var(--fg-dim);
+}
+
+.copy.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+time.when {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: help;
+}

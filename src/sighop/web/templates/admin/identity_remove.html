@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}remove identity · sighop{% endblock %}
 
@@ -18,7 +19,7 @@
   <table class="counters">
     <tbody>
       <tr><td>identity</td><td>{{ record.name }}</td></tr>
-      <tr><td>public key</td><td class="mono">{{ record.public_key.hex() }}</td></tr>
+      <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
       <tr><td>node hash</td><td class="mono">{{ '%02x' % record.node_hash }}</td></tr>
       <tr><td>loaded by this run</td><td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
     </tbody>

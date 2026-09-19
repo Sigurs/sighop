@@ -450,7 +450,8 @@ def test_an_active_override_is_shown_with_its_expiry() -> None:
     with _client(app) as client:
         body = client.get("/admin/identities").text
 
-    assert f"7200 s until {override.expires_at.isoformat()}" in body
+    assert "2 h until" in body
+    assert f'datetime="{override.expires_at.isoformat()}"' in body
 
 
 def test_the_schedule_after_a_requested_flood() -> None:

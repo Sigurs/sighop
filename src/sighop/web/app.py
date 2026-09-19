@@ -56,6 +56,7 @@ from sighop.web.feed import Connection, FeedHub
 from sighop.web.guard import UNAUTHENTICATED, RequestGuard, current_session
 from sighop.web.render import (
     contact_rows,
+    install_display,
     queue_rows,
 )
 from sighop.web.routes import admin, chat, keys, rooms, session, setup, system
@@ -150,6 +151,7 @@ def create_app(
         lifespan=None,
     )
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+    install_display(templates.env)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     app.state.panel = Panel(
@@ -332,6 +334,7 @@ async def _error_page(request: Request, exc: Exception) -> HTMLResponse:
     anyway, and a page is a rendering path to whoever holds the browser.
     """
     templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+    install_display(templates.env)
     return templates.TemplateResponse(
         request=request,
         name="error.html",

@@ -7,9 +7,9 @@
 <h1>retention: {{ room.name }}</h1>
 
 <p class="unavailable">
-  This room holds <strong class="mono">{{ stored }}</strong> stored message(s).
+  This room holds <strong class="mono">{{ plural(stored, 'stored message') }}</strong>.
   A bound below <span class="mono">{{ stored }}</span> removes the difference —
-  <strong>{{ stored }} message(s) are what a bound of 0 would remove</strong> —
+  <strong>{{ plural(stored, 'message') }} {{ 'is' if stored == 1 else 'are' }} what a bound of 0 would remove</strong> —
   and retention wins over sync: a message removed while a member was still
   behind it is a message that member will never receive.
 </p>

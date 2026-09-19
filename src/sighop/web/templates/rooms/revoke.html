@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}revoke a member · sighop{% endblock %}
 
@@ -6,7 +7,7 @@
 {% if room %}
 <h1>revoke from {{ room.name }}</h1>
 
-<p class="mono">{{ member_key }}</p>
+<p>{{ display.key(member_key) }}</p>
 
 <p class="unavailable">
   <strong>Revoking removes membership, permissions, sync cursor and replay guard

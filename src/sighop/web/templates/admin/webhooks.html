@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 {% import "_collection.html" as collection %}
 
 {% block title %}webhooks · sighop{% endblock %}
@@ -50,9 +51,9 @@
         <td class="mono">{{ 'none' if hook.max_hops is none else hook.max_hops }}</td></tr>
     <tr><td>enabled</td><td class="mono">{{ 'yes' if hook.enabled else 'no' }}</td></tr>
     <tr><td>last delivered</td>
-        <td class="mono">{{ hook.last_delivered_at.isoformat() if hook.last_delivered_at else 'never' }}</td></tr>
+        <td class="mono">{{ display.when(hook.last_delivered_at, 'never') }}</td></tr>
     <tr><td>last failed</td>
-        <td class="mono">{{ hook.last_failed_at.isoformat() if hook.last_failed_at else 'never' }}{% if hook.last_failure %} ({{ hook.last_failure }}){% endif %}</td></tr>
+        <td class="mono">{{ display.when(hook.last_failed_at, 'never') }}{% if hook.last_failure %} ({{ hook.last_failure }}){% endif %}</td></tr>
   </tbody>
 </table>
 {% if hook.plaintext_http %}

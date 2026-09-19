@@ -4,29 +4,31 @@
    rule, and a per-view `if` is how a hard rule becomes ninety per cent true.
    Contacts, feed rows, room authors and chat senders all come through here.
 
-   The marking is a glyph *and* a word. Colour is added by the stylesheet and
-   is never the only signal, so the distinction survives a screenshot, a
-   colourblind operator and a monochrome theme. #}
+   The marking is a glyph: ✓, ✗ and ? are three shapes, so the distinction
+   survives a screenshot, a colourblind operator and a monochrome theme. Colour
+   is added by the stylesheet and is never the only signal. What the glyph means
+   is on hover, read to assistive technology from a visually hidden span, and
+   stated in `verification_legend()` on every page that draws one (`web-display`). #}
+{% import "_display.html" as display %}
 {% macro identity(view, key=true) -%}
 <span class="identity identity-{{ view.verification }}" title="{{ view.marking_text }}">
   <span class="identity-mark" aria-hidden="true">{{ view.mark }}</span>
   <span class="identity-name">{{ view.label }}</span>
-  <span class="identity-status">{{ view.verification|replace('_', ' ') }}</span>
+  <span class="identity-status visually-hidden">{{ view.verification|replace('_', ' ') }}: {{ view.marking_text }}</span>
   {%- if key %}
-  <span class="mono identity-key">{{ view.short_key }}</span>
+  {{ display.key(view.key_hex) }}
   {%- endif %}
 </span>
 {%- endmacro %}
 
-{# The same identity with its whole key, for a page about one peer rather than
-   a table of many. A public key is not secret and is truncated only for width. #}
+{# The same identity with its key copyable, for a page about one peer rather
+   than a table of many. #}
 {% macro identity_full(view) -%}
 <span class="identity identity-{{ view.verification }}" title="{{ view.marking_text }}">
   <span class="identity-mark" aria-hidden="true">{{ view.mark }}</span>
   <span class="identity-name">{{ view.label }}</span>
-  <span class="identity-status">{{ view.verification|replace('_', ' ') }}</span>
-  <span class="mono identity-key">{{ view.key_hex }}</span>
-</span>
+  <span class="identity-status visually-hidden">{{ view.verification|replace('_', ' ') }}: {{ view.marking_text }}</span>
+</span> {{ display.key(view.key_hex) }}
 {%- endmacro %}
 
 {# What the marking means, stated rather than left to inference. Put once on
@@ -38,7 +40,10 @@
   <span class="identity identity-unverified"><span class="identity-mark">✗</span> unverified</span>
   — a name we hold that no signature covers.
   <span class="identity identity-key_only"><span class="identity-mark">?</span> key only</span>
-  — a key we hold no contact for. The protocol authenticates possession of a
-  key, never the identity of whoever holds it.
+  — a key we hold no contact for.
+  <span class="claimed-name"><span class="claimed-mark">“</span> claimed</span>
+  — a channel sender's name, which the message says about itself and nothing
+  authenticates. The protocol authenticates possession of a key, never the
+  identity of whoever holds it.
 </p>
 {%- endmacro %}

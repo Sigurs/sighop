@@ -360,7 +360,7 @@ def test_no_database_and_a_degraded_one_are_two_different_lines() -> None:
     assert "degraded" in degraded.text
     assert degraded.discarded == 3
     assert degraded.refused == 2
-    assert degraded.losses_text == "3 write(s) discarded, 2 refused"
+    assert degraded.losses_text == "3 writes discarded, 2 refused"
 
 
 def test_a_healthy_database_reports_no_losses_rather_than_zero_ones() -> None:

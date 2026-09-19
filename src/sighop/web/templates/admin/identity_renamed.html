@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}identity renamed · sighop{% endblock %}
 
@@ -9,7 +10,7 @@
   <tbody>
     <tr><td>was</td><td class="mono">{{ previous }}</td></tr>
     <tr><td>now</td><td class="mono">{{ new_name }}</td></tr>
-    <tr><td>public key</td><td class="mono">{{ record.public_key.hex() }}</td></tr>
+    <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
   </tbody>
 </table>
 

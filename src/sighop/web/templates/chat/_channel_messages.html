@@ -1,6 +1,7 @@
 {# One channel's messages, refreshed in place. A GET: opening, scrolling and
    refreshing a channel transmit nothing. #}
 {% import "_claimed.html" as claims %}
+{% import "_display.html" as display %}
 <div id="channel" hx-get="/chat/channel/{{ channel.id }}/messages"
      hx-trigger="every 3s" hx-swap="outerHTML">
 {% if not history_readable %}
@@ -17,8 +18,8 @@
     {% for message in messages %}
     <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
       <td class="mono">
-        {{ message.handled_at.isoformat() }}
-        {% if message.wire_time %}<br><span class="note">sender's clock: {{ message.wire_time }}</span>{% endif %}
+        {{ display.when(message.handled_at) }}
+        {% if message.wire_time %}<br><span class="note">sender's clock: {{ display.when(message.wire_time) }}</span>{% endif %}
       </td>
       <td>
         {%- if message.inbound -%}
@@ -35,7 +36,7 @@
           <span class="mono">{{ message.raw }}</span>
         {% endif %}
       </td>
-      <td class="mono message-state">{{ message.state }}</td>
+      <td class="message-state">{{ display.statuses(message.state) }}</td>
     </tr>
     {% endfor %}
   </tbody>

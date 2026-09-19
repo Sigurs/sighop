@@ -54,14 +54,54 @@
       return td;
     }
 
+    /* Absolute local time of day to the millisecond, not "just now": packets
+       arrive seconds apart, and a relative time on every row would erase the
+       ordering the feed exists to show. Full date and UTC on hover. */
+    function timeCell(row, iso) {
+      var td = row.insertCell();
+      td.className = "mono";
+      var date = iso ? new Date(iso) : null;
+      if (!date || isNaN(date.getTime())) {
+        td.textContent = "—";
+        td.classList.add("absent");
+        return td;
+      }
+      var time = document.createElement("time");
+      time.className = "when-absolute";
+      time.setAttribute("datetime", iso);
+      var pad = function (n, width) { return String(n).padStart(width || 2, "0"); };
+      time.textContent = pad(date.getHours()) + ":" + pad(date.getMinutes()) + ":" +
+        pad(date.getSeconds()) + "." + pad(date.getMilliseconds(), 3);
+      time.title = window.sighopDisplay ? window.sighopDisplay.hover(date, iso) : iso;
+      td.appendChild(time);
+      return td;
+    }
+
+    var DIRECTIONS = {
+      rx: { glyph: "↓", text: "received" },
+      tx: { glyph: "↑", text: "transmitted" }
+    };
+
+    function directionCell(row, direction) {
+      var shown = DIRECTIONS[direction] || { glyph: direction, text: direction };
+      var td = cell(row, shown.glyph, "dir-" + direction);
+      td.title = shown.text;
+      td.setAttribute("aria-label", shown.text);
+      return td;
+    }
+
+    function records(count) {
+      return count + (count === 1 ? " record" : " records");
+    }
+
     /* Newest at the top: what a watcher wants is the present. */
     function draw(record) {
       var row = table.insertRow(0);
       row.className = "feed-row feed-" + record.source + " dir-" + record.direction;
       if (record.duplicate) { row.classList.add("feed-duplicate"); }
 
-      cell(row, (record.at || "").slice(11, 23), "mono");
-      cell(row, record.direction.toUpperCase(), "dir-" + record.direction);
+      timeCell(row, record.at);
+      directionCell(row, record.direction);
       cell(row, record.route_type, "mono");
       cell(row, record.payload_type, "mono");
       cell(row, record.size_bytes, "num");
@@ -85,7 +125,7 @@
       var td = row.insertCell();
       td.colSpan = 13;
       td.textContent =
-        "— live from here (" + message.painted + " recorded record(s) below) —";
+        "— live from here (" + records(message.painted) + " recorded below) —";
     }
 
     socket.addEventListener("open", function () {
@@ -106,12 +146,12 @@
       } else if (message.kind === "status") {
         if (message.incomplete) {
           setStatus(
-            "feed incomplete — " + message.dropped +
-              " record(s) lost because this browser could not keep up",
+            "feed incomplete — " + records(message.dropped) +
+              " lost because this browser could not keep up",
             "alarm"
           );
         } else {
-          setStatus("live — " + message.delivered + " record(s) shown", "ok");
+          setStatus("live — " + records(message.delivered) + " shown", "ok");
         }
       }
     });
