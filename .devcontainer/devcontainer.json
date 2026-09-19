@@ -87,7 +87,12 @@
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
     "OPENSPEC_TELEMETRY": "0",
     "DO_NOT_TRACK": "1",
-    "TZ": "Europe/Helsinki"
+    "TZ": "Europe/Helsinki",
+    // `cce serve` otherwise exits after 30 minutes without an MCP tool call,
+    // and Claude Code does not restart it: context-engine stays gone for the
+    // rest of the session. It already exits when Claude Code closes its stdin,
+    // so the timeout has no orphans to reap here.
+    "CCE_IDLE_TIMEOUT_MINUTES": "0"
     // Note: no CCE_OLLAMA_URL. postStartCommand forwards the host's Ollama onto
     // this container's own localhost:11434 instead, because the engine's search
     // path reads `config.ollama_url` directly and never sees that variable.
