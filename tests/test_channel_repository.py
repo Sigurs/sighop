@@ -329,3 +329,99 @@ async def test_restore_rewrites_awaiting_posts_and_counts_history(database: Data
     restored = await persistence.restore(ContactStore(), PathStore())
 
     assert restored.channel_messages == 1 and restored.channel_posts_unknown == 1
+
+
+# --- Renaming a channel ------------------------------------------------------
+
+
+@pytest.mark.database
+async def test_renaming_a_psk_channel_changes_no_key_material(database: Database) -> None:
+    """The name is a label; the key is in its own sealed column."""
+    channels = ChannelRepository(database=database)
+    created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
+    async with database.sessions() as session:
+        sealed = (
+            (await session.execute(select(ChannelRow).where(ChannelRow.id == created.id)))
+            .scalar_one()
+            .sealed_key
+        )
+    assert sealed is not None
+    before = bytes(sealed)
+
+    renamed = await channels.rename(created.id, "operations")
+
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value == "private", "the previous name was not reported"
+    async with database.sessions() as session:
+        row = (
+            await session.execute(select(ChannelRow).where(ChannelRow.id == created.id))
+        ).scalar_one()
+    assert row.name == "operations"
+    assert row.sealed_key is not None
+    assert bytes(row.sealed_key) == before, "the sealed key changed across a rename"
+    assert row.channel_hash == created.channel_hash
+    assert row.kind == str(ChannelKind.PSK)
+
+
+@pytest.mark.database
+async def test_renaming_a_hashtag_channel_leaves_its_hashtag_and_hash(
+    database: Database,
+) -> None:
+    """A hashtag channel derives its key from the hashtag, never from the name."""
+    channels = ChannelRepository(database=database)
+    created = _value(await channels.add_hashtag("#dev-sighop"))
+
+    renamed = await channels.rename(created.id, "the dev channel")
+
+    assert isinstance(renamed, Succeeded)
+    async with database.sessions() as session:
+        row = (
+            await session.execute(select(ChannelRow).where(ChannelRow.id == created.id))
+        ).scalar_one()
+    assert row.name == "the dev channel"
+    assert row.hashtag == "#dev-sighop"
+    assert row.channel_hash == channel_key_from_hashtag("#dev-sighop").channel_hash
+
+
+@pytest.mark.database
+async def test_a_renamed_channel_still_opens_under_the_same_key(database: Database) -> None:
+    channels = ChannelRepository(database=database)
+    created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
+    before = _value(await channels.load_keys(SECRET)).by_hash(created.channel_hash)
+
+    await channels.rename(created.id, "operations")
+
+    after = _value(await channels.load_keys(SECRET)).by_hash(created.channel_hash)
+    assert [loaded.key.key for loaded in after] == [loaded.key.key for loaded in before]
+
+
+@pytest.mark.database
+async def test_renaming_a_channel_onto_a_name_in_use_is_refused(database: Database) -> None:
+    channels = ChannelRepository(database=database)
+    created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
+
+    with pytest.raises(ChannelExistsError, match="named 'Public' already exists"):
+        await channels.rename(created.id, "Public")
+
+    names = [record.name for record in _value(await channels.list_all())]
+    assert names == ["Public", "private"]
+
+
+@pytest.mark.database
+async def test_renaming_a_channel_applies_the_name_rules(database: Database) -> None:
+    channels = ChannelRepository(database=database)
+    created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
+
+    for refused in ("  ", "a\x01b"):
+        with pytest.raises(ChannelConfigError):
+            await channels.rename(created.id, refused)
+
+    names = [record.name for record in _value(await channels.list_all())]
+    assert names == ["Public", "private"]
+
+
+@pytest.mark.database
+async def test_renaming_a_channel_that_does_not_exist_reports_so(database: Database) -> None:
+    renamed = await ChannelRepository(database=database).rename(9999, "nobody")
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value is None

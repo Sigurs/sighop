@@ -22,7 +22,18 @@ from tests.test_webhooks_transport import Receiver, receiver  # noqa: F401 - fix
 
 URL = "https://discord.com/api/webhooks/42/s3cr3t-token?wait=true"
 SECRET_PARTS = ("/api/webhooks", "s3cr3t-token", "wait=true")
-VERBS = ("add", "list", "show", "enable", "disable", "set", "set-url", "remove", "test")
+VERBS = (
+    "add",
+    "list",
+    "show",
+    "enable",
+    "disable",
+    "set",
+    "set-url",
+    "rename",
+    "remove",
+    "test",
+)
 
 
 def _run(argv: list[str], stdin: str = "") -> tuple[int, str, str]:
@@ -58,6 +69,8 @@ def _argv(verb: str) -> list[str]:
             return ["webhook", "set", "dev-hook", "--format", "json"]
         case "test":
             return ["webhook", "test", "dev-hook", "--trigger", "new_repeater"]
+        case "rename":
+            return ["webhook", "rename", "dev-hook", "ops-hook"]
         case _:
             return ["webhook", verb, "dev-hook"]
 
@@ -296,3 +309,80 @@ async def test_test_reports_a_rejection_once(
     assert code == 1
     assert "failed, HTTP 404" in out
     assert len(receiver.requests) == 1
+
+
+# --- Renaming a webhook ---------------------------------------------------------
+
+
+@pytest.mark.database
+async def test_webhook_rename_reports_both_names_and_keeps_the_target(
+    database: Database, url: str
+) -> None:
+    await _add(url)
+    hooks = WebhookRepository(database=database)
+    before = (await hooks.get_by_name("dev-hook")).value
+    assert before is not None
+
+    code, out, err = await _cli(
+        ["webhook", "rename", "dev-hook", "ops-hook", "--database-url", url]
+    )
+
+    assert code == 0, err
+    assert "dev-hook -> ops-hook" in out
+    assert "unchanged" in out
+    _no_secret(out)
+    after = (await hooks.get_by_id(before.id)).value
+    assert after is not None
+    assert after.name == "ops-hook"
+    assert after.url_host == before.url_host
+    assert after.triggers == before.triggers
+    assert after.format == before.format
+
+
+@pytest.mark.database
+async def test_webhook_rename_renders_no_url(database: Database, url: str) -> None:
+    await _add(url)
+
+    _code, out, err = await _cli(
+        ["webhook", "rename", "dev-hook", "ops-hook", "--database-url", url]
+    )
+
+    _no_secret(out)
+    _no_secret(err)
+
+
+@pytest.mark.database
+async def test_webhook_rename_refuses_a_name_in_use(database: Database, url: str) -> None:
+    await _add(url)
+    await _add(url, name="ops-hook")
+
+    code, _out, err = await _cli(
+        ["webhook", "rename", "dev-hook", "ops-hook", "--database-url", url]
+    )
+
+    assert code == 2
+    assert "already exists" in err
+    names = [
+        record.name for record in (await WebhookRepository(database=database).list_all()).value
+    ]
+    assert sorted(names) == ["dev-hook", "ops-hook"]
+
+
+@pytest.mark.database
+async def test_webhook_rename_refuses_an_empty_name(database: Database, url: str) -> None:
+    await _add(url)
+
+    code, _out, err = await _cli(["webhook", "rename", "dev-hook", "   ", "--database-url", url])
+
+    assert code == 2
+    assert "cannot be empty" in err
+
+
+@pytest.mark.database
+async def test_renaming_a_webhook_that_does_not_exist_says_so(url: str) -> None:
+    code, _out, err = await _cli(
+        ["webhook", "rename", "nowhere", "ops-hook", "--database-url", url]
+    )
+
+    assert code == 2
+    assert "nowhere" in err

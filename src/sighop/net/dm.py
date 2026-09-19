@@ -1013,6 +1013,16 @@ class DirectMessenger:
         """
         self._room_entity_ids.add(entity_id)
 
+    def release_from_room(self, entity_id: str) -> None:
+        """Undo `claim_for_room`, so this messenger owns the entity again.
+
+        The one case: the room has been deleted. Its identity outlives it and
+        goes back to being an ordinary one, and leaving it claimed would make
+        a direct message to it fall to nobody — the room server that used to
+        answer is gone, and this messenger would still be standing aside for it.
+        """
+        self._room_entity_ids.discard(entity_id)
+
     def _candidates(
         self, envelope: DirectEnvelope
     ) -> tuple[list[LocalEntity], tuple[Contact, ...]]:

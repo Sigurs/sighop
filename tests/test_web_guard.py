@@ -475,7 +475,7 @@ def test_every_webhook_write_refuses_a_post_without_the_token() -> None:
         and route.path.startswith("/admin/webhooks")
         and "POST" in (route.methods or set())
     )
-    assert len(writes) == 6, writes
+    assert len(writes) == 7, writes
 
     with _client(app) as client:
         for path in writes:

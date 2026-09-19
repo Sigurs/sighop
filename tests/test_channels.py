@@ -548,3 +548,58 @@ def test_build_channel_packet_returns_the_payload_dedup_keys_on() -> None:
     packet, payload = build_channel_packet(HASHTAG, b"\x00" * 5 + b"x: y")
     decoded = decode_packet(packet)
     assert not isinstance(decoded, DecodeFailure) and decoded.payload == payload
+
+
+async def test_a_post_after_a_rename_carries_the_new_sender_name() -> None:
+    """An identity's name is on the air here too, not only in its adverts:
+    it is the sender name of every channel post (change web-delete-and-rename).
+
+    The messenger was handed this very object at construction, which is what
+    makes one in-place rename reach the post path with nothing re-wired.
+    """
+    entity = Entity("dev-companion")
+    m, _sink, _events, submit = messenger(HASHTAG, entities=(entity,))
+
+    entity.name = "dev-companion-2"
+    await m.post(2, entity, "hello").resolution
+
+    [submission] = submit.submissions
+    packet = decode_packet(submission.packet)
+    assert not isinstance(packet, DecodeFailure)
+    envelope = parse_payload(PayloadType.GRP_TXT, packet.payload)
+    assert isinstance(envelope, GroupEnvelope)
+    _match, plaintext = mac_then_decrypt(HASHTAG.key.secret, envelope.mac, envelope.ciphertext)
+    assert plaintext is not None
+    body = parse_group_text_body(plaintext)
+    assert not isinstance(body, DecodeFailure)
+    assert body.unverified_sender_name == "dev-companion-2"
+
+
+def test_the_post_path_reads_the_sender_name_with_no_await_between_the_two_reads() -> None:
+    """`check_sender_name(entity.name)` and `build_group_text_body(..., entity.name, ...)`
+    both read a name a rename can change in place, so a suspension between them
+    would let one post validate one name and send another (design, Risks)."""
+    import ast
+    import inspect
+    import textwrap
+
+    source = textwrap.dedent(inspect.getsource(ChannelMessenger.post))
+    tree = ast.parse(source)
+    checked: int | None = None
+    built: int | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "check_sender_name":
+                checked = node.lineno
+            elif node.func.id == "build_group_text_body":
+                built = node.lineno
+    assert checked is not None and built is not None and checked < built
+    suspensions = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Await) and checked < node.lineno < built
+    ]
+    assert suspensions == [], (
+        "an await was added between the two reads of entity.name; read the name "
+        f"into a local first (lines {suspensions})"
+    )

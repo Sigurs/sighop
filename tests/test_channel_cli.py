@@ -23,7 +23,7 @@ from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
 from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, channel_key_from_hashtag
 
 KEY = base64.b64encode(bytes(range(40, 56))).decode()
-VERBS = ("add", "list", "show", "remove", "key", "history")
+VERBS = ("add", "list", "show", "rename", "remove", "key", "history")
 NOW = dt.datetime(2026, 9, 14, 18, 0, tzinfo=dt.UTC)
 
 
@@ -56,6 +56,8 @@ def _argv(verb: str) -> list[str]:
             return ["channel", "add", "--hashtag", "#dev-sighop"]
         case "list":
             return ["channel", "list"]
+        case "rename":
+            return ["channel", "rename", "Public", "Main"]
         case _:
             return ["channel", verb, "Public"]
 
@@ -237,3 +239,58 @@ async def test_show_includes_the_message_count(url: str, database: Database) -> 
     assert code == 0 and "messages   3" in out
     code, _, err = await _cli(["channel", "show", "absent", "--database-url", url])
     assert code == 2 and "no channel named 'absent'" in err
+
+
+# --- Renaming a channel -------------------------------------------------------
+
+
+@pytest.mark.database
+async def test_channel_rename_reports_both_names_and_keeps_the_key(
+    database: Database, url: str
+) -> None:
+    channels = ChannelRepository(database=database)
+    before = (await channels.list_all()).value
+    [public] = [record for record in before if record.name == "Public"]
+
+    code, out, err = await _cli(["channel", "rename", "Public", "Main", "--database-url", url])
+
+    assert code == 0, err
+    assert "Public -> Main" in out
+    assert "channel hash are unchanged" in out
+    after = (await channels.get_by_id(public.id)).value
+    assert after is not None
+    assert after.name == "Main"
+    assert after.channel_hash == public.channel_hash
+    assert after.kind is public.kind
+
+
+@pytest.mark.database
+async def test_channel_rename_refuses_a_name_in_use(database: Database, url: str) -> None:
+    await _cli(["channel", "add", "--hashtag", "#dev-sighop", "--database-url", url])
+
+    code, _out, err = await _cli(
+        ["channel", "rename", "Public", "#dev-sighop", "--database-url", url]
+    )
+
+    assert code == 2
+    assert "already exists" in err
+    names = [
+        record.name for record in (await ChannelRepository(database=database).list_all()).value
+    ]
+    assert sorted(names) == ["#dev-sighop", "Public"]
+
+
+@pytest.mark.database
+async def test_channel_rename_refuses_an_empty_name(database: Database, url: str) -> None:
+    code, _out, err = await _cli(["channel", "rename", "Public", "   ", "--database-url", url])
+
+    assert code == 2
+    assert "cannot be empty" in err
+
+
+@pytest.mark.database
+async def test_renaming_a_channel_that_does_not_exist_says_so(url: str) -> None:
+    code, _out, err = await _cli(["channel", "rename", "nowhere", "Main", "--database-url", url])
+
+    assert code == 2
+    assert "no channel named 'nowhere'" in err

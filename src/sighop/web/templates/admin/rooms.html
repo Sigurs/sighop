@@ -34,9 +34,13 @@
         ·
         <a href="/admin/rooms/{{ room.id }}/retention">retention…</a>
         ·
+        <a href="/admin/rooms/{{ room.id }}/rename">rename…</a>
+        ·
         <a href="/rooms/{{ room.id }}/post">post…</a>
         ·
         <a href="/rooms/{{ room.id }}">history</a>
+        ·
+        <a href="/admin/rooms/{{ room.id }}/delete">delete…</a>
         {% set advert_id = advert_ids.get(room.id|string) %}
         {% if advert_id %}
         ·

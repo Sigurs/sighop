@@ -18,11 +18,13 @@ import ast
 import asyncio
 import base64
 import io
+import uuid
 from pathlib import Path
 
 import pytest
 
 import sighop
+from sighop.bots import drivers as bot_drivers
 from sighop.bots.base import BotMode
 from sighop.bots.runtime import BotWorker
 from sighop.config import generate_secret_key
@@ -607,3 +609,103 @@ async def test_an_observe_mode_bot_submits_nothing_across_a_whole_replay() -> No
     assert sender.sent == [], "and nothing reached the scheduler"
     assert worker.counters.actions == 0
     assert worker.counters.observations == driver.decisions
+
+
+# --- Stopping a deleted bot, without a restart -------------------------------
+
+
+@pytest.mark.database
+async def test_a_deleted_bot_stops_running_without_a_restart(database: Database) -> None:
+    persistence, record, loaded = await _stored_bot(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+    run.bots.start()
+    assert len(run.bots) == 1
+
+    assert await run.stop_bot(record.id) is True
+
+    assert len(run.bots) == 0
+    assert run._bot_lines() == ["bots: none configured"]
+
+
+@pytest.mark.database
+async def test_stopping_a_bot_waits_for_the_dispatch_in_flight(database: Database) -> None:
+    """`bot-runtime` already requires a stopping worker to finish its dispatch;
+    deleting one must not become the way round that."""
+    persistence, record, loaded = await _stored_bot(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+    worker = run.bots.workers[0]
+    run.bots.start()
+
+    await run.stop_bot(record.id)
+
+    assert worker._task is None or worker._task.done(), "the worker's task outlived the delete"
+    assert not worker._task or not worker._task.cancelled(), (
+        "the dispatch was cancelled rather than allowed to finish"
+    )
+
+
+@pytest.mark.database
+async def test_stopping_a_bot_this_run_does_not_run_reports_so(database: Database) -> None:
+    persistence, _record, loaded = await _stored_bot(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+
+    assert await run.stop_bot(uuid.uuid4()) is False
+    assert len(run.bots) == 1
+
+    await run.bots.stop()
+
+
+@pytest.mark.database
+async def test_stopping_one_bot_leaves_the_others_running(database: Database) -> None:
+    persistence, record, _loaded = await _stored_bot(database)
+    entities = EntityRepository(database=database)
+    second = await entities.store(
+        name="greeter-two",
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.CHAT,
+        entity_type="bot",
+    )
+    assert isinstance(second, Succeeded)
+    await persistence.bots.create(
+        entity_id=second.value.id,
+        driver="greeter",
+        config=bot_drivers.default_config("greeter"),
+        entity_name="greeter-two",
+    )
+    both = await entities.load_all(SECRET)
+    assert isinstance(both, Succeeded)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, stored_entities=tuple(both.value)
+        ),
+        persistence=persistence,
+    )
+    await run._restore()
+    run.bots.start()
+    assert len(run.bots) == 2
+
+    await run.stop_bot(record.id)
+
+    assert [worker.name for worker in run.bots] == ["greeter-two"]
+    await run.bots.stop()

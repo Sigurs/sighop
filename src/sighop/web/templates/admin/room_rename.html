@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}rename room · sighop{% endblock %}
+
+{% block content %}
+{% if room %}
+<h1>rename room: {{ room.name }}</h1>
+
+{% if refusal %}
+<p class="unavailable"><strong>Not renamed.</strong> {{ refusal.reason }}</p>
+{% endif %}
+
+<p class="note">
+  A room's name is a <strong>local label</strong>. It is not advertised and it is
+  not carried in a login response, so members see no change: the room is the same
+  node at the same public key, and they stay members. The name the mesh sees is
+  the name of the identity this room speaks as, on the
+  <a href="/admin/identities">identities</a> page.
+</p>
+
+<form method="post" action="/admin/rooms/{{ room.id }}/rename">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>new name
+      <input class="mono" type="text" name="name"
+             value="{{ refusal.submitted.name if refusal else room.name }}">
+    </label>
+  </p>
+  <button type="submit">rename</button>
+</form>
+<p><a href="/admin/rooms">cancel, and change nothing</a></p>
+{% else %}
+<h1>room not found</h1>
+<p class="unavailable">No room with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

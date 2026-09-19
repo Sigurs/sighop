@@ -410,3 +410,99 @@ async def test_a_room_read_for_an_entity_that_has_none_is_none_not_an_error(
     found = await persistence.rooms.get_for_entity(uuid.uuid4())
     assert isinstance(found, Succeeded)
     assert found.value is None
+
+
+# --- Stopping a deleted room, without a restart ------------------------------
+
+
+@pytest.mark.database
+async def test_a_deleted_room_stops_being_served_without_a_restart(
+    database: Database,
+) -> None:
+    """A room is four attachments, not one, and the bus is the one that answers."""
+    persistence, room, loaded = await _stored_room_server(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+    entity_id = run.rooms[0].entity.entity_id
+    assert "room:lounge" in [stats.name for stats in run.bus.subscriber_stats]
+
+    assert await run.stop_serving_room(room.id) is True
+
+    assert run.rooms == []
+    assert "room:lounge" not in [stats.name for stats in run.bus.subscriber_stats], (
+        "the room is off the list but still attached to the bus, so it still answers"
+    )
+    assert entity_id not in run.messenger._room_entity_ids, (
+        "the direct messenger is still standing aside for a room that is gone"
+    )
+    assert any(stub.entity_id == entity_id for stub in run.path_bodies.entities), (
+        "the path-body reader never got the entity back"
+    )
+
+    if run.retention is not None:
+        await run.retention.stop()
+    await persistence.stop()
+
+
+@pytest.mark.database
+async def test_stopping_a_room_this_run_does_not_serve_reports_so(
+    database: Database,
+) -> None:
+    persistence, _room, loaded = await _stored_room_server(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+
+    assert await run.stop_serving_room(uuid.uuid4()) is False
+    assert [server.room.name for server in run.rooms] == ["lounge"]
+
+    await run.rooms[0].stop()
+    if run.retention is not None:
+        await run.retention.stop()
+    await persistence.stop()
+
+
+@pytest.mark.database
+async def test_stopping_one_room_leaves_the_others_served(database: Database) -> None:
+    persistence, room, _loaded = await _stored_room_server(database)
+    entities = EntityRepository(database=database)
+    second = await entities.store(
+        name="rs-2", identity=generate_identity(), secret=SECRET, node_type=NodeType.ROOM_SERVER
+    )
+    assert isinstance(second, Succeeded)
+    await persistence.rooms.create(
+        entity_id=second.value.id,
+        name="study",
+        admin_password_hash=hash_password(ADMIN_PASSWORD),
+    )
+    both = await entities.load_all(SECRET)
+    assert isinstance(both, Succeeded)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, stored_entities=tuple(both.value)
+        ),
+        persistence=persistence,
+    )
+    await run._restore()
+    assert sorted(server.room.name for server in run.rooms) == ["lounge", "study"]
+
+    await run.stop_serving_room(room.id)
+
+    assert [server.room.name for server in run.rooms] == ["study"]
+    assert "room:study" in [stats.name for stats in run.bus.subscriber_stats]
+
+    await run.rooms[0].stop()
+    if run.retention is not None:
+        await run.retention.stop()
+    await persistence.stop()

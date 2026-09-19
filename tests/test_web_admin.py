@@ -31,8 +31,14 @@ from sighop.protocol.payloads import NodeType
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.guard import TOKEN_FIELD
 from sighop.web.guarded import (
+    ACTION_DESCRIPTIONS,
     ENABLE_TRANSMIT,
     RAISE_CEILING,
+    REAUTHENTICATED_ACTIONS,
+    REMOVE_BOT,
+    REMOVE_CHANNEL,
+    REMOVE_IDENTITY,
+    REMOVE_ROOM,
     REVEAL_KEY,
     NonceStore,
 )
@@ -526,6 +532,55 @@ def test_a_nonce_is_good_exactly_once_and_only_for_its_own_action() -> None:
     assert store.spend(value, REVEAL_KEY, "entity-1", now=NOW) is False, "replayed"
 
 
+def test_the_three_new_removals_are_guarded_and_described() -> None:
+    """Every guarded action states what it does, in its own words."""
+    for action in (REMOVE_IDENTITY, REMOVE_ROOM, REMOVE_BOT):
+        assert ACTION_DESCRIPTIONS.get(action), action
+
+    identity = ACTION_DESCRIPTIONS[REMOVE_IDENTITY]
+    assert "Nothing recovers it" in identity
+    assert "Disabling an identity is the reversible action" in identity
+
+    room = ACTION_DESCRIPTIONS[REMOVE_ROOM]
+    assert "None of it can be recovered" in room
+    assert "The identity the room speaks as is not deleted" in room
+
+    bot = ACTION_DESCRIPTIONS[REMOVE_BOT]
+    assert "every record of who has been greeted" in bot
+    assert "The identity the bot speaks as is not deleted" in bot
+
+
+def test_only_removing_an_identity_asks_for_the_password() -> None:
+    """Design D6: key material is the tier reveal and export are in. A room
+    and a bot destroy stored content, so they match `REMOVE_CHANNEL`."""
+    assert REMOVE_IDENTITY in REAUTHENTICATED_ACTIONS
+    assert REMOVE_ROOM not in REAUTHENTICATED_ACTIONS
+    assert REMOVE_BOT not in REAUTHENTICATED_ACTIONS
+    assert REMOVE_CHANNEL not in REAUTHENTICATED_ACTIONS
+
+
+def test_a_removal_nonce_is_bound_to_its_own_target_and_action() -> None:
+    """A confirmation minted for one room cannot be spent on another."""
+    store = NonceStore()
+    for action in (REMOVE_IDENTITY, REMOVE_ROOM, REMOVE_BOT):
+        value = store.mint(action, "target-1", now=NOW)
+        assert store.spend(value, action, "target-2", now=NOW) is False, action
+
+        value = store.mint(action, "target-1", now=NOW)
+        assert store.spend(value, REMOVE_CHANNEL, "target-1", now=NOW) is False, action
+
+        value = store.mint(action, "target-1", now=NOW)
+        assert store.spend(value, action, "target-1", now=NOW) is True, action
+        assert store.spend(value, action, "target-1", now=NOW) is False, f"{action} replayed"
+
+
+def test_a_removal_nonce_expires() -> None:
+    store = NonceStore()
+    for action in (REMOVE_IDENTITY, REMOVE_ROOM, REMOVE_BOT):
+        value = store.mint(action, "target-1", now=NOW)
+        assert store.spend(value, action, "target-1", now=NOW + dt.timedelta(hours=1)) is False
+
+
 def test_a_nonce_expires() -> None:
     """13.1: a confirmation left open in a tab is not an action waiting to happen."""
     store = NonceStore()
@@ -902,3 +957,596 @@ async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
     assert events[-1]["actor"] == OPERATOR and events[-1]["messages_deleted"] == 40
     assert any(OPERATOR in line and "Public" in line for line in announced)
     assert "add Public again" in again
+
+
+# --- Deleting a room and a bot through the panel -----------------------------
+
+
+async def _a_room(persistence: Persistence, *, name: str = "lounge"):
+    """A stored room-server identity with a room bound to it."""
+    stored = await persistence.entities.store(
+        name=f"rs-{name}",
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.ROOM_SERVER,
+    )
+    assert isinstance(stored, Succeeded)
+    created = await persistence.rooms.create(
+        entity_id=stored.value.id, name=name, admin_password_hash="x" * 60
+    )
+    assert isinstance(created, Succeeded)
+    return stored.value, created.value
+
+
+@pytest.mark.database
+async def test_no_safe_request_deletes_a_room(database: Database) -> None:
+    """A GET, a prefetch and a reload all reach the confirmation, never the act."""
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        for _ in range(3):
+            response = await client.get(f"/admin/rooms/{room.id}/delete")
+            assert response.status_code == 200
+
+    assert len((await persistence.rooms.list_all()).value) == 1
+
+
+@pytest.mark.database
+async def test_the_room_confirmation_counts_what_it_will_delete(database: Database) -> None:
+    persistence = Persistence(database=database)
+    identity, room = await _a_room(persistence)
+    await persistence.messages.store(room_id=room.id, author_public_key=b"\x02" * 32, text=b"hello")
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
+
+    assert "1" in body
+    assert "cannot be undone" in body
+    assert identity.name in body
+    assert "is <strong>not</strong> deleted" in body
+
+
+@pytest.mark.database
+async def test_deleting_a_room_removes_it_and_keeps_its_identity(database: Database) -> None:
+    persistence = Persistence(database=database)
+    identity, room = await _a_room(persistence)
+    state = stub_state(persistence=persistence)
+    app, _state, log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
+        response = await _apost(client, app, f"/admin/rooms/{room.id}/delete", nonce=_nonce(body))
+
+    assert response.status_code == 303
+    assert (await persistence.rooms.list_all()).value == []
+    assert [row.name for row in (await persistence.entities.list_all()).value] == [identity.name]
+    assert room.id in state.stopped_rooms, "the run was never told to stop serving it"
+    [audited] = [
+        event for event in log.named("web_guarded_action") if event["action"] == REMOVE_ROOM
+    ]
+    assert audited["outcome"] == "success"
+    assert audited["room"] == "lounge"
+    assert audited["actor"] == OPERATOR
+
+
+@pytest.mark.database
+async def test_deleting_a_room_without_a_confirmation_deletes_nothing(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, f"/admin/rooms/{room.id}/delete")
+
+    assert response.status_code == 403
+    assert len((await persistence.rooms.list_all()).value) == 1
+    [audited] = [
+        event for event in log.named("web_guarded_action") if event["action"] == REMOVE_ROOM
+    ]
+    assert audited["outcome"] == "refused"
+
+
+@pytest.mark.database
+async def test_a_room_confirmation_cannot_be_spent_on_another_room(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    _one, first = await _a_room(persistence, name="lounge")
+    _two, second = await _a_room(persistence, name="study")
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{first.id}/delete")).text
+        response = await _apost(client, app, f"/admin/rooms/{second.id}/delete", nonce=_nonce(body))
+
+    assert response.status_code == 403
+    assert len((await persistence.rooms.list_all()).value) == 2
+
+
+@pytest.mark.database
+async def test_deleting_a_room_asks_for_no_password(database: Database) -> None:
+    """Design D6: stored content, not key material — `REMOVE_CHANNEL`'s tier."""
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
+
+    assert 'type="password"' not in body
+
+
+async def _a_bot(persistence: Persistence, *, name: str = "greeter-bot"):
+    """A stored bot identity with a bot bound to it."""
+    from sighop.bots import drivers as bot_drivers
+
+    stored = await persistence.entities.store(
+        name=name,
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.CHAT,
+        entity_type="bot",
+    )
+    assert isinstance(stored, Succeeded)
+    created = await persistence.bots.create(
+        entity_id=stored.value.id,
+        driver="greeter",
+        config=bot_drivers.default_config("greeter"),
+        entity_name=name,
+    )
+    assert isinstance(created, Succeeded)
+    return stored.value, created.value
+
+
+@pytest.mark.database
+async def test_no_safe_request_deletes_a_bot(database: Database) -> None:
+    persistence = Persistence(database=database)
+    _identity, bot = await _a_bot(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        for _ in range(3):
+            assert (await client.get(f"/admin/bots/{bot.id}/delete")).status_code == 200
+
+    assert len((await persistence.bots.list_all()).value) == 1
+
+
+@pytest.mark.database
+async def test_the_bot_confirmation_counts_its_state_and_says_what_it_records(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    identity, bot = await _a_bot(persistence)
+    await persistence.bot_state.set(bot.id, "greeted:aa", {})
+    await persistence.bot_state.set(bot.id, "greeted:bb", {})
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/bots/{bot.id}/delete")).text
+
+    assert "2" in body
+    assert "who has been greeted" in body
+    assert "cannot be undone" in body
+    assert identity.name in body
+    assert "is <strong>not</strong> deleted" in body
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_removes_its_state_and_keeps_its_identity(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    identity, bot = await _a_bot(persistence)
+    await persistence.bot_state.set(bot.id, "greeted:aa", {})
+    state = stub_state(persistence=persistence)
+    app, _state, log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/bots/{bot.id}/delete")).text
+        response = await _apost(client, app, f"/admin/bots/{bot.id}/delete", nonce=_nonce(body))
+
+    assert response.status_code == 303
+    assert (await persistence.bots.list_all()).value == []
+    assert (await persistence.bot_state.list(bot.id)).value == {}
+    assert [row.name for row in (await persistence.entities.list_all()).value] == [identity.name]
+    assert bot.id in state.stopped_bots, "the run was never told to stop the bot"
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_BOT]
+    assert audited["outcome"] == "success"
+    assert audited["keys_deleted"] == 1
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_without_a_confirmation_deletes_nothing(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    _identity, bot = await _a_bot(persistence)
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, f"/admin/bots/{bot.id}/delete")
+
+    assert response.status_code == 403
+    assert len((await persistence.bots.list_all()).value) == 1
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_BOT]
+    assert audited["outcome"] == "refused"
+
+
+@pytest.mark.database
+async def test_a_bot_page_says_a_bot_is_named_by_its_identity(database: Database) -> None:
+    """There is no bot rename: the name belongs to the identity (bot-runtime)."""
+    persistence = Persistence(database=database)
+    identity, _bot = await _a_bot(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get("/admin/bots")).text
+
+    assert "no name of its own" in body
+    assert "/admin/identities" in body
+    assert identity.name in body
+
+
+# --- Removing an identity through the panel ----------------------------------
+
+
+@pytest.mark.database
+async def test_removing_an_identity_needs_the_password_and_the_typed_name(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="goodbye", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{stored.value.id}/remove")).text
+        assert 'type="password"' in body
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{stored.value.id}/remove",
+            nonce=_nonce(body),
+            password=OPERATOR_PASSWORD,
+            confirm_name="goodbye",
+        )
+
+    assert response.status_code == 303
+    assert (await persistence.entities.list_all()).value == []
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_IDENTITY]
+    assert audited["outcome"] == "success"
+    assert audited["entity_name"] == "goodbye"
+    assert audited["actor"] == OPERATOR
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(
+    ("password", "typed"),
+    [
+        ("the-wrong-password", "goodbye"),
+        (OPERATOR_PASSWORD, "not-the-name"),
+        ("", "goodbye"),
+    ],
+)
+async def test_an_identity_removal_missing_a_gate_removes_nothing(
+    database: Database, password: str, typed: str
+) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="goodbye", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{stored.value.id}/remove")).text
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{stored.value.id}/remove",
+            nonce=_nonce(body),
+            password=password,
+            confirm_name=typed,
+        )
+
+    assert response.status_code in (401, 403, 409), response.status_code
+    assert [row.name for row in (await persistence.entities.list_all()).value] == ["goodbye"]
+    refused = [
+        e
+        for e in log.named("web_guarded_action")
+        if e["action"] == REMOVE_IDENTITY and e["outcome"] == "refused"
+    ]
+    assert refused, "a refused removal was not recorded as its own event"
+
+
+@pytest.mark.database
+async def test_removing_an_identity_without_a_confirmation_removes_nothing(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="goodbye", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{stored.value.id}/remove",
+            password=OPERATOR_PASSWORD,
+            confirm_name="goodbye",
+        )
+
+    assert response.status_code == 403
+    assert len((await persistence.entities.list_all()).value) == 1
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_IDENTITY]
+    assert audited["outcome"] == "refused"
+
+
+@pytest.mark.database
+async def test_removing_a_bound_identity_is_refused_naming_what_it_serves(
+    database: Database,
+) -> None:
+    """The command line's rule, in the command line's words."""
+    persistence = Persistence(database=database)
+    identity, _room = await _a_room(persistence, name="lounge")
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{identity.id}/remove")).text
+        assert "serving room" in body and "lounge" in body
+        assert 'name="nonce"' not in body, "a bound identity was offered a live confirmation"
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{identity.id}/remove",
+            password=OPERATOR_PASSWORD,
+            confirm_name=identity.name,
+        )
+
+    assert response.status_code in (403, 409)
+    assert len((await persistence.entities.list_all()).value) == 1
+    assert len((await persistence.rooms.list_all()).value) == 1
+    assert [e["outcome"] for e in log.named("web_guarded_action")] == ["refused"]
+
+
+@pytest.mark.database
+async def test_no_safe_request_removes_an_identity(database: Database) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="goodbye", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        for _ in range(3):
+            assert (
+                await client.get(f"/admin/identities/{stored.value.id}/remove")
+            ).status_code == 200
+
+    assert len((await persistence.entities.list_all()).value) == 1
+
+
+@pytest.mark.database
+async def test_the_removal_page_offers_disabling_as_the_reversible_action(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="goodbye", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{stored.value.id}/remove")).text
+
+    assert "cannot be undone" in body
+    assert "Disabling is the reversible action" in body
+
+
+@pytest.mark.database
+async def test_a_deletion_the_run_did_not_take_is_still_recorded_as_such(
+    database: Database,
+) -> None:
+    """The store and the run are two outcomes, and the event carries both.
+
+    A run that was not serving the room answers `False`, which is ordinary —
+    another process may be serving it — and must not be reported as a failure
+    of the deletion, which did happen.
+    """
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    state = stub_state(persistence=persistence)
+    state.refuse_live_stop = True
+    app, _state, log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
+        response = await _apost(client, app, f"/admin/rooms/{room.id}/delete", nonce=_nonce(body))
+
+    assert response.status_code == 303
+    assert (await persistence.rooms.list_all()).value == [], "the durable delete did not happen"
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_ROOM]
+    assert audited["outcome"] == "success"
+    assert audited["stopped_serving"] is False, "the live half was not reported separately"
+
+
+@pytest.mark.database
+async def test_a_bot_deletion_the_run_did_not_take_is_still_recorded_as_such(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    _identity, bot = await _a_bot(persistence)
+    state = stub_state(persistence=persistence)
+    state.refuse_live_stop = True
+    app, _state, log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/bots/{bot.id}/delete")).text
+        response = await _apost(client, app, f"/admin/bots/{bot.id}/delete", nonce=_nonce(body))
+
+    assert response.status_code == 303
+    assert (await persistence.bots.list_all()).value == []
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == REMOVE_BOT]
+    assert audited["outcome"] == "success"
+    assert audited["stopped_running"] is False
+
+
+# --- Renaming through the panel ----------------------------------------------
+
+
+@pytest.mark.database
+async def test_renaming_a_room_a_channel_and_a_webhook_asks_for_no_password(
+    database: Database,
+) -> None:
+    """Design D6: a rename is reversible by renaming back and destroys nothing."""
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    channels = (await persistence.channels.list_all()).value
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        for path in (
+            f"/admin/rooms/{room.id}/rename",
+            f"/admin/channels/{channels[0].id}/rename",
+        ):
+            body = (await client.get(path)).text
+            assert 'type="password"' not in body, path
+            assert 'name="nonce"' not in body, path
+
+
+@pytest.mark.database
+async def test_renaming_a_room_changes_only_the_name(database: Database) -> None:
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, f"/admin/rooms/{room.id}/rename", name="the-study")
+
+    assert response.status_code == 303
+    [after] = (await persistence.rooms.list_all()).value
+    assert after.name == "the-study"
+    assert after.entity_id == room.entity_id
+    assert after.admin_password_hash == room.admin_password_hash
+
+
+@pytest.mark.database
+async def test_a_refused_room_rename_re_renders_with_the_reason(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, f"/admin/rooms/{room.id}/rename", name="   ")
+
+    assert response.status_code == 400
+    assert "cannot be empty" in response.text
+    assert [r.name for r in (await persistence.rooms.list_all()).value] == ["lounge"]
+
+
+@pytest.mark.database
+async def test_a_refused_channel_rename_renders_no_key(database: Database) -> None:
+    persistence = Persistence(database=database)
+    added = await persistence.channels.add_psk(
+        base64.b64encode(bytes(range(40, 56))).decode(), name="private", secret=SECRET
+    )
+    assert isinstance(added, Succeeded)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    key_b64 = base64.b64encode(bytes(range(40, 56))).decode()
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, f"/admin/channels/{added.value.id}/rename", name="Public"
+        )
+
+    assert response.status_code == 400
+    assert "already exists" in response.text
+    assert key_b64 not in response.text
+    assert bytes(range(40, 56)).hex() not in response.text
+
+
+@pytest.mark.database
+async def test_every_rename_is_recorded_with_the_old_and_the_new_name(
+    database: Database,
+) -> None:
+    """A rename destroys nothing, so it is not a guarded action — but what it
+    changed still has to be readable afterwards."""
+    persistence = Persistence(database=database)
+    _identity, room = await _a_room(persistence)
+    channels = (await persistence.channels.list_all()).value
+    app, _state, log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        await _apost(client, app, f"/admin/rooms/{room.id}/rename", name="the-study")
+        await _apost(client, app, f"/admin/channels/{channels[0].id}/rename", name="Main")
+
+    [renamed_room] = log.named("web_room_renamed")
+    assert renamed_room["previous_name"] == "lounge"
+    assert renamed_room["name"] == "the-study"
+    assert renamed_room["actor"] == OPERATOR
+
+    [renamed_channel] = log.named("web_channel_renamed")
+    assert renamed_channel["previous_name"] == "Public"
+    assert renamed_channel["name"] == "Main"
+    assert renamed_channel["actor"] == OPERATOR
+
+
+# --- The exclusions this build still states ----------------------------------
+
+
+@pytest.mark.database
+async def test_the_four_remaining_exclusions_are_still_named_where_looked_for(
+    database: Database,
+) -> None:
+    """Withdrawing one exclusion must not quietly withdraw the others.
+
+    `web-delete-and-rename` dropped identity removal from the list. Migrations,
+    the sealing secret, account management and channel pre-shared keys stay,
+    and stay stated where an operator would go looking for them.
+    """
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        schema = (await client.get("/admin/schema")).text
+        identities = (await client.get("/admin/identities")).text
+        channels = (await client.get("/admin/channels")).text
+
+    assert "sighop db upgrade" in schema or "database upgrade" in schema
+    assert "terminal" in schema
+
+    assert "SIGHOP_SECRET_KEY" in identities
+    assert "sighop keys secret" in identities
+
+    assert "sighop web user" in schema or "sighop web user" in identities
+
+    assert "sighop channel key" in channels
+
+
+@pytest.mark.database
+async def test_the_identities_page_no_longer_says_removal_is_not_offered(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get("/admin/identities")).text
+
+    assert "not offered here" not in body
+    assert "Removing a stored identity is offered here" in body
+    assert "Disabling is the reversible action offered alongside it" in body

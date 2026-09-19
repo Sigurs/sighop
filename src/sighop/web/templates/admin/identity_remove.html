@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+
+{% block title %}remove identity · sighop{% endblock %}
+
+{% block content %}
+<h1>remove identity</h1>
+
+{% if record is none %}
+<p class="unavailable"><strong>No such identity.</strong> It may already have been removed.</p>
+{% else %}
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+
+  {% if refusal %}
+  <p class="unavailable"><strong>Nothing was removed.</strong> {{ refusal.reason }}</p>
+  {% endif %}
+
+  <table class="counters">
+    <tbody>
+      <tr><td>identity</td><td>{{ record.name }}</td></tr>
+      <tr><td>public key</td><td class="mono">{{ record.public_key.hex() }}</td></tr>
+      <tr><td>node hash</td><td class="mono">{{ '%02x' % record.node_hash }}</td></tr>
+      <tr><td>loaded by this run</td><td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
+    </tbody>
+  </table>
+
+  {% if serving %}
+  <p class="unavailable">
+    <strong>This identity is serving {{ serving | join(' and ') }}.</strong>
+    Those rows are deleted with it, and a room's history is not something to
+    lose by accident. Delete them first; removal is not offered while anything
+    is bound. Nothing here will remove them for you.
+  </p>
+  <p><a href="/admin/identities">back to identities</a></p>
+  {% else %}
+  <p><strong>This cannot be undone.</strong> No backup here holds the key.</p>
+  <p class="note">
+    <strong>Disabling is the reversible action.</strong> A disabled identity stays
+    stored and stops being loaded; it can be enabled again at any time. Removal
+    destroys the key material.
+  </p>
+  <p class="note">
+    Recorded as its own event naming your account.
+  </p>
+  <form method="post" action="/admin/identities/{{ record.id }}/remove">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <p>
+      <label>type the identity's name (<span class="mono">{{ record.name }}</span>) to remove it
+        <input class="mono" type="text" name="confirm_name" autocomplete="off">
+      </label>
+    </p>
+    <p>
+      <label>your password
+        <input type="password" name="password" autocomplete="current-password">
+      </label>
+    </p>
+    <button type="submit">confirm: remove {{ record.name }} and destroy its key</button>
+  </form>
+  <p><a href="/admin/identities">cancel, and remove nothing</a></p>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}

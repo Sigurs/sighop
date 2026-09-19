@@ -33,6 +33,8 @@ from sighop.db.repositories import (
     EntityRecord,
     EntityRoleError,
     RoomExistsError,
+    RoomNameError,
+    RoomNameTakenError,
     RoomRecord,
 )
 from sighop.net.dm import LocalEntity
@@ -45,7 +47,9 @@ from sighop.web.guarded import (
     ADVERT_ZERO_HOP,
     ENABLE_TRANSMIT,
     RAISE_CEILING,
+    REMOVE_BOT,
     REMOVE_CHANNEL,
+    REMOVE_ROOM,
     REVEAL_KEY,
     audit,
 )
@@ -199,7 +203,7 @@ async def create_room(
             guest_open=guest_open == "true",
             allow_read_only=allow_read_only == "true",
         )
-    except (EntityRoleError, RoomExistsError) as exc:
+    except (EntityRoleError, RoomExistsError, RoomNameError) as exc:
         return await _refuse_room(request, page, str(exc), **submitted)
     if isinstance(created, Failed):
         return await _refuse_room(request, page, str(created.error), **submitted)
@@ -346,6 +350,147 @@ async def _room(page: Panel, room_id: str) -> RoomRecord | None:
         if str(room.id) == room_id:
             return room
     return None
+
+
+@router.get("/rooms/{room_id}/rename", response_class=HTMLResponse)
+async def rename_room_form(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """A room's name is a local label; the form says so before it is changed."""
+    room = await _room(page, room_id)
+    return page.page(
+        request,
+        "admin/room_rename.html",
+        room=room,
+        refusal=None,
+        status_code=200 if room is not None else 404,
+    )
+
+
+@router.post("/rooms/{room_id}/rename", response_model=None)
+async def rename_room(
+    room_id: str,
+    request: Request,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop room rename`'s own call. No nonce and no password: a rename is
+    reversible by renaming back and destroys nothing (design D6)."""
+    room = await _room(page, room_id)
+    if room is None or page.persistence is None:
+        return await rename_room_form(room_id, request, page)
+    try:
+        renamed = await page.persistence.rooms.rename(room.id, name)
+    except (RoomNameError, RoomNameTakenError) as exc:
+        return page.page(
+            request,
+            "admin/room_rename.html",
+            room=room,
+            refusal=Refusal(reason=str(exc), submitted={"name": name}),
+            status_code=400,
+        )
+    if isinstance(renamed, Failed) or renamed.value is None:
+        return await rename_room_form(room_id, request, page)
+    page.logger.info(
+        "web_room_renamed",
+        outcome="success",
+        room_id=room_id,
+        previous_name=renamed.value,
+        name=name.strip(),
+        actor=page.actor(request),
+    )
+    return RedirectResponse("/admin/rooms", status_code=SEE_OTHER)
+
+
+@router.get("/rooms/{room_id}/delete", response_class=HTMLResponse)
+async def delete_room_form(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """What deleting takes, counted, before it takes it.
+
+    The foreign keys cascade silently, so the counts have to be read here —
+    there is nothing in the delete itself that could report them.
+    """
+    room = await _room(page, room_id)
+    members = messages = None
+    identity = None
+    if room is not None and page.persistence is not None:
+        members, messages = await _room_counts(page, room)
+        held = await page.persistence.entities.get_by_id(room.entity_id)
+        identity = held.value if isinstance(held, Succeeded) else None
+    return page.page(
+        request,
+        "admin/room_delete.html",
+        room=room,
+        members=members,
+        messages=messages,
+        identity=identity,
+        description=ACTION_DESCRIPTIONS[REMOVE_ROOM],
+        nonce=None if room is None else page.nonces.mint(REMOVE_ROOM, room_id),
+        status_code=200 if room is not None else 404,
+    )
+
+
+@router.post("/rooms/{room_id}/delete", response_model=None)
+async def delete_room(
+    room_id: str,
+    request: Request,
+    page: PanelDep,
+    nonce: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop room delete`'s own call, behind confirm-and-nonce.
+
+    No password: this destroys stored content rather than key material or what
+    the station may do, which is the tier `REMOVE_CHANNEL` is in (design D6).
+    """
+    from urllib.parse import quote
+
+    title = "delete room"
+    actor = page.actor(request)
+    room = await _room(page, room_id)
+    if room is None or page.persistence is None:
+        return await delete_room_form(room_id, request, page)
+    if not page.nonces.spend(nonce, REMOVE_ROOM, room_id):
+        audit(
+            page.logger,
+            action=REMOVE_ROOM,
+            target=room_id,
+            outcome="refused",
+            actor=actor,
+            reason="no confirmation was minted for this action",
+            room=room.name,
+        )
+        return page.page(request, "admin/refused.html", title=title, refusal=None, status_code=403)
+    members, messages = await _room_counts(page, room)
+    deleted = await page.persistence.rooms.delete(room.id)
+    if isinstance(deleted, Failed) or not deleted.value:
+        reason = str(deleted.error) if isinstance(deleted, Failed) else "no such room"
+        audit(
+            page.logger,
+            action=REMOVE_ROOM,
+            target=room_id,
+            outcome="failed",
+            actor=actor,
+            reason=reason,
+            room=room.name,
+        )
+        return page.page(
+            request, "admin/refused.html", title=title, refusal=reason, status_code=409
+        )
+    # The store has taken it; now the run, which is what actually answers.
+    served = await page.state.stop_serving_room(room.id)
+    audit(
+        page.logger,
+        action=REMOVE_ROOM,
+        target=room_id,
+        outcome="success",
+        actor=actor,
+        room=room.name,
+        members_deleted=members,
+        messages_deleted=messages,
+        stopped_serving=served,
+    )
+    page.say(
+        f"room {room.name!r} deleted with {members} member(s) and {messages} "
+        f"message(s) from the web interface by account {actor!r}"
+    )
+    return RedirectResponse(f"/admin/rooms?deleted={quote(room.name)}", status_code=SEE_OTHER)
 
 
 # --- 12.5 / 12.6 Bots -------------------------------------------------------
@@ -590,6 +735,97 @@ async def set_bot_config(
         )
     await page.persistence.bots.set_config(bot.id, {**bot.config, key: parsed})
     return RedirectResponse("/admin/bots", status_code=SEE_OTHER)
+
+
+@router.get("/bots/{bot_id}/delete", response_class=HTMLResponse)
+async def delete_bot_form(bot_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """What deleting forgets, counted, before it forgets it."""
+    bot = await _bot(page, bot_id)
+    keys = None
+    identity = None
+    if bot is not None and page.persistence is not None:
+        stored = await page.persistence.bot_state.list(bot.id)
+        keys = len(stored.value) if isinstance(stored, Succeeded) else None
+        held = await page.persistence.entities.get_by_id(bot.entity_id)
+        identity = held.value if isinstance(held, Succeeded) else None
+    return page.page(
+        request,
+        "admin/bot_delete.html",
+        bot=bot,
+        keys=keys,
+        identity=identity,
+        description=ACTION_DESCRIPTIONS[REMOVE_BOT],
+        nonce=None if bot is None else page.nonces.mint(REMOVE_BOT, bot_id),
+        status_code=200 if bot is not None else 404,
+    )
+
+
+@router.post("/bots/{bot_id}/delete", response_model=None)
+async def delete_bot(
+    bot_id: str,
+    request: Request,
+    page: PanelDep,
+    nonce: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop bot delete`'s own call, behind confirm-and-nonce.
+
+    No password, on `REMOVE_CHANNEL`'s terms: this destroys stored content, not
+    key material and not what the station may do (design D6).
+    """
+    from urllib.parse import quote
+
+    title = "delete bot"
+    actor = page.actor(request)
+    bot = await _bot(page, bot_id)
+    if bot is None or page.persistence is None:
+        return await delete_bot_form(bot_id, request, page)
+    if not page.nonces.spend(nonce, REMOVE_BOT, bot_id):
+        audit(
+            page.logger,
+            action=REMOVE_BOT,
+            target=bot_id,
+            outcome="refused",
+            actor=actor,
+            reason="no confirmation was minted for this action",
+            bot=bot.entity_name,
+        )
+        return page.page(request, "admin/refused.html", title=title, refusal=None, status_code=403)
+    stored = await page.persistence.bot_state.list(bot.id)
+    keys = len(stored.value) if isinstance(stored, Succeeded) else -1
+    # The worker stops before the row goes, so a dispatch in flight finishes
+    # against a bot whose state it can still write.
+    ran = await page.state.stop_bot(bot.id)
+    deleted = await page.persistence.bots.delete(bot.id)
+    if isinstance(deleted, Failed) or not deleted.value:
+        reason = str(deleted.error) if isinstance(deleted, Failed) else "no such bot"
+        audit(
+            page.logger,
+            action=REMOVE_BOT,
+            target=bot_id,
+            outcome="failed",
+            actor=actor,
+            reason=reason,
+            bot=bot.entity_name,
+        )
+        return page.page(
+            request, "admin/refused.html", title=title, refusal=reason, status_code=409
+        )
+    audit(
+        page.logger,
+        action=REMOVE_BOT,
+        target=bot_id,
+        outcome="success",
+        actor=actor,
+        bot=bot.entity_name,
+        driver=bot.driver,
+        keys_deleted=keys,
+        stopped_running=ran,
+    )
+    page.say(
+        f"bot {bot.entity_name!r} deleted with {keys} stored key(s) from the "
+        f"web interface by account {actor!r}"
+    )
+    return RedirectResponse(f"/admin/bots?deleted={quote(bot.entity_name)}", status_code=SEE_OTHER)
 
 
 async def _bot(page: Panel, bot_id: str) -> BotRecord | None:
@@ -1078,24 +1314,12 @@ async def advert(
     named = {"entity_name": stub.name, "node_hash": stub.node_hash}
     if not page.nonces.spend(nonce, action, entity_id):
         return refuse("no confirmation was minted for this action", 403, **named)
-    if not page.state.scheduler.transmit_enabled:
-        return refuse(GATE_CLOSED, 409, **named)
-    if page.state.radio is None:
-        return refuse(NO_RADIO, 409, **named)
-    adverts = page.state.adverts
-    if action == ADVERT_FLOOD:
-        gap = adverts.flood_gap_remaining(adverts.clock.now())
-        if gap > 0:
-            seconds = math.ceil(gap)
-            return refuse(
-                "a flood advert from this run went out less than the "
-                f"{adverts.min_entity_gap_seconds:g} s inter-entity gap ago; another "
-                f"flood is accepted in {seconds} s",
-                409,
-                gap_remaining_seconds=seconds,
-                **named,
-            )
+    refusal = advert_refusal(page, stub, action)
+    if refusal is not None:
+        reason, fields = refusal
+        return refuse(reason, 409, **fields, **named)
 
+    adverts = page.state.adverts
     if action == ADVERT_FLOOD:
         adverts.request_flood(stub)
     else:
@@ -1112,6 +1336,32 @@ async def advert(
     )
     page.say(render_advert_request(kind, stub.name, actor=actor, next_flood_at=next_flood_at))
     return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
+
+
+def advert_refusal(page: Panel, stub: object, action: str) -> tuple[str, dict[str, object]] | None:
+    """Why this advert cannot go out now, or `None` when it can.
+
+    The same four refusals `advert` applies, in the same order, factored out so
+    that the rename form's advert offer is decided by *this* and cannot drift
+    from the standalone confirmation (`web-admin`). It decides nothing about
+    nonces and submits nothing: the caller owns both.
+    """
+    if not page.state.scheduler.transmit_enabled:
+        return GATE_CLOSED, {}
+    if page.state.radio is None:
+        return NO_RADIO, {}
+    if action == ADVERT_FLOOD:
+        adverts = page.state.adverts
+        gap = adverts.flood_gap_remaining(adverts.clock.now())
+        if gap > 0:
+            seconds = math.ceil(gap)
+            return (
+                "a flood advert from this run went out less than the "
+                f"{adverts.min_entity_gap_seconds:g} s inter-entity gap ago; another "
+                f"flood is accepted in {seconds} s",
+                {"gap_remaining_seconds": seconds},
+            )
+    return None
 
 
 @router.get("/transmit", response_class=HTMLResponse)
@@ -1463,6 +1713,55 @@ async def set_webhook_url(
     return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
 
 
+@router.get("/webhooks/{webhook_id}/rename", response_class=HTMLResponse)
+async def rename_webhook_form(webhook_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    record = await _webhook(page, webhook_id)
+    return page.page(
+        request,
+        "admin/webhook_rename.html",
+        webhook=record,
+        refusal=None,
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/webhooks/{webhook_id}/rename", response_model=None)
+async def rename_webhook(
+    webhook_id: str,
+    request: Request,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop webhook rename`'s own call. The sealed URL is not touched, and
+    nothing beyond scheme and host is rendered, refusal included."""
+    from sighop.webhooks.config import WebhookConfigError
+
+    record = await _webhook(page, webhook_id)
+    if record is None or page.persistence is None:
+        return await rename_webhook_form(webhook_id, request, page)
+    try:
+        renamed = await page.persistence.webhooks.rename(record.id, name)
+    except WebhookConfigError as exc:
+        return page.page(
+            request,
+            "admin/webhook_rename.html",
+            webhook=record,
+            refusal=Refusal(reason=str(exc), submitted={"name": name}),
+            status_code=400,
+        )
+    if isinstance(renamed, Failed) or renamed.value is None:
+        return await rename_webhook_form(webhook_id, request, page)
+    page.logger.info(
+        "web_webhook_renamed",
+        outcome="success",
+        webhook_id=webhook_id,
+        previous_name=renamed.value,
+        name=name.strip(),
+        actor=page.actor(request),
+    )
+    return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
+
+
 @router.get("/webhooks/{webhook_id}/remove", response_class=HTMLResponse)
 async def remove_webhook_form(webhook_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """What removing deletes, before it deletes it."""
@@ -1706,6 +2005,56 @@ async def _stored_channel(page: Panel, channel_id: str):  # type: ignore[no-unty
         return None
     found = await page.persistence.channels.get_by_id(wanted)
     return found.value if isinstance(found, Succeeded) else None
+
+
+@router.get("/channels/{channel_id}/rename", response_class=HTMLResponse)
+async def rename_channel_form(channel_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    record = await _stored_channel(page, channel_id)
+    return page.page(
+        request,
+        "admin/channel_rename.html",
+        channel=record,
+        refusal=None,
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/channels/{channel_id}/rename", response_model=None)
+async def rename_channel(
+    channel_id: str,
+    request: Request,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop channel rename`'s own call. No key material is touched, and
+    none is rendered — including in the form re-shown after a refusal."""
+    from sighop.db.repositories import ChannelConfigError
+
+    record = await _stored_channel(page, channel_id)
+    if record is None or page.persistence is None:
+        return await rename_channel_form(channel_id, request, page)
+    try:
+        renamed = await page.persistence.channels.rename(record.id, name)
+    except ChannelConfigError as exc:
+        return page.page(
+            request,
+            "admin/channel_rename.html",
+            channel=record,
+            refusal=Refusal(reason=str(exc), submitted={"name": name}),
+            status_code=400,
+        )
+    if isinstance(renamed, Failed) or renamed.value is None:
+        return await rename_channel_form(channel_id, request, page)
+    await page.state.reload_channels()
+    page.logger.info(
+        "web_channel_renamed",
+        outcome="success",
+        channel_id=channel_id,
+        previous_name=renamed.value,
+        name=name.strip(),
+        actor=page.actor(request),
+    )
+    return RedirectResponse("/admin/channels", status_code=SEE_OTHER)
 
 
 @router.get("/channels/{channel_id}/remove", response_class=HTMLResponse)

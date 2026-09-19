@@ -85,7 +85,9 @@
     // Keeps the Claude Code configuration on the volume above instead of in
     // the home directory a rebuild discards.
     "CLAUDE_CONFIG_DIR": "/home/vscode/.claude",
-    "OPENSPEC_TELEMETRY": "0"
+    "OPENSPEC_TELEMETRY": "0",
+    "DO_NOT_TRACK": "1",
+    "TZ": "Europe/Helsinki"
     // Note: no CCE_OLLAMA_URL. postStartCommand forwards the host's Ollama onto
     // this container's own localhost:11434 instead, because the engine's search
     // path reads `config.ollama_url` directly and never sees that variable.

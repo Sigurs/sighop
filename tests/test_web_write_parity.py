@@ -40,6 +40,7 @@ from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
     BOT_ENTITY_TYPE,
+    MAX_ENTITY_NAME_BYTES,
     LoadedEntity,
     advert_config_for,
 )
@@ -354,6 +355,58 @@ async def test_an_empty_private_key_field_still_generates(database: Database) ->
     assert response.status_code == 303
     listed = await persistence.entities.list_all()
     assert [row.name for row in listed.value] == ["generated"]
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(
+    ("supplied", "expected"),
+    [
+        ("   ", "an identity name cannot be empty"),
+        ("greeter: one", "read as the message"),
+        ("n" * (MAX_ENTITY_NAME_BYTES + 1), "at most 23 bytes"),
+        ("roo\x01my", "U+0001"),
+    ],
+)
+async def test_a_refused_identity_name_reads_the_same_in_both_surfaces(
+    database: Database, cli_store_environment: str, capsys, supplied: str, expected: str
+) -> None:
+    """One validator in the repository, so neither surface can drift (design D4).
+
+    The name rules live where the public-key rules already do, which is why
+    both halves are checked against the same string rather than against two
+    hand-written ones.
+    """
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/admin/identities/create", name=supplied)
+
+    assert response.status_code == 400
+    assert expected in response.text
+
+    code = await asyncio.to_thread(
+        main,
+        [
+            "keys",
+            "import",
+            "--private-key",
+            generate_identity().private_key.hex(),
+            "--name",
+            supplied,
+            "--database-url",
+            cli_store_environment,
+        ],
+        out=io.StringIO(),
+    )
+    assert code == 2
+    error = capsys.readouterr().err
+    assert expected in error, (
+        f"the command line refused {supplied!r} differently from the panel: {error!r}"
+    )
+
+    listed = await persistence.entities.list_all()
+    assert listed.value == [], "a refused name stored an identity"
 
 
 @pytest.mark.database
@@ -1836,36 +1889,60 @@ def test_the_identities_page_says_the_secret_is_a_terminal_command() -> None:
     assert "sighop keys secret" in collapsed
 
 
-def test_the_identities_page_says_removal_is_a_terminal_command() -> None:
-    """Design D10: the absence is named where an operator would look for it."""
+def test_the_identities_page_says_removal_is_offered_and_what_it_costs() -> None:
+    """The change `web-delete-and-rename` withdrew design D10's exclusion.
+
+    This used to assert that the page named `sighop keys delete` and said
+    removal was not offered in the browser. It is offered now, so what the page
+    owes an operator is what it costs and what the reversible alternative is.
+    """
     app, _state, _log = _built(stub_state())
 
     with _client(app) as client:
         body = client.get("/admin/identities").text
 
     collapsed = " ".join(body.split())
-    assert "sighop keys delete" in collapsed
-    assert "not offered here" in collapsed
-    assert "Disabling one is the reversible action" in collapsed, (
-        "an operator must be pointed at what this page does offer"
+    assert "not offered here" not in collapsed
+    assert "Removing a stored identity is offered here" in collapsed
+    assert "irreversible" in collapsed
+    assert "Disabling is the reversible action offered alongside it" in collapsed, (
+        "an operator must be pointed at what this page also offers"
     )
     assert "room or a bot is bound to" in collapsed
 
 
-def test_no_route_removes_a_stored_identity() -> None:
-    """The panel offers disabling, and nothing that deletes a row."""
+def test_exactly_one_route_removes_a_stored_identity_and_it_is_guarded() -> None:
+    """The inverse of what this asserted before, and no longer vacuous.
+
+    The old version walked `app.routes`, which in this FastAPI version holds
+    one opaque `_IncludedRouter` per included router — so it never reached the
+    identity routes at all and would have passed whatever they did. That is the
+    trap `registered_routes` exists for, and this goes through it.
+    """
     import inspect
+
+    from fastapi.routing import APIRoute
+
+    from tests.webfixtures import registered_routes
 
     app, _state, _log = _built(stub_state())
 
-    for route in app.routes:
-        endpoint = getattr(route, "endpoint", None)
-        if endpoint is None or not inspect.isfunction(endpoint):
-            continue
-        source = inspect.getsource(endpoint)
-        assert "entities.remove" not in source, (
-            f"{getattr(route, 'path', route)} removes an identity"
-        )
+    removing = [
+        route
+        for route in registered_routes(app)
+        if isinstance(route, APIRoute)
+        and inspect.isfunction(route.endpoint)
+        and "entities.remove" in inspect.getsource(route.endpoint)
+    ]
+
+    assert len(removing) == 1, [getattr(r, "path", r) for r in removing]
+    [route] = removing
+    assert route.path == "/admin/identities/{entity_id}/remove"
+    assert route.methods == {"POST"}, "removal must not be reachable by a GET"
+    source = inspect.getsource(route.endpoint)
+    assert "nonces.spend" in source, "the removal is not behind a confirmation"
+    assert "reauthenticate" in source, "the removal does not ask for the password"
+    assert "confirm_name" in source, "the removal does not ask for the typed name"
 
 
 def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
@@ -2284,3 +2361,243 @@ async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
         }
 
     assert shape(rows["cli-hook"]) == shape(rows["browser-hook"])
+
+
+# --- The deletes and renames this change added -------------------------------
+#
+# Same property as everything above: the browser's write *is* the repository
+# call the command line makes, so a rule has one implementation.
+
+
+@pytest.mark.database
+async def test_a_room_deleted_in_either_surface_leaves_the_same_store(
+    database: Database, cli_store_environment: str
+) -> None:
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async def _room(name: str) -> tuple[uuid.UUID, uuid.UUID]:
+        stored = await persistence.entities.store(
+            name=f"rs-{name}",
+            identity=generate_identity(),
+            secret=SECRET,
+            node_type=NodeType.ROOM_SERVER,
+        )
+        assert isinstance(stored, Succeeded)
+        created = await persistence.rooms.create(
+            entity_id=stored.value.id, name=name, admin_password_hash="x" * 60
+        )
+        assert isinstance(created, Succeeded)
+        return stored.value.id, created.value.id
+
+    entity_id, room_id = await _room("from-the-panel")
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{room_id}/delete")).text
+        response = await _apost(client, app, f"/admin/rooms/{room_id}/delete", nonce=_nonce(body))
+    assert response.status_code == 303
+    from_panel = (await persistence.entities.get_by_id(entity_id)).value
+    assert from_panel is not None, "the panel deleted the identity too"
+    assert (await persistence.rooms.list_all()).value == []
+
+    cli_entity_id, _cli_room_id = await _room("from-the-terminal")
+    assert (
+        await asyncio.to_thread(
+            main,
+            [
+                "room",
+                "delete",
+                "from-the-terminal",
+                "--delete-history",
+                "--database-url",
+                cli_store_environment,
+            ],
+            out=io.StringIO(),
+        )
+        == 0
+    )
+    from_cli = (await persistence.entities.get_by_id(cli_entity_id)).value
+    assert from_cli is not None, "the command line deleted the identity too"
+    assert (await persistence.rooms.list_all()).value == []
+    # The two surfaces left the same shape behind: an identity, unbound.
+    assert (from_panel.type, from_panel.enabled) == (from_cli.type, from_cli.enabled)
+
+
+@pytest.mark.database
+async def test_a_rename_in_either_surface_leaves_the_same_row(
+    database: Database, cli_store_environment: str
+) -> None:
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    held = generate_identity()
+    stored = await persistence.entities.store(name="before", identity=held, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+
+    async with _live(app) as client:
+        await _apost(
+            client, app, f"/admin/identities/{stored.value.id}/rename", name="from-the-panel"
+        )
+    from_panel = _shape((await persistence.entities.get_by_id(stored.value.id)).value)
+
+    assert (
+        await asyncio.to_thread(
+            main,
+            [
+                "keys",
+                "rename",
+                "from-the-panel",
+                "from-the-terminal",
+                "--database-url",
+                cli_store_environment,
+            ],
+            out=io.StringIO(),
+        )
+        == 0
+    )
+    from_cli = _shape((await persistence.entities.get_by_id(stored.value.id)).value)
+
+    # Everything but the name is untouched by either.
+    assert {k: v for k, v in from_panel.items() if k != "name"} == {
+        k: v for k, v in from_cli.items() if k != "name"
+    }
+    assert from_panel["name"] == "from-the-panel"
+    assert from_cli["name"] == "from-the-terminal"
+    opened = await persistence.entities.load_all(SECRET)
+    assert opened.value[0].identity.private_key == held.private_key
+
+
+@pytest.mark.database
+async def test_a_refused_rename_reads_the_same_in_both_surfaces(
+    database: Database, cli_store_environment: str, capsys
+) -> None:
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    stored = await persistence.entities.store(
+        name="before", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    await persistence.entities.store(name="taken", identity=generate_identity(), secret=SECRET)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, f"/admin/identities/{stored.value.id}/rename", name="taken"
+        )
+    assert response.status_code == 400
+    assert "already named" in response.text
+
+    code = await asyncio.to_thread(
+        main,
+        ["keys", "rename", "before", "taken", "--database-url", cli_store_environment],
+        out=io.StringIO(),
+    )
+    assert code == 2
+    assert "already named" in capsys.readouterr().err
+    assert sorted(r.name for r in (await persistence.entities.list_all()).value) == [
+        "before",
+        "taken",
+    ]
+
+
+@pytest.mark.database
+async def test_the_whole_lifecycle_through_the_panel(database: Database) -> None:
+    """Create an identity, bind a room, delete the room, rename, then remove.
+
+    The round trip the change exists for, and the one that proves the two
+    halves fit: removal is refused while the room is bound, and the identity
+    becomes reusable the moment it is not.
+    """
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        # 1. Create an identity that can carry a room.
+        created = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="lifecycle",
+            node_type="ROOM_SERVER",
+        )
+        assert created.status_code == 303
+        [identity] = (await persistence.entities.list_all()).value
+
+        # 2. Bind a room to it.
+        bound = await _apost(
+            client,
+            app,
+            "/admin/rooms/create",
+            name="the-lounge",
+            entity_id=str(identity.id),
+            admin_password="an-admin-password",
+        )
+        assert bound.status_code in (303, 200), bound.text
+        [room] = (await persistence.rooms.list_all()).value
+
+        # 3. Removal is refused while the room is bound, and names it.
+        blocked = (await client.get(f"/admin/identities/{identity.id}/remove")).text
+        assert "the-lounge" in blocked
+        assert 'name="nonce"' not in blocked
+
+        # 4. Delete the room. The identity survives, unbound.
+        body = (await client.get(f"/admin/rooms/{room.id}/delete")).text
+        gone = await _apost(client, app, f"/admin/rooms/{room.id}/delete", nonce=_nonce(body))
+        assert gone.status_code == 303
+        assert (await persistence.rooms.list_all()).value == []
+        assert (await persistence.entities.bound_to(identity.id)).value == []
+
+        # 5. Rename it, now that nothing is bound.
+        renamed = await _apost(
+            client, app, f"/admin/identities/{identity.id}/rename", name="lifecycle-2"
+        )
+        assert renamed.status_code == 200
+        assert (await persistence.entities.get_by_id(identity.id)).value.name == "lifecycle-2"
+
+        # 6. And remove it, which is now offered.
+        confirm = (await client.get(f"/admin/identities/{identity.id}/remove")).text
+        assert 'name="nonce"' in confirm, "removal is still refused with nothing bound"
+        removed = await _apost(
+            client,
+            app,
+            f"/admin/identities/{identity.id}/remove",
+            nonce=_nonce(confirm),
+            password=OPERATOR_PASSWORD,
+            confirm_name="lifecycle-2",
+        )
+        assert removed.status_code == 303
+
+    assert (await persistence.entities.list_all()).value == []
+
+
+@pytest.mark.database
+async def test_an_identity_carries_a_new_room_after_the_old_one_is_deleted(
+    database: Database,
+) -> None:
+    """What deleting a room is *for*: the identity is reusable, not stranded."""
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    stored = await persistence.entities.store(
+        name="reusable",
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.ROOM_SERVER,
+    )
+    assert isinstance(stored, Succeeded)
+    first = await persistence.rooms.create(
+        entity_id=stored.value.id, name="first", admin_password_hash="x" * 60
+    )
+    assert isinstance(first, Succeeded)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/rooms/{first.value.id}/delete")).text
+        await _apost(client, app, f"/admin/rooms/{first.value.id}/delete", nonce=_nonce(body))
+        again = await _apost(
+            client,
+            app,
+            "/admin/rooms/create",
+            name="second",
+            entity_id=str(stored.value.id),
+            admin_password="an-admin-password",
+        )
+
+    assert again.status_code in (303, 200), again.text
+    assert [room.name for room in (await persistence.rooms.list_all()).value] == ["second"]

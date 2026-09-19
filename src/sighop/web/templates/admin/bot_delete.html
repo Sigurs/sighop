@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block title %}delete bot · sighop{% endblock %}
+
+{% block content %}
+<h1>delete bot</h1>
+
+{% if bot is none %}
+<p class="unavailable"><strong>No such bot.</strong> It may already have been deleted.</p>
+{% else %}
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+  <table class="counters">
+    <tbody>
+      <tr><td>bot</td><td>{{ bot.entity_name }}</td></tr>
+      <tr><td>driver</td><td class="mono">{{ bot.driver }}</td></tr>
+      <tr><td>mode</td><td class="mono">{{ bot.mode }}</td></tr>
+      <tr><td>stored keys that will be deleted</td>
+          <td class="mono">{{ 'unknown — the count could not be read' if keys is none else keys }}</td></tr>
+    </tbody>
+  </table>
+  <p><strong>This cannot be undone.</strong></p>
+  <p class="note">
+    The identity{% if identity %} <span class="mono">{{ identity.name }}</span>{% endif %}
+    is <strong>not</strong> deleted. It stays stored with its key material, running
+    no bot, and can carry a new one — or be removed in its own right from the
+    <a href="/admin/identities">identities</a> page. A bot has no name of its own:
+    it is named by that identity.
+  </p>
+  <p class="note">
+    Recorded as its own event naming your account. A dispatch already in flight
+    finishes before the bot stops; nothing further is dispatched to it.
+  </p>
+  <form method="post" action="/admin/bots/{{ bot.id }}/delete">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <button type="submit">confirm: delete {{ bot.entity_name }} and everything it has stored</button>
+  </form>
+  <p><a href="/admin/bots">cancel, and delete nothing</a></p>
+</div>
+{% endif %}
+{% endblock %}

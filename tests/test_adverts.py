@@ -29,6 +29,7 @@ from sighop.net.adverts import (
 )
 from sighop.net.bus import PriorityClass, Submission, TxHandle, TxOutcome, TxResult
 from sighop.protocol.crypto import VerifiedAdvert, verify_advert
+from sighop.protocol.identity import generate_identity
 from sighop.protocol.packet import PayloadType, RouteType
 from sighop.protocol.packet import decode as decode_packet
 from sighop.protocol.payloads import NodeType, parse_advert
@@ -619,3 +620,117 @@ async def test_a_requested_flood_changes_no_override_and_no_interval() -> None:
     assert plain.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS
     assert overridden.override is override
     assert overridden.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS
+
+
+# --- Renaming a loaded identity ----------------------------------------------
+#
+# A rename has to reach the air, because the name *is* on the air: it travels
+# in the appdata of every advert. What it must not reach is the schedule.
+
+
+def test_a_rename_changes_the_name_the_next_advert_carries() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+
+    assert sched.rename(stub.identity.public_key, "skogen-2") is True
+
+    advert = parse_advert(decode_packet(build_advert_packet(stub, 1)).payload)
+    assert not isinstance(advert, DecodeFailure)
+    verification = verify_advert(advert)
+    assert isinstance(verification, VerifiedAdvert)
+    assert verification.appdata.name is not None
+    assert verification.appdata.name.text == "skogen-2"
+    assert verification.public_key == stub.identity.public_key
+
+
+def test_a_rename_mutates_the_stub_every_consumer_already_holds() -> None:
+    """runtime.py hands `adverts.stubs` to the messengers, the rooms and the
+    bots, so the rename has to land on the object rather than replace it."""
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    held = sched.stubs[0]
+
+    sched.rename(stub.identity.public_key, "skogen-2")
+
+    assert sched.stubs[0] is held, "the stub was replaced rather than renamed"
+    assert held.name == "skogen-2"
+    assert stub.name == "skogen-2"
+
+
+def test_a_rename_leaves_the_schedule_exactly_as_it_was() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    sched.set_override(stub, interval_seconds=HOUR)
+    before = (stub.next_flood_at, stub.last_flood_at, stub.adverts_sent, stub.override)
+
+    sched.rename(stub.identity.public_key, "skogen-2")
+
+    assert (
+        stub.next_flood_at,
+        stub.last_flood_at,
+        stub.adverts_sent,
+        stub.override,
+    ) == before
+
+
+def test_a_rename_submits_nothing() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    stub = sched.add_stub("skogen")
+
+    sched.rename(stub.identity.public_key, "skogen-2")
+
+    assert sink.submissions == [], "a rename put a packet on the air"
+
+
+def test_the_entity_id_follows_a_rename_when_it_was_the_name() -> None:
+    """`_adopt_entity` passes no id, so `entity_id` *is* the name (design D2)."""
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_identity("skogen", generate_identity())
+    assert stub.entity_id == "skogen"
+
+    sched.rename(stub.identity.public_key, "skogen-2")
+
+    assert stub.entity_id == "skogen-2"
+
+
+def test_an_explicit_entity_id_survives_a_rename() -> None:
+    """One that was never the name is an id in its own right, and is kept."""
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_identity("skogen", generate_identity(), entity_id="stable-id")
+
+    sched.rename(stub.identity.public_key, "skogen-2")
+
+    assert stub.entity_id == "stable-id"
+    assert stub.name == "skogen-2"
+
+
+def test_renaming_an_identity_this_run_does_not_hold_reports_so() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    sched.add_stub("skogen")
+
+    assert sched.rename(generate_identity().public_key, "nobody") is False
+
+
+def test_a_name_another_loaded_identity_holds_is_reported_as_a_clash() -> None:
+    """A keyfile identity is loaded and not stored, so the entity store's own
+    duplicate check cannot see this case."""
+    clock = ManualClock()
+    sched = scheduler(clock)
+    first = sched.add_stub("skogen")
+    second = sched.add_stub("greeter")
+
+    clash = sched.name_clash(first.identity.public_key, "greeter")
+
+    assert clash is second
+    assert sched.name_clash(first.identity.public_key, "skogen") is None, (
+        "an identity clashes with itself"
+    )
+    assert sched.name_clash(first.identity.public_key, "unused") is None

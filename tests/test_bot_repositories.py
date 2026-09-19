@@ -221,3 +221,66 @@ async def test_a_read_that_failed_is_not_reported_as_absence_in_the_counters() -
 
     assert await handle.get("greeted:aa") is None
     assert handle.write_failures == 1
+
+
+# --- Deleting a bot ----------------------------------------------------------
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_takes_its_durable_state(database: Database) -> None:
+    """`bot_state.bot_id` cascades, silently — hence the count before asking."""
+    bots = BotRepository(database=database)
+    state = BotStateRepository(database=database)
+    created = await bots.create(
+        entity_id=await _entity(database, "greeter-bot"), driver="greeter", config={}
+    )
+    assert isinstance(created, Succeeded)
+    await state.set(created.value.id, "greeted:aa", {})
+    await state.set(created.value.id, "greeted:bb", {})
+
+    deleted = await bots.delete(created.value.id)
+
+    assert isinstance(deleted, Succeeded)
+    assert deleted.value is True
+    assert (await bots.list_all()).value == []
+    assert (await state.list(created.value.id)).value == {}
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_leaves_its_identity_stored_and_unbound(
+    database: Database,
+) -> None:
+    bots = BotRepository(database=database)
+    entities = EntityRepository(database=database)
+    entity_id = await _entity(database, "greeter-bot")
+    created = await bots.create(entity_id=entity_id, driver="greeter", config={})
+    assert isinstance(created, Succeeded)
+
+    await bots.delete(created.value.id)
+
+    listed = await entities.list_all()
+    assert [record.name for record in listed.value] == ["greeter-bot"]
+    assert (await bots.get_for_entity(entity_id)).value is None
+    assert (await entities.bound_to(entity_id)).value == []
+
+
+@pytest.mark.database
+async def test_an_identity_can_carry_a_new_bot_after_the_old_one_is_deleted(
+    database: Database,
+) -> None:
+    bots = BotRepository(database=database)
+    entity_id = await _entity(database, "greeter-bot")
+    created = await bots.create(entity_id=entity_id, driver="greeter", config={})
+    assert isinstance(created, Succeeded)
+    await bots.delete(created.value.id)
+
+    again = await bots.create(entity_id=entity_id, driver="greeter", config={})
+
+    assert isinstance(again, Succeeded)
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_that_does_not_exist_reports_so(database: Database) -> None:
+    deleted = await BotRepository(database=database).delete(uuid.uuid4())
+    assert isinstance(deleted, Succeeded)
+    assert deleted.value is False

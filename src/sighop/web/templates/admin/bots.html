@@ -98,6 +98,14 @@
   <a href="/admin/bots/{{ bot.id }}/greeted">greeting records…</a>
   ·
   <a href="/admin/bots/{{ bot.id }}/state/clear">clear durable state…</a>
+  ·
+  <a href="/admin/bots/{{ bot.id }}/delete">delete bot…</a>
+</p>
+<p class="note">
+  A bot has no name of its own: it is named by the identity it runs on. To
+  rename this bot, rename
+  <a href="/admin/identities">{{ bot.entity_name }}</a> on the identities page —
+  that name is what the mesh sees.
 </p>
 {% endfor %}
 {% endif %}

@@ -28,6 +28,7 @@ only module in the project that composes them all.
 
 from __future__ import annotations
 
+import uuid
 from typing import Protocol, runtime_checkable
 
 from sighop.bots.runtime import BotHost
@@ -84,6 +85,30 @@ class LiveState(Protocol):
         A method rather than a property, and the one in this seam: a change made
         here has to reach decryption at once, and the runtime owns the loader.
         False when the read failed and the current set was kept.
+        """
+
+    def rename_entity(self, public_key: bytes, name: str) -> bool:
+        """Adopt a renamed identity into this run, without a restart.
+
+        `reload_channels`'s sibling, and here for the same reason: an identity's
+        name is on the air — it travels in every advert and is the sender name
+        of every channel post — so a rename the store has taken but the run has
+        not is a run advertising a name that no longer exists. `False` when this
+        run does not hold the identity, which is the ordinary answer for a
+        rename made against a store some other process is serving.
+        """
+
+    async def stop_serving_room(self, room_id: uuid.UUID) -> bool:
+        """Stop serving a room that has been deleted, without a restart.
+
+        `False` when this run was not serving it.
+        """
+
+    async def stop_bot(self, bot_id: uuid.UUID) -> bool:
+        """Stop and drop a bot that has been deleted, without a restart.
+
+        Waits for the dispatch in flight rather than cancelling it. `False`
+        when this run was not running it.
         """
 
     @property

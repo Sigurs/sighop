@@ -18,6 +18,7 @@ import contextlib
 import datetime as dt
 import signal
 import sys
+import uuid
 from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,7 +61,7 @@ from sighop.monitor.render import (
 from sighop.net.acks import AckDispatcher, AckRegistry
 from sighop.net.adverts import AdvertScheduler, EntityStub
 from sighop.net.airtime import time_on_air_ms
-from sighop.net.bus import IngressPipeline, NetworkBus, Submission, TxOutcome
+from sighop.net.bus import IngressPipeline, NetworkBus, Submission, Subscription, TxOutcome
 from sighop.net.channels import (
     ChannelEvent,
     ChannelMessenger,
@@ -247,6 +248,9 @@ class Runtime:
     path_bodies: PathBodyReader = field(init=False)
     rooms: list[RoomServer] = field(init=False, default_factory=list)
     _room_messages: dict[str, int] = field(init=False, default_factory=dict)
+    _room_subscriptions: dict[uuid.UUID, Subscription] = field(init=False, default_factory=dict)
+    """Kept so a deleted room can be detached from the bus. `subscribe`
+    returns one and nothing needed it until a room could go away."""
     retention: RoomRetentionPruner | None = field(init=False, default=None)
     _unserved_rooms: list[str] = field(init=False, default_factory=list)
     bots: BotHost = field(init=False)
@@ -442,6 +446,65 @@ class Runtime:
             self.channels.config_read_failed(str(exc))
             return False
         self.channels.replace_channels(loaded)
+        return True
+
+    def rename_entity(self, public_key: bytes, name: str) -> bool:
+        """Adopt a new name for a loaded identity, reporting whether it was here.
+
+        Called by the panel after the store has taken the rename, so a run that
+        does not hold this identity answers `False` and nothing else happens —
+        which is also the honest answer for a rename made from a terminal
+        against a different process.
+
+        Two registries, because there are two: `AdvertScheduler.rename` changes
+        the `EntityStub` every live consumer shares, and the keystore's entry is
+        replaced because `LocalEntity` is frozen. Neither touches the schedule.
+        """
+        renamed = self.adverts.rename(public_key, name)
+        self.entities.rename(public_key, name)
+        return renamed
+
+    async def stop_serving_room(self, room_id: uuid.UUID) -> bool:
+        """Stop serving a deleted room, reporting whether this run served it.
+
+        Undoes every wiring `_restore_room` did, in the reverse order, because
+        a room is not one attachment but four. Dropping it from `rooms` alone
+        would leave it *still answering*: the reception path reaches a room
+        through its **bus subscription**, not through that list.
+
+        1. detach from the bus, so no further packet reaches it;
+        2. stop the server, so its own loops end;
+        3. give the entity back to the direct messenger, which stood aside for
+           it under design D10 — the identity outlives the room and goes back
+           to being an ordinary one;
+        4. give the stub back to the path-body reader, for the same reason.
+        """
+        server = next((room for room in self.rooms if room.room.id == room_id), None)
+        if server is None:
+            return False
+        subscription = self._room_subscriptions.pop(room_id, None)
+        if subscription is not None:
+            self.bus.unsubscribe(subscription)
+        await server.stop()
+        self.rooms.remove(server)
+        self._room_messages.pop(server.room.name, None)
+        self.messenger.release_from_room(server.entity.entity_id)
+        if all(stub is not server.entity for stub in self.path_bodies.entities):
+            self.path_bodies.entities = [*self.path_bodies.entities, server.entity]
+        return True
+
+    async def stop_bot(self, bot_id: uuid.UUID) -> bool:
+        """Stop and drop a deleted bot, reporting whether this run ran it.
+
+        `BotWorker.stop` is awaited rather than cancelled, so the dispatch in
+        flight finishes — the property `bot-runtime` already states, and the
+        reason a deleted bot cannot leave a half-run driver call behind.
+        """
+        worker = next((worker for worker in self.bots if worker.record.id == bot_id), None)
+        if worker is None:
+            return False
+        await worker.stop()
+        self.bots.remove(worker)
         return True
 
     async def _channel_refresh_loop(self) -> None:
@@ -876,7 +939,7 @@ class Runtime:
         )
         counted = await self.persistence.messages.count(record.id)
         self._room_messages[record.name] = counted.value if isinstance(counted, Succeeded) else 0
-        server.subscribe(self.bus)
+        self._room_subscriptions[record.id] = server.subscribe(self.bus)
         # Design D10: this entity's packets are the room server's, so the direct
         # messenger and the shared path-body reader both leave it alone. Applied
         # here, at wiring time, which is when the ambiguity is resolvable.

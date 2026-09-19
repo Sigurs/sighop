@@ -554,6 +554,20 @@ class BotHost:
         self.workers.append(worker)
         return worker
 
+    def remove(self, worker: BotWorker) -> bool:
+        """Drop a worker from the fan-out, reporting whether it was here.
+
+        Stopping is the caller's, not this method's: `BotWorker.stop` is a
+        coroutine that waits for the dispatch in flight, and both entry points
+        here are synchronous and total so that nothing a driver does can delay
+        a reception. Removing a worker that was never stopped leaves its task
+        running with nothing to feed it.
+        """
+        if worker not in self.workers:
+            return False
+        self.workers.remove(worker)
+        return True
+
     def on_observation(self, observation: ContactObservation, record: RxRecord) -> None:
         """The contact store's listener (design D2).
 

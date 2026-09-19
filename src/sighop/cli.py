@@ -41,12 +41,15 @@ from sighop.db.repositories import (
     EntityExistsError,
     EntityHasRoleError,
     EntityLoadError,
+    EntityNameError,
     EntityRecord,
     EntityRepository,
     EntityRoleError,
     LoadedEntity,
     OpenedEntities,
     RoomExistsError,
+    RoomNameError,
+    RoomNameTakenError,
     RoomRecord,
     UsernameError,
     WebhookRecord,
@@ -493,6 +496,18 @@ def build_parser() -> argparse.ArgumentParser:
         "reference", help="the stored entity, by exact name or hex public key prefix"
     )
     keys_export.add_argument("path", type=Path, help="keyfile to write (never overwritten)")
+    keys_rename = key_actions.add_parser(
+        "rename",
+        help=(
+            "change a stored identity's name. The name travels in the "
+            "identity's adverts and in every channel post it makes"
+        ),
+    )
+    keys_rename.add_argument(
+        "reference", help="the stored entity, by exact name or hex public key prefix"
+    )
+    keys_rename.add_argument("name", help="the new name")
+
     keys_delete = key_actions.add_parser(
         "delete",
         help=(
@@ -511,7 +526,7 @@ def build_parser() -> argparse.ArgumentParser:
             "confirming at a terminal. Needed when there is no terminal"
         ),
     )
-    for store_parser in (keys_list, keys_import, keys_export, keys_delete):
+    for store_parser in (keys_list, keys_import, keys_export, keys_rename, keys_delete):
         _add_database_url_argument(store_parser)
 
     room = subparsers.add_parser(
@@ -583,6 +598,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="read the password from standard input rather than prompting",
     )
 
+    room_rename = room_actions.add_parser(
+        "rename",
+        help="change a room's name. A local label: it is never advertised",
+    )
+    room_rename.add_argument("room", help="the room, by name")
+    room_rename.add_argument("name", help="the new name")
+
+    room_delete = room_actions.add_parser(
+        "delete",
+        help=(
+            "delete a room, with its members and its whole history. The "
+            "identity it is bound to is kept, unbound"
+        ),
+    )
+    room_delete.add_argument("room", help="the room, by name")
+    room_delete.add_argument(
+        "--delete-history",
+        action="store_true",
+        help=(
+            "accept the loss without being asked, for use where there is no terminal to confirm at"
+        ),
+    )
+
     room_members = room_actions.add_parser("members", help="list a room's members")
     room_members.add_argument("room", help="the room, by name")
 
@@ -630,6 +668,8 @@ def build_parser() -> argparse.ArgumentParser:
         room_members,
         room_revoke,
         room_retention,
+        room_rename,
+        room_delete,
         room_post,
         room_history,
     ):
@@ -724,6 +764,32 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    bot_delete = bot_actions.add_parser(
+        "delete",
+        help=(
+            "delete a bot and everything it has stored. The identity it is "
+            "bound to is kept, unbound. To rename a bot, rename that identity "
+            "with `sighop keys rename`: a bot has no name of its own"
+        ),
+        description=(
+            "Delete a bot and everything it has stored. The identity it is bound "
+            "to is kept, unbound, and can carry a new bot or be removed with "
+            "`sighop keys delete`.\n\n"
+            "There is no `sighop bot rename`: a bot has no name of its own and is "
+            "named by the identity it runs on, so `sighop keys rename` is what "
+            "renames one."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    bot_delete.add_argument("bot", help="the bot, by the name of the identity it runs on")
+    bot_delete.add_argument(
+        "--delete-state",
+        action="store_true",
+        help=(
+            "accept the loss without being asked, for use where there is no terminal to confirm at"
+        ),
+    )
+
     bot_state = bot_actions.add_parser("state", help="inspect or clear a bot's durable state")
     bot_state.add_argument("bot", help="the bot, by the name of the identity it runs on")
     bot_state.add_argument(
@@ -745,6 +811,7 @@ def build_parser() -> argparse.ArgumentParser:
         bot_mode,
         bot_set,
         bot_greeted,
+        bot_delete,
         bot_state,
     ):
         _add_database_url_argument(bot_parser)
@@ -825,6 +892,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     webhook_set_url.add_argument("name", help="the webhook's name")
 
+    webhook_rename = webhook_actions.add_parser(
+        "rename", help="change a webhook's name. Its target, format and triggers are untouched"
+    )
+    webhook_rename.add_argument("name", help="the webhook's name")
+    webhook_rename.add_argument("new_name", help="the new name")
+
     webhook_remove = webhook_actions.add_parser("remove", help="delete a webhook")
     webhook_remove.add_argument("name", help="the webhook's name")
 
@@ -851,6 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
         webhook_disable,
         webhook_set,
         webhook_set_url,
+        webhook_rename,
         webhook_remove,
         webhook_test,
     ):
@@ -901,6 +975,12 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="show one channel and its recorded message count"
     )
     channel_show.add_argument("name", help="the channel's name")
+    channel_rename = channel_actions.add_parser(
+        "rename", help="change a channel's name. Its key and channel hash are untouched"
+    )
+    channel_rename.add_argument("name", help="the channel, by name")
+    channel_rename.add_argument("new_name", help="the new name")
+
     channel_remove = channel_actions.add_parser(
         "remove", help="delete a channel and all of its recorded messages"
     )
@@ -925,6 +1005,7 @@ def build_parser() -> argparse.ArgumentParser:
         channel_add,
         channel_actions.choices["list"],
         channel_show,
+        channel_rename,
         channel_remove,
         channel_key,
         channel_history,
@@ -1388,7 +1469,7 @@ def _keys_import(args: argparse.Namespace, out: IO[str]) -> int:
     source = str(keyfile.path) if keyfile is not None else "the supplied private key"
     try:
         outcome = asyncio.run(_with_store(database, store_it))
-    except (EntityExistsError, EntityRoleError) as exc:
+    except (EntityExistsError, EntityRoleError, EntityNameError) as exc:
         print(f"{source}: {exc}", file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
@@ -1524,6 +1605,69 @@ def _removal_consequence(record: EntityRecord, database: DatabaseConfig) -> str:
         "elsewhere, it is gone: peers that know this public key will never reach it "
         "again"
     )
+
+
+RENAME_IS_ON_THE_AIR = (
+    "this name travels in the identity's adverts and is the sender name of "
+    "every channel post it makes. Neighbours will keep showing the old name "
+    "until it adverts again; `sighop run --web` offers an advert now, per "
+    "identity, from the identities page"
+)
+"""Said wherever a stored identity is renamed.
+
+A rename is the one configuration change whose effect is on other people's
+screens rather than ours, and it does not take effect there until the next
+advert — which is hours away by default, and is the part an operator would
+otherwise discover by being asked why the old name is still showing.
+"""
+
+
+def _keys_rename(args: argparse.Namespace, out: IO[str]) -> int:
+    """Rename a stored identity. Nothing is confirmed: nothing is lost.
+
+    A process already running holds this identity in memory and keeps the old
+    name until it restarts — said here rather than left to be discovered,
+    because there is no way from this command to reach that process. The
+    panel's own rename, served from inside the run, does reach it.
+    """
+    database = _database_config(args, out)
+    if database is None:
+        return 2
+
+    async def listed(store: EntityRepository) -> Outcome[list[EntityRecord]]:
+        return await store.list_all()
+
+    outcome = asyncio.run(_with_store(database, listed))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    record = _one_identity(outcome.value, args.reference)
+    if record is None:
+        return 2
+
+    async def rename(store: EntityRepository) -> Outcome[str | None]:
+        return await store.rename(record.public_key, args.name)
+
+    try:
+        renamed = asyncio.run(_with_store(database, rename))
+    except EntityNameError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if isinstance(renamed, Failed):
+        print(str(renamed.error), file=sys.stderr)
+        return 2
+    if renamed.value is None:
+        print(f"no stored identity matches {args.reference!r}", file=sys.stderr)
+        return 2
+    print(f"renamed    {renamed.value} -> {args.name.strip()}", file=out)
+    print(f"public_key {record.public_key.hex()}", file=out)
+    print(f"node_hash  0x{record.node_hash:02x}", file=out)
+    print(RENAME_IS_ON_THE_AIR, file=out)
+    print(
+        "a run already holding this identity keeps the old name until it restarts",
+        file=out,
+    )
+    return 0
 
 
 def _keys_delete(args: argparse.Namespace, out: IO[str]) -> int:
@@ -1806,6 +1950,10 @@ def _room_command(args: argparse.Namespace, out: IO[str]) -> int:
             return _room_revoke(args, database, out)
         case "retention":
             return _room_retention(args, database, out)
+        case "rename":
+            return _room_rename(args, database, out)
+        case "delete":
+            return _room_delete(args, database, out)
         case "post":
             return _room_post(args, database, out)
         case _:
@@ -1853,7 +2001,7 @@ def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
 
     try:
         outcome = asyncio.run(_with_rooms(database, work))
-    except (RoomExistsError, EntityLoadError, EntityRoleError) as exc:
+    except (RoomExistsError, RoomNameError, EntityLoadError, EntityRoleError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
     if isinstance(outcome, Failed):
@@ -1861,6 +2009,104 @@ def _room_create(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
         return 2
     _render_room(outcome.value, members=0, messages=0, out=out)
     print("the passwords are stored as Argon2id hashes and cannot be recovered", file=out)
+    return 0
+
+
+def _room_rename(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Change a room's name. Nothing to confirm: nothing is lost by it."""
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        return await persistence.rooms.rename(record.id, args.name)
+
+    try:
+        outcome = asyncio.run(_with_rooms(database, work))
+    except (RoomNameError, RoomNameTakenError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None or outcome.value is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    print(f"renamed  {outcome.value} -> {args.name.strip()}", file=out)
+    print(
+        "a room's name is a local label; it is not advertised and members see no change", file=out
+    )
+    return 0
+
+
+def _room_delete(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Delete a room, its members and its history, keeping its identity.
+
+    Confirmed the way `sighop channel remove` and `sighop keys delete` are,
+    because an operator should not have to learn a third pattern for the same
+    kind of act. The counts come first: the foreign keys cascade, so the call
+    that deletes says nothing about how much went with it.
+    """
+
+    async def count(persistence: Persistence) -> Any:
+        record = await _find_room(persistence, args.room)
+        if record is None or isinstance(record, Failed):
+            return record
+        members = await persistence.members.load_for_room(record.id)
+        messages = await persistence.messages.count(record.id)
+        if isinstance(members, Failed):
+            return members
+        if isinstance(messages, Failed):
+            return messages
+        entity = await persistence.entities.get_by_id(record.entity_id)
+        held = entity.value if isinstance(entity, Succeeded) else None
+        return (record, len(members.value), messages.value, held)
+
+    outcome = asyncio.run(_with_rooms(database, count))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no room named {args.room!r}", file=sys.stderr)
+        return 2
+    record, members, messages, entity = outcome
+    consequence = (
+        f"deleting room {record.name!r} deletes its {members} member(s) and "
+        f"{messages} stored message(s); they cannot be recovered"
+    )
+    if not args.delete_history:
+        if not sys.stdin.isatty():
+            print(
+                f"{consequence}. Nothing was deleted: confirm at a terminal, or pass "
+                "--delete-history to accept it",
+                file=sys.stderr,
+            )
+            return 2
+        print(consequence, file=out)
+        answer = input(f"type the room name ({record.name}) to delete it: ")
+        if answer.strip() != record.name:
+            print("not confirmed; nothing was deleted", file=sys.stderr)
+            return 2
+
+    async def remove(persistence: Persistence) -> Any:
+        return await persistence.rooms.delete(record.id)
+
+    deleted = asyncio.run(_with_rooms(database, remove))
+    if isinstance(deleted, Failed):
+        print(str(deleted.error), file=sys.stderr)
+        return 2
+    if not deleted.value:
+        print(f"no room named {record.name!r}", file=sys.stderr)
+        return 2
+    print(f"deleted  {record.name}", file=out)
+    print(f"members  {members}", file=out)
+    print(f"messages {messages}", file=out)
+    if entity is not None:
+        print(
+            f"identity {entity.name!r} was not deleted and now serves no room; "
+            "it can carry a new one, or be removed with `sighop keys delete`",
+            file=out,
+        )
     return 0
 
 
@@ -2239,6 +2485,8 @@ def _bot_command(args: argparse.Namespace, out: IO[str]) -> int:
             return _bot_set(args, database, out)
         case "greeted":
             return _bot_greeted(args, database, out)
+        case "delete":
+            return _bot_delete(args, database, out)
         case _:
             return _bot_state(args, database, out)
 
@@ -2633,6 +2881,73 @@ def _bot_greeted(args: argparse.Namespace, database: DatabaseConfig, out: IO[str
                 f"{_greeting_state(rendered)}  at {rendered.get('at', '?')}",
                 file=out,
             )
+    return 0
+
+
+def _bot_delete(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Delete a bot and its durable state, keeping the identity it runs on.
+
+    `bot_state.bot_id` cascades, so the keys go without the call mentioning
+    them — counted first, in the terms `--clear` already uses, because what
+    they record is the interesting part and not how many there are.
+    """
+
+    async def count(persistence: Persistence) -> Any:
+        record = await _find_bot(persistence, args.bot)
+        if record is None or isinstance(record, Failed):
+            return record
+        state = await persistence.bot_state.list(record.id)
+        if isinstance(state, Failed):
+            return state
+        entity = await persistence.entities.get_by_id(record.entity_id)
+        held = entity.value if isinstance(entity, Succeeded) else None
+        return (record, len(state.value), held)
+
+    outcome = asyncio.run(_with_rooms(database, count))
+    if isinstance(outcome, Failed):
+        print(str(outcome.error), file=sys.stderr)
+        return 2
+    if outcome is None:
+        print(f"no bot named {args.bot!r}", file=sys.stderr)
+        return 2
+    record, keys, entity = outcome
+    consequence = (
+        f"deleting bot {record.entity_name!r} deletes the {keys} key(s) it has "
+        f"stored; {CLEARING_STATE_FORGETS}"
+    )
+    if not args.delete_state:
+        if not sys.stdin.isatty():
+            print(
+                f"{consequence}. Nothing was deleted: confirm at a terminal, or pass "
+                "--delete-state to accept it",
+                file=sys.stderr,
+            )
+            return 2
+        print(consequence, file=out)
+        answer = input(f"type the bot name ({record.entity_name}) to delete it: ")
+        if answer.strip() != record.entity_name:
+            print("not confirmed; nothing was deleted", file=sys.stderr)
+            return 2
+
+    async def remove(persistence: Persistence) -> Any:
+        return await persistence.bots.delete(record.id)
+
+    deleted = asyncio.run(_with_rooms(database, remove))
+    if isinstance(deleted, Failed):
+        print(str(deleted.error), file=sys.stderr)
+        return 2
+    if not deleted.value:
+        print(f"no bot named {record.entity_name!r}", file=sys.stderr)
+        return 2
+    print(f"deleted  {record.entity_name}", file=out)
+    print(f"driver   {record.driver}", file=out)
+    print(f"state    {keys} key(s)", file=out)
+    if entity is not None:
+        print(
+            f"identity {entity.name!r} was not deleted and now runs no bot; "
+            "it can carry a new one, or be removed with `sighop keys delete`",
+            file=out,
+        )
     return 0
 
 
@@ -3205,6 +3520,8 @@ def _webhook_command(args: argparse.Namespace, out: IO[str]) -> int:
                 return _webhook_set(args, config.database, out)
             case "set-url":
                 return _webhook_set_url(args, config, out)
+            case "rename":
+                return _webhook_rename(args, config.database, out)
             case "remove":
                 return _webhook_remove(args, config.database, out)
             case _:
@@ -3401,6 +3718,29 @@ def _webhook_set_url(args: argparse.Namespace, config: Config, out: IO[str]) -> 
     return 0
 
 
+def _webhook_rename(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Change a webhook's name. Its target, format and triggers are untouched."""
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_webhook(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        renamed = await persistence.webhooks.rename(record.id, args.new_name)
+        return renamed if isinstance(renamed, Failed) else record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _webhook_outcome(outcome, args.name)
+    if refused is not None:
+        return refused
+    print(f"renamed {outcome.name} -> {args.new_name.strip()}", file=out)
+    print(
+        "its target, format, triggers and hop limit are unchanged, and a running "
+        "process delivers to it exactly as before",
+        file=out,
+    )
+    return 0
+
+
 def _webhook_remove(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
     async def work(persistence: Persistence) -> Any:
         record = await _find_webhook(persistence, args.name)
@@ -3488,6 +3828,8 @@ def _channel_command(args: argparse.Namespace, out: IO[str]) -> int:
                 return _channel_list(config.database, out)
             case "show":
                 return _channel_show(args, config.database, out)
+            case "rename":
+                return _channel_rename(args, config.database, out)
             case "remove":
                 return _channel_remove(args, config.database, out)
             case "key":
@@ -3625,6 +3967,29 @@ async def _find_channel(persistence: Persistence, name: str) -> Any:
     if isinstance(found, Failed):
         return found
     return found.value
+
+
+def _channel_rename(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
+    """Change a channel's name. Its key and channel hash are untouched."""
+
+    async def work(persistence: Persistence) -> Any:
+        record = await _find_channel(persistence, args.name)
+        if record is None or isinstance(record, Failed):
+            return record
+        renamed = await persistence.channels.rename(record.id, args.new_name)
+        return renamed if isinstance(renamed, Failed) else record
+
+    outcome = asyncio.run(_with_rooms(database, work))
+    refused = _outcome_or_refusal(outcome, args.name)
+    if refused is not None:
+        return refused
+    print(f"renamed {outcome.name} -> {args.new_name.strip()}", file=out)
+    print(
+        "its kind, key and channel hash are unchanged, and a running process "
+        "decrypts on it exactly as before",
+        file=out,
+    )
+    return 0
 
 
 def _channel_show(args: argparse.Namespace, database: DatabaseConfig, out: IO[str]) -> int:
@@ -3812,6 +4177,8 @@ def main(argv: list[str] | None = None, out: IO[str] | None = None) -> int:
                 return _keys_list(args, stream)
             case "import":
                 return _keys_import(args, stream)
+            case "rename":
+                return _keys_rename(args, stream)
             case "delete":
                 return _keys_delete(args, stream)
             case _:

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}identity renamed · sighop{% endblock %}
+
+{% block content %}
+<h1>identity renamed</h1>
+
+<table class="counters">
+  <tbody>
+    <tr><td>was</td><td class="mono">{{ previous }}</td></tr>
+    <tr><td>now</td><td class="mono">{{ new_name }}</td></tr>
+    <tr><td>public key</td><td class="mono">{{ record.public_key.hex() }}</td></tr>
+  </tbody>
+</table>
+
+<p>
+  <strong>The stored identity is renamed.</strong>
+  {% if reached_the_run %}
+  This run adopted the new name, so every advert and channel post from here on
+  carries it.
+  {% else %}
+  This run does not hold this identity, so nothing about it changed here.
+  {% endif %}
+</p>
+
+<h2>the advert</h2>
+{% if advert is none %}
+<p class="note">
+  No advert was requested. {{ on_the_air }} You can send one at any time from
+  the <a href="/admin/identities">identities</a> page.
+</p>
+{% elif advert_outcome is none %}
+<p><strong>One {{ advert }} advert was submitted</strong> carrying the new name.</p>
+{% else %}
+<p class="unavailable">
+  <strong>The rename was applied; the advert was not sent.</strong>
+  {{ advert_outcome }}
+</p>
+<p class="note">
+  {{ on_the_air }} You can try the advert again from the
+  <a href="/admin/identities">identities</a> page.
+</p>
+{% endif %}
+
+<p><a href="/admin/identities">back to identities</a></p>
+{% endblock %}

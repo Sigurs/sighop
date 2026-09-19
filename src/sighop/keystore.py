@@ -45,7 +45,7 @@ import datetime as dt
 import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from sighop.logging import Logger, get_logger
@@ -495,6 +495,25 @@ class EntityRegistry:
                 source=ENTITY_STORE_SOURCE,
             )
         )
+
+    def rename(self, public_key: bytes, name: str) -> bool:
+        """Record a new name for a loaded identity, reporting whether it was here.
+
+        `LocalEntity` is frozen, so the entry is *replaced* rather than
+        mutated. That is safe because nothing holds one for behaviour — the
+        registry feeds the startup listing and the monitor's rendering, both of
+        which re-read it. What the running system holds is the `EntityStub`,
+        and `AdvertScheduler.rename` is what changes that.
+
+        No collision check here: the node hash is unchanged by a rename, and
+        the name rule belongs to the scheduler, which is where `entity_id`
+        makes it load-bearing.
+        """
+        for index, entity in enumerate(self._entities):
+            if entity.identity.public_key == public_key:
+                self._entities[index] = replace(entity, name=name)
+                return True
+        return False
 
     def _register(self, entity: LocalEntity) -> LocalEntity:
         for existing in self._entities:

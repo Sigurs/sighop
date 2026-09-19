@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block title %}rename identity · sighop{% endblock %}
+
+{% block content %}
+{% if record %}
+<h1>rename identity: {{ record.name }}</h1>
+
+{% if refusal %}
+<p class="unavailable"><strong>Not renamed.</strong> {{ refusal.reason }}</p>
+{% endif %}
+
+<p class="unavailable"><strong>{{ on_the_air }}</strong></p>
+
+<form method="post" action="/admin/identities/{{ record.id }}/rename">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input type="hidden" name="zero_hop_nonce" value="{{ zero_hop_nonce or '' }}">
+  <input type="hidden" name="flood_nonce" value="{{ flood_nonce or '' }}">
+  <p>
+    <label>new name
+      <input class="mono" type="text" name="name"
+             value="{{ refusal.submitted.name if refusal else record.name }}">
+    </label>
+  </p>
+
+  <h2>tell the mesh now?</h2>
+  {% if not loaded %}
+  <p class="unavailable">
+    <strong>No advert is offered.</strong> {{ not_held }} The rename still applies
+    to the stored identity.
+  </p>
+  {% else %}
+  <p class="note">
+    Neither is chosen by default. The rename applies either way; an advert only
+    decides how soon neighbours see the new name.
+    {% if next_flood_at %}
+    This identity's next scheduled flood is
+    <span class="mono">{{ next_flood_at.isoformat() }}</span>.
+    {% endif %}
+  </p>
+  <p>
+    <label><input type="radio" name="advert" value="none" checked>
+      <strong>no advert.</strong> Neighbours keep the old name until this
+      identity next adverts on its own schedule.
+    </label>
+  </p>
+  <p>
+    <label><input type="radio" name="advert" value="zero-hop">
+      <strong>zero-hop advert.</strong> This {{ zero_hop_description }}
+    </label>
+  </p>
+  <p>
+    <label><input type="radio" name="advert" value="flood">
+      <strong>flood advert.</strong> This {{ flood_description }}
+    </label>
+  </p>
+  {% endif %}
+
+  <button type="submit">rename</button>
+</form>
+<p><a href="/admin/identities">cancel, and change nothing</a></p>
+{% else %}
+<h1>identity not found</h1>
+<p class="unavailable">No identity with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

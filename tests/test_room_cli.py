@@ -662,3 +662,181 @@ async def test_a_known_password_appears_in_no_room_output_at_all(
     assert room.guest_password_hash is not None
     assert room.guest_password_hash not in everything
     assert "$argon2id$" not in everything
+
+
+# --- Renaming and deleting a room -------------------------------------------
+
+
+class _TypedAnswer:
+    """`sys.stdin` as a terminal, and what the operator typed at it.
+
+    The same stand-in `tests/test_entity_store.py` uses for `keys delete`:
+    faking only `isatty` would hang waiting for a line that never comes.
+    """
+
+    def __init__(self, answer: str, *, a_terminal: bool = True) -> None:
+        self._answer = answer
+        self._a_terminal = a_terminal
+
+    def isatty(self) -> bool:
+        return self._a_terminal
+
+    def readline(self) -> str:
+        return self._answer + "\n"
+
+
+async def _cli_at_terminal(argv: list[str], out: io.StringIO, answer: str) -> int:
+    """`_cli`, but with a stdin that claims to be a terminal.
+
+    The shared helper replaces `sys.stdin` with a `StringIO`, whose `isatty`
+    is False — which is the branch these tests are not testing.
+    """
+    import sys
+
+    def run() -> int:
+        original = sys.stdin
+        sys.stdin = _TypedAnswer(answer)
+        try:
+            return main(argv, out=out)
+        finally:
+            sys.stdin = original
+
+    return await asyncio.to_thread(run)
+
+
+@pytest.mark.database
+async def test_room_rename_reports_both_names_and_states_it_is_local(
+    database: Database, store_environment: str, tmp_path
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+    out = io.StringIO()
+
+    code = await _cli(
+        ["room", "rename", "lounge", "the-study", "--database-url", store_environment], out
+    )
+
+    printed = out.getvalue()
+    assert code == 0, printed
+    assert "lounge -> the-study" in printed
+    assert "not advertised" in printed
+    rooms = await Persistence(database=database).rooms.list_all()
+    assert [record.name for record in rooms.value] == ["the-study"]
+
+
+@pytest.mark.database
+async def test_room_rename_refuses_an_empty_name(
+    database: Database, store_environment: str, tmp_path, capsys
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+
+    code = await _cli(
+        ["room", "rename", "lounge", "   ", "--database-url", store_environment], io.StringIO()
+    )
+
+    assert code == 2
+    assert "cannot be empty" in capsys.readouterr().err
+    rooms = await Persistence(database=database).rooms.list_all()
+    assert [record.name for record in rooms.value] == ["lounge"]
+
+
+@pytest.mark.database
+async def test_room_delete_states_the_counts_and_keeps_the_identity(
+    database: Database, store_environment: str, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+    persistence = Persistence(database=database)
+    room = (await persistence.rooms.list_all()).value[0]
+    await persistence.messages.store(room_id=room.id, author_public_key=b"\x01" * 32, text=b"hello")
+    out = io.StringIO()
+
+    code = await _cli_at_terminal(
+        ["room", "delete", "lounge", "--database-url", store_environment], out, "lounge"
+    )
+
+    printed = out.getvalue()
+    assert code == 0, printed
+    assert "1 stored message(s)" in printed
+    assert "deleted  lounge" in printed
+    assert "'rs-1' was not deleted" in printed
+    assert "serves no room" in printed
+    assert (await persistence.rooms.list_all()).value == []
+    assert [row.name for row in (await persistence.entities.list_all()).value] == ["rs-1"]
+
+
+@pytest.mark.database
+async def test_room_delete_with_no_terminal_and_no_flag_deletes_nothing(
+    database: Database, store_environment: str, tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+    monkeypatch.setattr("sys.stdin", _TypedAnswer("lounge", a_terminal=False))
+
+    code = await _cli(
+        ["room", "delete", "lounge", "--database-url", store_environment], io.StringIO()
+    )
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "--delete-history" in error
+    assert "Nothing was deleted" in error
+    rooms = await Persistence(database=database).rooms.list_all()
+    assert [record.name for record in rooms.value] == ["lounge"]
+
+
+@pytest.mark.database
+async def test_room_delete_refuses_when_the_typed_name_is_wrong(
+    database: Database, store_environment: str, tmp_path, capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+    code = await _cli_at_terminal(
+        ["room", "delete", "lounge", "--database-url", store_environment],
+        io.StringIO(),
+        "the-wrong-name",
+    )
+
+    assert code == 2
+    assert "not confirmed" in capsys.readouterr().err
+    rooms = await Persistence(database=database).rooms.list_all()
+    assert [record.name for record in rooms.value] == ["lounge"]
+
+
+@pytest.mark.database
+async def test_room_delete_accepts_the_flag_where_there_is_no_terminal(
+    database: Database, store_environment: str, tmp_path
+) -> None:
+    identity = await _room_server_identity(store_environment, tmp_path)
+    await _create_room(store_environment, identity)
+    out = io.StringIO()
+
+    code = await _cli(
+        [
+            "room",
+            "delete",
+            "lounge",
+            "--delete-history",
+            "--database-url",
+            store_environment,
+        ],
+        out,
+    )
+
+    assert code == 0, out.getvalue()
+    rooms = await Persistence(database=database).rooms.list_all()
+    assert rooms.value == []
+
+
+@pytest.mark.database
+async def test_deleting_a_room_that_does_not_exist_says_so(
+    database: Database, store_environment: str, capsys
+) -> None:
+    code = await _cli(
+        ["room", "delete", "nowhere", "--delete-history", "--database-url", store_environment],
+        io.StringIO(),
+    )
+
+    assert code == 2
+    assert "no room named 'nowhere'" in capsys.readouterr().err

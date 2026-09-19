@@ -552,3 +552,209 @@ async def test_a_running_bot_links_to_its_identitys_adverts(database: Database) 
     assert f'href="/admin/advert/{stub.entity_id}/zero-hop"' in body
     assert f'href="/admin/advert/{stub.entity_id}/flood"' in body
     assert body.count("/admin/advert/") == 2, "the stopped bot offers advert links"
+
+
+# --- Renaming an identity, and the advert it offers --------------------------
+#
+# The rename and the advert are two outcomes. The rename is applied first so
+# the advert carries the new name, and a refused advert never undoes it.
+
+
+async def _stored_identity(persistence: Persistence, state: StubState, name: str):
+    """A stored identity that this run also holds, so the advert is offered."""
+    stub = next(s for s in state.adverts.stubs if s.name == name)
+    stored = await persistence.entities.store(name=name, identity=stub.identity, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    return stored.value, stub
+
+
+async def _apost(client: httpx2.AsyncClient, app: FastAPI, path: str, **fields: str):
+    return await client.post(path, data={TOKEN_FIELD: csrf(client), **fields})
+
+
+def _kind_nonce(body: str, field: str) -> str:
+    marker = f'name="{field}" value="'
+    start = body.index(marker) + len(marker)
+    return body[start : body.index('"', start)]
+
+
+@pytest.mark.database
+async def test_the_rename_form_states_the_mesh_consequence_and_offers_both_adverts(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    record, _stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, _log, _said, _rec = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{record.id}/rename")).text
+
+    assert "travels in this identity" in body and "adverts" in body
+    assert "keep showing the old name until" in body
+    assert 'value="zero-hop"' in body and 'value="flood"' in body
+    assert 'value="none" checked' in body, "an advert was chosen by default"
+    assert "repeated by every repeater" in body
+    assert 'type="password"' not in body, "a rename asked for a password"
+
+
+@pytest.mark.database
+async def test_renaming_with_no_advert_transmits_nothing(database: Database) -> None:
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    record, stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, _log, _said, recorder = _built(state)
+    before = stub.next_flood_at
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, f"/admin/identities/{record.id}/rename", name="dev-room-2", advert="none"
+        )
+
+    assert response.status_code == 200
+    assert recorder.submissions == [], "a rename put a packet on the air"
+    assert stub.name == "dev-room-2", "the run did not adopt the new name"
+    assert stub.next_flood_at == before, "the schedule moved"
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["dev-room-2"]
+
+
+@pytest.mark.database
+async def test_renaming_with_a_flood_advert_sends_the_new_name(database: Database) -> None:
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    record, stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, log, said, recorder = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{record.id}/rename")).text
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{record.id}/rename",
+            name="dev-room-2",
+            advert="flood",
+            zero_hop_nonce=_kind_nonce(body, "zero_hop_nonce"),
+            flood_nonce=_kind_nonce(body, "flood_nonce"),
+        )
+
+    assert response.status_code == 200
+    assert "One flood advert was submitted" in response.text
+    assert len(recorder.submissions) == 1
+    assert stub.name == "dev-room-2"
+    [audited] = [e for e in log.named("web_guarded_action") if e["action"] == ADVERT_FLOOD]
+    assert audited["outcome"] == "success"
+    assert audited["entity_name"] == "dev-room-2", "the advert carried the old name"
+    assert said, "a successful advert was not stated in the run's own output"
+
+
+@pytest.mark.database
+async def test_a_refused_advert_leaves_the_rename_applied(database: Database) -> None:
+    """The two outcomes are independent, and both are reported."""
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence, transmit_enabled=False)
+    record, stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, log, _said, recorder = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{record.id}/rename")).text
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{record.id}/rename",
+            name="dev-room-2",
+            advert="flood",
+            zero_hop_nonce=_kind_nonce(body, "zero_hop_nonce"),
+            flood_nonce=_kind_nonce(body, "flood_nonce"),
+        )
+
+    assert response.status_code == 200
+    assert "the advert was not sent" in response.text
+    assert (
+        "Transmission is disabled" in response.text or "transmission is disabled" in response.text
+    )
+    assert recorder.submissions == []
+    assert stub.name == "dev-room-2", "the refused advert rolled the rename back"
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["dev-room-2"]
+    refused = [
+        e
+        for e in log.named("web_guarded_action")
+        if e["action"] == ADVERT_FLOOD and e["outcome"] == "refused"
+    ]
+    assert refused, "the refused advert was not recorded as its own event"
+
+
+@pytest.mark.database
+async def test_a_refused_rename_submits_no_advert(database: Database) -> None:
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    record, stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, _log, _said, recorder = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{record.id}/rename")).text
+        response = await _apost(
+            client,
+            app,
+            f"/admin/identities/{record.id}/rename",
+            name="   ",
+            advert="flood",
+            zero_hop_nonce=_kind_nonce(body, "zero_hop_nonce"),
+            flood_nonce=_kind_nonce(body, "flood_nonce"),
+        )
+
+    assert response.status_code == 400
+    assert recorder.submissions == []
+    assert stub.name == "dev-room"
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["dev-room"]
+
+
+@pytest.mark.database
+async def test_a_rename_colliding_with_another_loaded_identity_is_refused(
+    database: Database,
+) -> None:
+    """A keyfile identity is loaded and not stored, so only the run can see this."""
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    record, _stub = await _stored_identity(persistence, state, "dev-room")
+    app, _, _log, _said, recorder = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, f"/admin/identities/{record.id}/rename", name="dev-bot", advert="none"
+        )
+
+    assert response.status_code == 400
+    assert "dev-bot" in response.text
+    assert "may not share a name" in response.text
+    assert recorder.submissions == []
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["dev-room"]
+
+
+@pytest.mark.database
+async def test_an_identity_this_run_does_not_hold_is_offered_no_advert(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    stored = await persistence.entities.store(
+        name="elsewhere", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+    app, _, _log, _said, recorder = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get(f"/admin/identities/{stored.value.id}/rename")).text
+        assert "No advert is offered" in body
+        assert "does not hold that identity" in body
+        response = await _apost(
+            client, app, f"/admin/identities/{stored.value.id}/rename", name="elsewhere-2"
+        )
+
+    assert response.status_code == 200
+    assert recorder.submissions == []
+    listed = await persistence.entities.list_all()
+    assert [row.name for row in listed.value] == ["elsewhere-2"]

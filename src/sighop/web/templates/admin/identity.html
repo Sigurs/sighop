@@ -54,6 +54,22 @@
 <p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
 {% endif %}
 
+<h2>remove</h2>
+{% if serving %}
+<p class="unavailable">
+  <strong>Not offered while this identity is serving {{ serving | join(' and ') }}.</strong>
+  Those rows are deleted with it. Delete them first, and removal becomes
+  available here.
+</p>
+{% else %}
+<p><a href="/admin/identities/{{ record.id }}/remove">remove this identity…</a></p>
+<p class="note">
+  Removal destroys the stored key material and cannot be undone.
+  <strong>Disabling is the reversible action</strong> and is offered on the
+  <a href="/admin/identities">identities</a> page.
+</p>
+{% endif %}
+
 <p><a href="/admin/identities">back to identities</a></p>
 {% endif %}
 {% endblock %}

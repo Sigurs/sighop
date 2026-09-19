@@ -28,6 +28,7 @@ from sighop.config import (
     generate_secret_key,
 )
 from sighop.db.engine import Database, Succeeded
+from sighop.db.persistence import Persistence
 from sighop.keystore import create_keyfile
 from sighop.net.dm import MAX_TEXT_LEN
 from sighop.protocol.identity import generate_identity
@@ -725,3 +726,130 @@ async def test_clearing_state_states_what_the_bot_will_do_again(
     text = out.getvalue()
     assert "cleared 1 keys" in text
     assert "will greet a previously greeted node again" in text
+
+
+# --- Deleting a bot ----------------------------------------------------------
+
+
+class _TypedAnswer:
+    """`sys.stdin` as a terminal, and what the operator typed at it."""
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    def isatty(self) -> bool:
+        return True
+
+    def readline(self) -> str:
+        return self._answer + "\n"
+
+
+async def _cli_at_terminal(argv: list[str], out: io.StringIO, answer: str) -> int:
+    """`_cli`, but with a stdin that claims to be a terminal."""
+    import sys
+
+    def run() -> int:
+        original = sys.stdin
+        sys.stdin = _TypedAnswer(answer)
+        try:
+            return main(argv, out=out)
+        finally:
+            sys.stdin = original
+
+    return await asyncio.to_thread(run)
+
+
+def test_the_bot_noun_has_no_rename_and_says_where_one_lives() -> None:
+    """A bot has no name of its own: it is named by its identity."""
+    parser = build_parser()
+    [bot_action] = [
+        action
+        for action in parser._subparsers._group_actions[0].choices["bot"]._actions
+        if getattr(action, "choices", None)
+    ]
+    assert "rename" not in bot_action.choices
+    assert "delete" in bot_action.choices
+    assert "keys rename" in bot_action.choices["delete"].format_help()
+
+
+@pytest.mark.database
+async def test_bot_delete_states_what_it_forgets_and_keeps_the_identity(
+    database: Database, store_environment: str, tmp_path
+) -> None:
+    name = await _created_bot(store_environment, tmp_path)
+    persistence = Persistence(database=database)
+    record = (await persistence.bots.list_all()).value[0]
+    await persistence.bot_state.set(record.id, "greeted:aa", {})
+    out = io.StringIO()
+
+    code = await _cli_at_terminal(
+        ["bot", "delete", name, "--database-url", store_environment], out, name
+    )
+
+    printed = out.getvalue()
+    assert code == 0, printed
+    assert "1 key(s)" in printed
+    assert "greet a previously greeted node again" in printed
+    assert f"deleted  {name}" in printed
+    assert f"identity '{name}' was not deleted" in printed
+    assert (await persistence.bots.list_all()).value == []
+    assert (await persistence.bot_state.list(record.id)).value == {}
+    assert [row.name for row in (await persistence.entities.list_all()).value] == [name]
+
+
+@pytest.mark.database
+async def test_bot_delete_with_no_terminal_and_no_flag_deletes_nothing(
+    database: Database, store_environment: str, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = await _created_bot(store_environment, tmp_path)
+
+    code = await _cli(["bot", "delete", name, "--database-url", store_environment], io.StringIO())
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "--delete-state" in error
+    assert "Nothing was deleted" in error
+    assert len((await Persistence(database=database).bots.list_all()).value) == 1
+
+
+@pytest.mark.database
+async def test_bot_delete_refuses_when_the_typed_name_is_wrong(
+    database: Database, store_environment: str, tmp_path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = await _created_bot(store_environment, tmp_path)
+
+    code = await _cli_at_terminal(
+        ["bot", "delete", name, "--database-url", store_environment], io.StringIO(), "nope"
+    )
+
+    assert code == 2
+    assert "not confirmed" in capsys.readouterr().err
+    assert len((await Persistence(database=database).bots.list_all()).value) == 1
+
+
+@pytest.mark.database
+async def test_bot_delete_accepts_the_flag_where_there_is_no_terminal(
+    database: Database, store_environment: str, tmp_path
+) -> None:
+    name = await _created_bot(store_environment, tmp_path)
+    out = io.StringIO()
+
+    code = await _cli(
+        ["bot", "delete", name, "--delete-state", "--database-url", store_environment], out
+    )
+
+    assert code == 0, out.getvalue()
+    assert (await Persistence(database=database).bots.list_all()).value == []
+
+
+@pytest.mark.database
+async def test_deleting_a_bot_that_does_not_exist_says_so(
+    database: Database, store_environment: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = await _cli(
+        ["bot", "delete", "nobody", "--delete-state", "--database-url", store_environment],
+        io.StringIO(),
+    )
+
+    assert code == 2
+    assert "no bot named 'nobody'" in capsys.readouterr().err

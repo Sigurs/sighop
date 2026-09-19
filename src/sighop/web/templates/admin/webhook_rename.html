@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block title %}rename webhook · sighop{% endblock %}
+
+{% block content %}
+{% if webhook %}
+<h1>rename webhook: {{ webhook.name }}</h1>
+
+{% if refusal %}
+<p class="unavailable"><strong>Not renamed.</strong> {{ refusal.reason }}</p>
+{% endif %}
+
+<p class="note">
+  The name is a label. This webhook's target
+  (<span class="mono">{{ webhook.url_host }}</span>), its format, its triggers
+  and its hop limit are untouched, so it delivers exactly where it did.
+</p>
+
+<form method="post" action="/admin/webhooks/{{ webhook.id }}/rename">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>new name
+      <input class="mono" type="text" name="name"
+             value="{{ refusal.submitted.name if refusal else webhook.name }}">
+    </label>
+  </p>
+  <button type="submit">rename</button>
+</form>
+<p><a href="/admin/webhooks">cancel, and change nothing</a></p>
+{% else %}
+<h1>webhook not found</h1>
+<p class="unavailable">No webhook with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

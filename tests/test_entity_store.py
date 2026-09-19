@@ -34,9 +34,13 @@ from sighop.config import (
 from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
+    MAX_ENTITY_NAME_BYTES,
     EntityKeyMismatchError,
+    EntityNameError,
+    EntityNameTakenError,
     EntityRepository,
     advert_config_for,
+    parse_entity_name,
 )
 from sighop.db.sealing import (
     SEAL_VERSION,
@@ -53,7 +57,12 @@ from sighop.keystore import (
     create_keyfile,
 )
 from sighop.protocol.identity import LocalIdentity, generate_identity
-from sighop.protocol.payloads import NodeType
+from sighop.protocol.payloads import (
+    GROUP_NAME_SEPARATOR,
+    MAX_ADVERT_DATA_SIZE,
+    NodeType,
+    build_appdata,
+)
 
 SECRET = base64.b64decode(generate_secret_key())
 OTHER_SECRET = base64.b64decode(generate_secret_key())
@@ -111,6 +120,88 @@ def test_keys_secret_prints_a_thirty_two_byte_secret_and_the_warning() -> None:
     assert len(parse_secret_key(value)) == SECRET_KEY_SIZE
     assert "unrecoverable" in printed
     assert "printed once" in printed
+
+
+# --- An identity's name is validated wherever it is set ----------------------
+#
+# Two of these rules are not tidiness. A name holding `GROUP_NAME_SEPARATOR`
+# could never post on a channel, and a name over `MAX_ENTITY_NAME_BYTES` could
+# never advert. Both used to be reachable by creating an identity and only
+# failed later, against the radio.
+
+
+def test_an_empty_identity_name_is_refused() -> None:
+    for empty in ("", "   ", "\t\n"):
+        with pytest.raises(EntityNameError) as excinfo:
+            parse_entity_name(empty)
+        assert "cannot be empty" in str(excinfo.value)
+
+
+def test_an_identity_name_is_stripped_of_surrounding_whitespace() -> None:
+    assert parse_entity_name("  roomy  ") == "roomy"
+
+
+def test_an_identity_name_that_could_never_advert_is_refused() -> None:
+    """`build_appdata` packs the name last into MAX_ADVERT_DATA_SIZE bytes."""
+    assert parse_entity_name("a" * MAX_ENTITY_NAME_BYTES)
+    with pytest.raises(EntityNameError) as excinfo:
+        parse_entity_name("a" * (MAX_ENTITY_NAME_BYTES + 1))
+    assert str(MAX_ENTITY_NAME_BYTES) in str(excinfo.value)
+
+
+def test_the_identity_name_bound_is_counted_in_bytes_and_not_characters() -> None:
+    """A name of legal length in characters can still overflow the appdata."""
+    name = "é" * MAX_ENTITY_NAME_BYTES
+    assert len(name) == MAX_ENTITY_NAME_BYTES
+    with pytest.raises(EntityNameError):
+        parse_entity_name(name)
+
+
+def test_a_name_the_bound_accepts_always_builds_appdata_with_a_location() -> None:
+    """The point of the bound: the worst case still encodes (design D4)."""
+    appdata = build_appdata(
+        NodeType.CHAT,
+        latitude=1,
+        longitude=2,
+        name="a" * MAX_ENTITY_NAME_BYTES,
+    )
+    assert len(appdata) <= MAX_ADVERT_DATA_SIZE
+
+
+def test_an_identity_name_carrying_the_channel_separator_is_refused() -> None:
+    """`check_sender_name` refuses this at post time; refuse it at the source."""
+    with pytest.raises(EntityNameError) as excinfo:
+        parse_entity_name(f"bot{GROUP_NAME_SEPARATOR}one")
+    assert repr(GROUP_NAME_SEPARATOR) in str(excinfo.value)
+    assert "read as the message" in str(excinfo.value)
+
+
+def test_an_identity_name_with_a_control_character_is_refused() -> None:
+    with pytest.raises(EntityNameError) as excinfo:
+        parse_entity_name("roo\x01my")
+    assert "U+0001" in str(excinfo.value)
+
+
+@pytest.mark.database
+async def test_creating_an_identity_applies_the_name_rules(database: Database) -> None:
+    store = EntityRepository(database=database)
+    with pytest.raises(EntityNameError):
+        await store.store(name="   ", identity=generate_identity(), secret=SECRET)
+    with pytest.raises(EntityNameError):
+        await store.store(name="a: b", identity=generate_identity(), secret=SECRET)
+    listed = await store.list_all()
+    assert isinstance(listed, Succeeded)
+    assert listed.value == [], "a refused name stored a row"
+
+
+@pytest.mark.database
+async def test_a_created_identity_is_stored_under_the_stripped_name(
+    database: Database,
+) -> None:
+    store = EntityRepository(database=database)
+    stored = await store.store(name="  roomy  ", identity=generate_identity(), secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    assert stored.value.name == "roomy"
 
 
 # --- 4.4 / 4.5 The entity repository ----------------------------------------
@@ -305,6 +396,136 @@ async def test_the_tolerant_load_still_raises_for_a_mismatched_public_key(
 
     with pytest.raises(EntityKeyMismatchError):
         await store.load_openable(SECRET)
+
+
+# --- Renaming a stored identity ----------------------------------------------
+
+
+async def _one_row(database: Database) -> dict[str, object]:
+    """Every column of the single stored entity, straight from the table."""
+    async with database.sessions() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT name, public_key, node_hash, sealed_private_key, type, "
+                    "advert_config, enabled, created_at FROM entity"
+                )
+            )
+        ).mappings()
+        return dict(row.one())
+
+
+@pytest.mark.database
+async def test_a_rename_changes_the_name_and_nothing_else(database: Database) -> None:
+    """What makes this identity *that* identity is untouched by a rename."""
+    store = EntityRepository(database=database)
+    await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    before = await _one_row(database)
+
+    key = before["public_key"]
+    assert isinstance(key, bytes)
+    renamed = await store.rename(key, "the-lobby")
+
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value == "roomy", "the previous name was not reported"
+    after = await _one_row(database)
+    assert after["name"] == "the-lobby"
+    for column in ("public_key", "node_hash", "sealed_private_key", "type", "created_at"):
+        assert after[column] == before[column], f"{column} changed across a rename"
+
+
+@pytest.mark.database
+async def test_a_rename_needs_no_secret_because_it_opens_nothing(
+    database: Database,
+) -> None:
+    """entity-store: "A rename reads no key material"."""
+    store = EntityRepository(database=database)
+    stored = await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    assert isinstance(stored, Succeeded)
+
+    # No secret is passed, and none is reachable: the call takes none.
+    renamed = await store.rename(stored.value.public_key, "still-here")
+
+    assert isinstance(renamed, Succeeded)
+    opened = await store.load_all(SECRET)
+    assert isinstance(opened, Succeeded)
+    assert opened.value[0].name == "still-here"
+    assert opened.value[0].public_key == stored.value.public_key
+
+
+@pytest.mark.database
+async def test_a_rename_applies_the_name_rules(database: Database) -> None:
+    store = EntityRepository(database=database)
+    stored = await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    assert isinstance(stored, Succeeded)
+
+    for refused in ("  ", "a: b", "n" * (MAX_ENTITY_NAME_BYTES + 1), "ro\x01my"):
+        with pytest.raises(EntityNameError):
+            await store.rename(stored.value.public_key, refused)
+
+    listed = await store.list_all()
+    assert [record.name for record in listed.value] == ["roomy"]
+
+
+@pytest.mark.database
+async def test_a_rename_onto_another_identitys_name_is_refused(database: Database) -> None:
+    store = EntityRepository(database=database)
+    first = await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    await store.store(name="greeter", identity=generate_identity(), secret=SECRET)
+    assert isinstance(first, Succeeded)
+
+    with pytest.raises(EntityNameTakenError) as excinfo:
+        await store.rename(first.value.public_key, "greeter")
+
+    assert "greeter" in str(excinfo.value)
+    assert "nothing was renamed" in str(excinfo.value)
+    listed = await store.list_all()
+    assert sorted(record.name for record in listed.value) == ["greeter", "roomy"]
+
+
+@pytest.mark.database
+async def test_renaming_to_the_name_already_held_is_accepted(database: Database) -> None:
+    """What a resubmitted form does. Refusing it would be a false negative."""
+    store = EntityRepository(database=database)
+    stored = await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    assert isinstance(stored, Succeeded)
+
+    renamed = await store.rename(stored.value.public_key, "  roomy  ")
+
+    assert isinstance(renamed, Succeeded)
+    listed = await store.list_all()
+    assert [record.name for record in listed.value] == ["roomy"]
+
+
+@pytest.mark.database
+async def test_renaming_an_identity_that_is_not_stored_reports_so(
+    database: Database,
+) -> None:
+    renamed = await EntityRepository(database=database).rename(
+        generate_identity().public_key, "nobody"
+    )
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value is None
+
+
+@pytest.mark.database
+async def test_a_rename_leaves_a_bound_room_bound(database: Database) -> None:
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="roomy", identity=generate_identity(), secret=SECRET, node_type=NodeType.ROOM_SERVER
+    )
+    assert isinstance(stored, Succeeded)
+    created = await persistence.rooms.create(
+        entity_id=stored.value.id, name="the-room", admin_password_hash="x" * 60
+    )
+    assert isinstance(created, Succeeded)
+
+    await persistence.entities.rename(stored.value.public_key, "renamed")
+
+    bound = await persistence.rooms.get_for_entity(stored.value.id)
+    assert isinstance(bound, Succeeded)
+    assert bound.value is not None
+    assert bound.value.name == "the-room", "the room followed its identity's rename"
 
 
 # --- Removing a stored identity (design D10) --------------------------------
@@ -1062,6 +1283,11 @@ async def test_an_entity_load_failure_logs_neither_the_seed_nor_the_secret(
         ["keys", "list"],
         ["keys", "import", "missing.json"],
         ["keys", "export", "roomy", "out.json"],
+        ["keys", "rename", "roomy", "renamed"],
+        ["keys", "delete", "roomy", "--delete-key"],
+        ["room", "rename", "lounge", "study"],
+        ["room", "delete", "lounge", "--delete-history"],
+        ["bot", "delete", "greeter-bot", "--delete-state"],
         ["db", "current"],
         ["db", "upgrade"],
     ],
@@ -1120,3 +1346,111 @@ def test_no_command_reads_the_secret_key_around_config() -> None:
                 offenders.append(f"{path.name}:{node.lineno}: {source}")
     allowed = {"migrations.py", "logging.py"}
     assert [entry for entry in offenders if entry.split(":")[0] not in allowed] == []
+
+
+# --- `sighop keys rename` ----------------------------------------------------
+
+
+@pytest.mark.database
+async def test_keys_rename_reports_both_names_and_what_is_on_the_air(
+    database: Database, store_environment: str
+) -> None:
+    store = EntityRepository(database=database)
+    identity = generate_identity()
+    await store.store(name="before", identity=identity, secret=SECRET)
+    out = io.StringIO()
+
+    code = await _cli(
+        ["keys", "rename", "before", "after", "--database-url", store_environment], out
+    )
+
+    printed = out.getvalue()
+    assert code == 0, printed
+    assert "before -> after" in printed
+    assert identity.public_key.hex() in printed
+    assert "travels in the identity's adverts" in printed
+    assert "keep showing the old name until it adverts again" in printed
+    assert "keeps the old name until it restarts" in printed
+    listed = await store.list_all()
+    assert [record.name for record in listed.value] == ["after"]
+
+
+@pytest.mark.database
+async def test_keys_rename_changes_no_key_material(
+    database: Database, store_environment: str
+) -> None:
+    store = EntityRepository(database=database)
+    identity = generate_identity()
+    await store.store(name="before", identity=identity, secret=SECRET)
+    before = await _one_row(database)
+
+    await _cli(
+        ["keys", "rename", "before", "after", "--database-url", store_environment], io.StringIO()
+    )
+
+    after = await _one_row(database)
+    assert after["sealed_private_key"] == before["sealed_private_key"]
+    assert after["public_key"] == before["public_key"]
+    opened = await store.load_all(SECRET)
+    assert opened.value[0].identity.private_key == identity.private_key
+
+
+@pytest.mark.database
+@pytest.mark.parametrize(
+    ("supplied", "expected"),
+    [
+        ("   ", "cannot be empty"),
+        ("a: b", "read as the message"),
+        ("n" * (MAX_ENTITY_NAME_BYTES + 1), "at most 23 bytes"),
+    ],
+)
+async def test_keys_rename_refuses_a_name_the_rules_refuse(
+    database: Database, store_environment: str, capsys, supplied: str, expected: str
+) -> None:
+    store = EntityRepository(database=database)
+    await store.store(name="before", identity=generate_identity(), secret=SECRET)
+
+    code = await _cli(
+        ["keys", "rename", "before", supplied, "--database-url", store_environment], io.StringIO()
+    )
+
+    assert code == 2
+    assert expected in capsys.readouterr().err
+    listed = await store.list_all()
+    assert [record.name for record in listed.value] == ["before"]
+
+
+@pytest.mark.database
+async def test_keys_rename_refuses_a_name_another_identity_holds(
+    database: Database, store_environment: str, capsys
+) -> None:
+    store = EntityRepository(database=database)
+    await store.store(name="before", identity=generate_identity(), secret=SECRET)
+    await store.store(name="taken", identity=generate_identity(), secret=SECRET)
+
+    code = await _cli(
+        ["keys", "rename", "before", "taken", "--database-url", store_environment], io.StringIO()
+    )
+
+    assert code == 2
+    error = capsys.readouterr().err
+    assert "already named 'taken'" in error
+    assert "nothing was renamed" in error
+    listed = await store.list_all()
+    assert sorted(record.name for record in listed.value) == ["before", "taken"]
+
+
+@pytest.mark.database
+async def test_keys_rename_refuses_an_ambiguous_reference(
+    database: Database, store_environment: str, capsys
+) -> None:
+    store = EntityRepository(database=database)
+    await store.store(name="twin", identity=generate_identity(), secret=SECRET)
+    await store.store(name="twin", identity=generate_identity(), secret=SECRET)
+
+    code = await _cli(
+        ["keys", "rename", "twin", "unique", "--database-url", store_environment], io.StringIO()
+    )
+
+    assert code == 2
+    assert "matches 2 identities" in capsys.readouterr().err

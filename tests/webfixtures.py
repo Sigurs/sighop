@@ -82,6 +82,15 @@ class StubState:
     channel_secret: bytes | None = None
     """With `persistence`, `reload_channels` reads the real repository under this."""
 
+    live_renames: list[tuple[bytes, str]] = dataclasses.field(default_factory=list)
+    stopped_rooms: list[uuid.UUID] = dataclasses.field(default_factory=list)
+    stopped_bots: list[uuid.UUID] = dataclasses.field(default_factory=list)
+    """What the panel asked the run to do, so a test can assert it reached it."""
+
+    refuse_live_rename: bool = False
+    refuse_live_stop: bool = False
+    """Drives the branch where the store took the change and the run did not."""
+
     async def reload_channels(self) -> bool:
         self.channel_reloads += 1
         if self.persistence is not None:
@@ -93,6 +102,38 @@ class StubState:
         if self.stored_channels is None:
             return False
         self.channels.replace_channels(self.stored_channels)
+        return True
+
+    def rename_entity(self, public_key: bytes, name: str) -> bool:
+        """What `Runtime.rename_entity` does, on whatever stubs this state holds.
+
+        `live_renames` lets a test assert the panel reached the run at all, and
+        `refuse_live_rename` drives the other branch: the store took the rename
+        and this run did not, which the page has to report as two outcomes.
+        """
+        self.live_renames.append((public_key, name))
+        if self.refuse_live_rename:
+            return False
+        return self.adverts.rename(public_key, name)
+
+    async def stop_serving_room(self, room_id: uuid.UUID) -> bool:
+        self.stopped_rooms.append(room_id)
+        if self.refuse_live_stop:
+            return False
+        server = next((room for room in self.rooms if room.room.id == room_id), None)
+        if server is None:
+            return False
+        self.rooms.remove(server)
+        return True
+
+    async def stop_bot(self, bot_id: uuid.UUID) -> bool:
+        self.stopped_bots.append(bot_id)
+        if self.refuse_live_stop:
+            return False
+        worker = next((worker for worker in self.bots if worker.record.id == bot_id), None)
+        if worker is None:
+            return False
+        self.bots.remove(worker)
         return True
 
 

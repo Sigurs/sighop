@@ -49,6 +49,8 @@
       <td class="mono">{{ 'yes' if channel.id in loaded else 'not yet' }}</td>
       <td>
         <a href="/chat/channel/{{ channel.id }}">open</a>
+        <a href="/admin/channels/{{ channel.id }}/rename">rename</a>
+        ·
         <a href="/admin/channels/{{ channel.id }}/remove">remove</a>
       </td>
     </tr>

@@ -280,6 +280,48 @@ class AdvertScheduler:
             )
         )
 
+    def name_clash(self, public_key: bytes, name: str) -> EntityStub | None:
+        """The other loaded identity already called `name`, if there is one.
+
+        A read with no side effect, so a caller can refuse a rename *before*
+        writing it to the store rather than discovering the collision after.
+        It matters because `entity_id` is the name (`_adopt_entity` passes
+        none, and `add_identity` falls back to it), so two loaded identities
+        sharing one would make an advert request ambiguous between them — and
+        because a keyfile identity is loaded but not stored, the entity store's
+        own duplicate check cannot see this case.
+        """
+        return next(
+            (
+                stub
+                for stub in self.stubs
+                if stub.name == name and stub.identity.public_key != public_key
+            ),
+            None,
+        )
+
+    def rename(self, public_key: bytes, name: str) -> bool:
+        """Change a loaded identity's name in place, reporting whether it was here.
+
+        **In place, deliberately.** `runtime.py` hands `self.adverts.stubs` to
+        the direct messenger, the channel messenger, the room servers and the
+        bot host, so all of them hold these very objects: assigning here is what
+        makes one rename reach the next advert, the next channel post's sender
+        name and every log line at once. Re-registering instead would reset the
+        flood schedule and be refused for colliding with itself.
+
+        `entity_id` moves with the name because that is how `_adopt_entity`
+        formed it. The schedule — `next_flood_at`, the count, any override — is
+        untouched: a rename is not a reason to advert, and must not become one.
+        """
+        stub = next((stub for stub in self.stubs if stub.identity.public_key == public_key), None)
+        if stub is None:
+            return False
+        if stub.entity_id == stub.name:
+            stub.entity_id = name
+        stub.name = name
+        return True
+
     def _register(self, stub: EntityStub) -> EntityStub:
         self.stubs.append(stub)
         self._stagger(stub)

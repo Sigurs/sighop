@@ -40,6 +40,7 @@ from sighop.db.repositories import (
     BotRecord,
     EntityExistsError,
     EntityLoadError,
+    EntityNameError,
     EntityRecord,
     EntityRoleError,
     LoadedEntity,
@@ -62,12 +63,20 @@ from sighop.protocol.identity import (
 )
 from sighop.protocol.payloads import NodeType
 from sighop.web.deps import Panel, panel
-from sighop.web.guarded import ACTION_DESCRIPTIONS, EXPORT_KEY, audit
+from sighop.web.guarded import (
+    ACTION_DESCRIPTIONS,
+    ADVERT_FLOOD,
+    ADVERT_ZERO_HOP,
+    EXPORT_KEY,
+    REMOVE_IDENTITY,
+    audit,
+)
 from sighop.web.render import (
     NO_DATABASE,
     Refusal,
     collection_for,
     refused,
+    render_advert_request,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -93,17 +102,20 @@ DOWNLOAD_IS_NOT_OWNER_ONLY = (
 """Design D2. Stated at the point of export and on the identities page, because
 it is the one respect in which the two surfaces genuinely differ."""
 
-REMOVAL_IS_A_TERMINAL_COMMAND = (
-    "Removing a stored identity is not offered here. Disabling one is the "
-    "reversible action this page gives you: it stops the identity being loaded "
-    "and can be undone. Removal cannot — the identity is gone unless you hold "
-    "its private key elsewhere, and it is refused outright for an identity a "
-    "room or a bot is bound to, because those are deleted with it. It lives "
-    "where the other irreversible act does: `sighop keys delete`."
+REMOVAL_IS_OFFERED_HERE = (
+    "Removing a stored identity is offered here, per identity, and it is "
+    "irreversible: the identity is gone unless you hold its private key "
+    "elsewhere. It asks for your password and for the identity's name typed "
+    "out, and it is refused outright for an identity a room or a bot is bound "
+    "to, because those are deleted with it — delete them first. "
+    "Disabling is the reversible action offered alongside it: it stops the "
+    "identity being loaded and can be undone at any time."
 )
-"""`web-admin`: named where an operator would look for it, next to the other
-capabilities this build deliberately keeps in a terminal. Added with
-`keys delete` itself (create-entity-with-known-key, design D10)."""
+"""`web-admin`: this used to name `sighop keys delete` and say removal was not
+offered in the browser. The change `web-delete-and-rename` withdrew that
+exclusion, so this says what the action is and what it costs instead. The other
+four exclusions — migrations, the sealing secret, accounts and channel
+pre-shared keys — are unchanged and still stated where they are looked for."""
 
 SECRET_IS_A_TERMINAL_COMMAND = (
     "The secret that seals stored identities is not generated here. It is "
@@ -155,7 +167,7 @@ async def identities(
         no_sealing_secret=NO_SEALING_SECRET,
         download_note=DOWNLOAD_IS_NOT_OWNER_ONLY,
         secret_note=SECRET_IS_A_TERMINAL_COMMAND,
-        removal_note=REMOVAL_IS_A_TERMINAL_COMMAND,
+        removal_note=REMOVAL_IS_OFFERED_HERE,
         status_code=status_code,
     )
 
@@ -261,7 +273,7 @@ async def create_identity(
             entity_type=BOT_ENTITY_TYPE if as_bot else None,
             advert_config=advert_config_for(NodeType.CHAT) if as_bot else None,
         )
-    except (EntityExistsError, EntityRoleError) as exc:
+    except (EntityExistsError, EntityRoleError, EntityNameError) as exc:
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
@@ -319,7 +331,7 @@ async def import_identity(
             entity_type=BOT_ENTITY_TYPE if as_bot else None,
             advert_config=advert_config_for(NodeType.CHAT) if as_bot else None,
         )
-    except (EntityExistsError, EntityRoleError) as exc:
+    except (EntityExistsError, EntityRoleError, EntityNameError) as exc:
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
@@ -394,6 +406,359 @@ async def _entity(page: Panel, entity_id: str) -> EntityRecord | None:
         if str(record.id) == entity_id:
             return record
     return None
+
+
+# --- Renaming and removing a stored identity ----------------------------------
+
+
+RENAME_IS_ON_THE_AIR = (
+    "This name travels in this identity's adverts and is the sender name of "
+    "every channel post it makes. Neighbours keep showing the old name until "
+    "it adverts again."
+)
+
+ADVERT_KINDS = {"zero-hop": ADVERT_ZERO_HOP, "flood": ADVERT_FLOOD}
+
+
+@router.get("/{entity_id}/rename", response_class=HTMLResponse)
+async def rename_form(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """The rename, with the advert offer that makes the new name propagate.
+
+    One nonce per advert kind is minted here rather than one for the choice,
+    because the choice is not known until the form is submitted; the handler
+    spends only the one the operator picked.
+    """
+    record = await _entity(page, entity_id)
+    stub = _stub_for(page, record)
+    return page.page(
+        request,
+        "admin/identity_rename.html",
+        record=record,
+        loaded=stub is not None,
+        on_the_air=RENAME_IS_ON_THE_AIR,
+        not_held=NOT_HELD_HERE,
+        zero_hop_description=ACTION_DESCRIPTIONS[ADVERT_ZERO_HOP],
+        flood_description=ACTION_DESCRIPTIONS[ADVERT_FLOOD],
+        next_flood_at=None if stub is None else stub.next_flood_at,
+        zero_hop_nonce=(
+            None if stub is None else page.nonces.mint(ADVERT_ZERO_HOP, stub.entity_id)
+        ),
+        flood_nonce=None if stub is None else page.nonces.mint(ADVERT_FLOOD, stub.entity_id),
+        refusal=None,
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/{entity_id}/rename", response_model=None)
+async def rename_identity(
+    request: Request,
+    entity_id: str,
+    page: PanelDep,
+    name: Annotated[str, Form()] = "",
+    advert: Annotated[str, Form()] = "none",
+    zero_hop_nonce: Annotated[str, Form()] = "",
+    flood_nonce: Annotated[str, Form()] = "",
+) -> HTMLResponse:
+    """Rename, then offer the advert. In that order, and independently.
+
+    The rename is applied first so the advert carries the new name, and a
+    refused advert never rolls it back — the two outcomes are reported
+    separately because they are two things that either happened or did not.
+    No nonce and no password guard the rename itself: it is reversible by
+    renaming back (design D6).
+    """
+    record = await _entity(page, entity_id)
+    if record is None or page.persistence is None:
+        return await rename_form(entity_id, request, page)
+
+    def refuse(reason: str) -> HTMLResponse:
+        return page.page(
+            request,
+            "admin/identity_rename.html",
+            record=record,
+            loaded=_stub_for(page, record) is not None,
+            on_the_air=RENAME_IS_ON_THE_AIR,
+            not_held=NOT_HELD_HERE,
+            zero_hop_description=ACTION_DESCRIPTIONS[ADVERT_ZERO_HOP],
+            flood_description=ACTION_DESCRIPTIONS[ADVERT_FLOOD],
+            next_flood_at=None,
+            zero_hop_nonce=None,
+            flood_nonce=None,
+            refusal=Refusal(reason=reason, submitted={"name": name}),
+            status_code=400,
+        )
+
+    # Refused before the store is touched: a keyfile identity is loaded and not
+    # stored, so the repository's own duplicate check cannot see this one.
+    clash = page.state.adverts.name_clash(record.public_key, name.strip())
+    if clash is not None:
+        return refuse(
+            f"the identity {clash.name!r} loaded by this run is already called "
+            f"{name.strip()!r}; two loaded identities may not share a name, and "
+            "nothing was renamed"
+        )
+    try:
+        renamed = await page.persistence.entities.rename(record.public_key, name)
+    except EntityNameError as exc:
+        return refuse(str(exc))
+    if isinstance(renamed, Failed) or renamed.value is None:
+        return refuse("the identity could not be renamed")
+
+    previous = renamed.value
+    applied = name.strip()
+    reached_the_run = page.state.rename_entity(record.public_key, applied)
+    page.logger.info(
+        "web_identity_renamed",
+        outcome="success",
+        entity_id=entity_id,
+        previous_name=previous,
+        name=applied,
+        reached_the_run=reached_the_run,
+        actor=page.actor(request),
+    )
+
+    advert_outcome = await _advert_after_rename(
+        request, page, entity_id, applied, advert, zero_hop_nonce, flood_nonce
+    )
+    return page.page(
+        request,
+        "admin/identity_renamed.html",
+        record=record,
+        previous=previous,
+        new_name=applied,
+        reached_the_run=reached_the_run,
+        on_the_air=RENAME_IS_ON_THE_AIR,
+        advert=advert if advert in ADVERT_KINDS else None,
+        advert_outcome=advert_outcome,
+    )
+
+
+async def _advert_after_rename(
+    request: Request,
+    page: Panel,
+    entity_id: str,
+    name: str,
+    kind: str,
+    zero_hop_nonce: str,
+    flood_nonce: str,
+) -> str | None:
+    """Submit the advert the operator chose, or say why it was not submitted.
+
+    Returns `None` when none was asked for. Every refusal is the one the
+    standalone confirmation would give, because `advert_refusal` is the same
+    function both call, and each is audited as its own event exactly as a
+    standalone advert is.
+    """
+    from sighop.web.routes.admin import advert_refusal
+
+    action = ADVERT_KINDS.get(kind)
+    if action is None:
+        return None
+    actor = page.actor(request)
+    stub = next(
+        (
+            stub
+            for stub in page.state.adverts.stubs
+            if stub.name == name or stub.entity_id == entity_id
+        ),
+        None,
+    )
+
+    def refused(reason: str, **fields: object) -> str:
+        audit(
+            page.logger,
+            action=action,
+            target=entity_id,
+            outcome="refused",
+            actor=actor,
+            reason=reason,
+            **fields,
+        )
+        return reason
+
+    if stub is None:
+        return refused(NOT_HELD_HERE)
+    nonce = zero_hop_nonce if action == ADVERT_ZERO_HOP else flood_nonce
+    if not page.nonces.spend(nonce, action, stub.entity_id):
+        return refused("no confirmation was minted for this action", entity_name=stub.name)
+    refusal = advert_refusal(page, stub, action)
+    if refusal is not None:
+        reason, fields = refusal
+        return refused(reason, entity_name=stub.name, **fields)
+
+    if action == ADVERT_FLOOD:
+        page.state.adverts.request_flood(stub)
+    else:
+        page.state.adverts.request_zero_hop(stub)
+    audit(
+        page.logger,
+        action=action,
+        target=entity_id,
+        outcome="success",
+        actor=actor,
+        entity_name=stub.name,
+        next_flood_at=None if stub.next_flood_at is None else stub.next_flood_at.isoformat(),
+    )
+    page.say(render_advert_request(kind, stub.name, actor=actor, next_flood_at=stub.next_flood_at))
+    return None
+
+
+NOT_HELD_HERE = "this run does not hold that identity, so there is nothing to advert as"
+
+
+def _stub_for(page: Panel, record: EntityRecord | None):  # type: ignore[no-untyped-def]
+    if record is None:
+        return None
+    for stub in page.state.adverts.stubs:
+        if stub.identity.public_key == record.public_key:
+            return stub
+    return None
+
+
+@router.get("/{entity_id}/remove", response_class=HTMLResponse)
+async def remove_form(entity_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """The confirmation in front of a removal. States what it costs.
+
+    The refusal for a bound identity is decided here as well as on submission,
+    so an operator sees what the identity serves before typing anything rather
+    than after.
+    """
+    record = await _entity(page, entity_id)
+    serving = _serving(await _bindings_for(page), entity_id)
+    return page.page(
+        request,
+        "admin/identity_remove.html",
+        record=record,
+        serving=serving,
+        loaded=_is_loaded(page, record),
+        description=ACTION_DESCRIPTIONS[REMOVE_IDENTITY],
+        refusal=None,
+        nonce=(None if record is None or serving else page.nonces.mint(REMOVE_IDENTITY, entity_id)),
+        status_code=200 if record is not None else 404,
+    )
+
+
+@router.post("/{entity_id}/remove", response_model=None)
+async def remove_identity(
+    entity_id: str,
+    request: Request,
+    page: PanelDep,
+    nonce: Annotated[str, Form()] = "",
+    password: Annotated[str | None, Form()] = None,
+    confirm_name: Annotated[str, Form()] = "",
+) -> RedirectResponse | HTMLResponse:
+    """`sighop keys delete`'s own call, at the tier reveal and export are in.
+
+    Three gates, not one: the nonce, the operator's password, and the identity's
+    name typed out — the last because the command line asks for it and this
+    destroys the same thing in the same unrecoverable way. The refusal for a
+    bound identity is the repository's rule, applied here in the command line's
+    own words.
+    """
+    from urllib.parse import quote
+
+    title = "remove an identity"
+    actor = page.actor(request)
+    record = await _entity(page, entity_id)
+    if record is None or not page.nonces.spend(nonce, REMOVE_IDENTITY, entity_id):
+        audit(
+            page.logger,
+            action=REMOVE_IDENTITY,
+            target=entity_id,
+            outcome="refused",
+            actor=actor,
+            reason="no confirmation was minted for this action",
+        )
+        return page.page(request, "admin/refused.html", title=title, status_code=403)
+    refusal = await page.reauthenticate(
+        request,
+        action=REMOVE_IDENTITY,
+        target=entity_id,
+        password=password,
+        title=title,
+        entity_name=record.name,
+    )
+    if refusal is not None:
+        return refusal
+
+    serving = _serving(await _bindings_for(page), entity_id)
+    if serving:
+        reason = (
+            f"identity {record.name!r} is serving {' and '.join(serving)}, which "
+            "would be deleted with it. Remove them first; nothing was removed"
+        )
+        return await _refuse_removal(request, page, record, serving, reason, entity_id, actor)
+    if confirm_name.strip() != record.name:
+        return await _refuse_removal(
+            request,
+            page,
+            record,
+            serving,
+            f"that is not the identity's name; type {record.name!r} to remove it. "
+            "Nothing was removed",
+            entity_id,
+            actor,
+        )
+    if page.persistence is None:
+        return await _refuse_removal(request, page, record, serving, NO_DATABASE, entity_id, actor)
+
+    removed = await page.persistence.entities.remove(record.public_key)
+    if isinstance(removed, Failed) or not removed.value:
+        reason = str(removed.error) if isinstance(removed, Failed) else "no such identity"
+        return await _refuse_removal(request, page, record, serving, reason, entity_id, actor)
+    audit(
+        page.logger,
+        action=REMOVE_IDENTITY,
+        target=entity_id,
+        outcome="success",
+        actor=actor,
+        entity_name=record.name,
+        public_key=record.public_key.hex(),
+    )
+    page.say(
+        f"identity {record.name!r} ({record.public_key.hex()[:16]}) removed from "
+        f"the web interface by account {actor!r}"
+    )
+    return RedirectResponse(
+        f"/admin/identities?removed={quote(record.name)}", status_code=SEE_OTHER
+    )
+
+
+async def _refuse_removal(
+    request: Request,
+    page: Panel,
+    record: EntityRecord,
+    serving: list[str],
+    reason: str,
+    entity_id: str,
+    actor: str,
+) -> HTMLResponse:
+    """One exit for every refusal after the nonce: recorded, then re-rendered.
+
+    The nonce is already spent by the time any of these are reached, so the
+    page mints a fresh one — a refused attempt must not leave a live
+    confirmation behind, and must not make the operator start over either.
+    """
+    audit(
+        page.logger,
+        action=REMOVE_IDENTITY,
+        target=entity_id,
+        outcome="refused",
+        actor=actor,
+        reason=reason,
+        entity_name=record.name,
+    )
+    return page.page(
+        request,
+        "admin/identity_remove.html",
+        record=record,
+        serving=serving,
+        loaded=_is_loaded(page, record),
+        description=ACTION_DESCRIPTIONS[REMOVE_IDENTITY],
+        refusal=Refusal(reason=reason, submitted={}),
+        nonce=None if serving else page.nonces.mint(REMOVE_IDENTITY, entity_id),
+        status_code=409,
+    )
 
 
 # --- 3. Exporting, which is a guarded action ----------------------------------

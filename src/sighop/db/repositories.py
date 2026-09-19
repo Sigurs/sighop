@@ -66,6 +66,8 @@ from sighop.net.paths import LearnedPath, PathKey
 from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, ChannelKey, channel_key_from_hashtag
 from sighop.protocol.identity import LocalIdentity
 from sighop.protocol.payloads import (
+    GROUP_NAME_SEPARATOR,
+    MAX_ADVERT_DATA_SIZE,
     PERMISSION_ROLE_MASK,
     NodeType,
     Permission,
@@ -126,6 +128,33 @@ class EntityKeyMismatchError(EntityLoadError):
 
 class EntityExistsError(RuntimeError):
     """An identity with this public key is already stored. Names the existing one."""
+
+
+class EntityNameError(ValueError):
+    """A name an identity cannot be stored under. Says which rule it broke.
+
+    A `ValueError` like `ChannelConfigError` and `WebhookConfigError`, and for
+    the same reason: it is a refusal of what was asked, not a failure of the
+    store, and every surface renders it by its message.
+    """
+
+
+class EntityNameTakenError(EntityNameError):
+    """Another stored identity already holds this name. Names it.
+
+    Only renaming raises this. Creating a duplicate name stays allowed —
+    `_one_identity` resolves an ambiguous reference by asking for a longer
+    public-key prefix, so duplicates are a state the store is built to survive,
+    and refusing them at creation would reject stores that already hold one.
+    """
+
+
+class RoomNameError(ValueError):
+    """A name a room cannot be stored under. Says which rule it broke."""
+
+
+class RoomNameTakenError(RoomNameError):
+    """Another room already holds this name. Names it."""
 
 
 class EntityRoleError(RuntimeError):
@@ -212,6 +241,79 @@ class OpenedEntities:
     stranded: tuple[str, ...] = ()
 
 
+MAX_ENTITY_NAME_BYTES = MAX_ADVERT_DATA_SIZE - 9
+"""How long an identity's name may be, in UTF-8 bytes.
+
+An advert's appdata is `MAX_ADVERT_DATA_SIZE` bytes and the name is the last
+thing packed into it, after a flags byte and, when the identity has one, eight
+bytes of latitude and longitude. A name that fits whatever else the appdata
+carries is therefore at most that much — bounded here rather than at
+`build_appdata`, because a name that cannot advert is one that should never
+have been stored.
+"""
+
+
+def parse_entity_name(value: str) -> str:
+    """An identity name every surface can carry, or the reason it cannot.
+
+    Two of these rules are not tidiness. `GROUP_NAME_SEPARATOR` is what a
+    channel post puts between the sender's name and the text, and a receiver
+    splits at the first one — a name holding it would have part of itself read
+    as the message, which `check_sender_name` refuses at post time. And a name
+    over `MAX_ENTITY_NAME_BYTES` makes `build_appdata` raise when the identity
+    adverts. Both were reachable by creating an identity and only failed later,
+    against the radio; they are refused here, where the name is chosen.
+    """
+    name = value.strip()
+    if not name:
+        raise EntityNameError("an identity name cannot be empty")
+    encoded = len(name.encode("utf-8"))
+    if encoded > MAX_ENTITY_NAME_BYTES:
+        raise EntityNameError(
+            f"an identity name is at most {MAX_ENTITY_NAME_BYTES} bytes, because it "
+            f"has to fit an advert's appdata beside a location; this one is {encoded}"
+        )
+    if GROUP_NAME_SEPARATOR in name:
+        raise EntityNameError(
+            f"an identity name cannot contain {GROUP_NAME_SEPARATOR!r}: a channel post "
+            "puts it between the sender's name and the text, and a receiver splits at "
+            "the first one, so part of the name would be read as the message"
+        )
+    for character in name:
+        if unicodedata.category(character).startswith("C"):
+            raise EntityNameError(
+                "an identity name cannot contain control or unassigned characters "
+                f"(found U+{ord(character):04X})"
+            )
+    return name
+
+
+MAX_ROOM_NAME_LENGTH = 64
+"""A room's name is a local label, so this bounds a column rather than a packet."""
+
+
+def parse_room_name(value: str) -> str:
+    """A room name, on the terms `parse_entity_name` sets minus the mesh ones.
+
+    A room's name is never advertised and never carried in a login response, so
+    neither the appdata bound nor the channel separator applies to it.
+    """
+    name = value.strip()
+    if not name:
+        raise RoomNameError("a room name cannot be empty")
+    if len(name) > MAX_ROOM_NAME_LENGTH:
+        raise RoomNameError(
+            f"a room name is at most {MAX_ROOM_NAME_LENGTH} characters; this one is {len(name)}"
+        )
+    for character in name:
+        if unicodedata.category(character).startswith("C"):
+            raise RoomNameError(
+                "a room name cannot contain control or unassigned characters "
+                f"(found U+{ord(character):04X})"
+            )
+    return name
+
+
 def advert_config_for(
     node_type: NodeType | int,
     *,
@@ -276,6 +378,7 @@ class EntityRepository:
         it is how two surfaces end up disagreeing. The unique constraint stays
         the backstop — this check loses a race and the constraint does not.
         """
+        checked_name = parse_entity_name(name)
         if entity_type == BOT_ENTITY_TYPE and int(node_type) != int(NodeType.CHAT):
             raise EntityRoleError(
                 f"this identity adverts as {_node_type_name(node_type)}; a bot "
@@ -293,7 +396,7 @@ class EntityRepository:
         record = EntityRecord(
             id=uuid.uuid4(),
             type=entity_type or entity_type_for(node_type),
-            name=name,
+            name=checked_name,
             public_key=identity.public_key,
             node_hash=identity.node_hash,
             advert_config=advert_config or advert_config_for(node_type),
@@ -434,6 +537,58 @@ class EntityRepository:
             return True
 
         return await self.database.run("set_entity_enabled", work)
+
+    async def rename(self, public_key: bytes, name: str) -> Outcome[str | None]:
+        """Change one identity's name, returning the name it had, or `None`.
+
+        Touches the name column and nothing else. The public key, node hash,
+        sealed key material, type, advert configuration and creation time are
+        what make this identity *that* identity, and a rename changes none of
+        them — which is also why it needs no secret: nothing here opens or
+        rewrites what is sealed.
+
+        The duplicate check is here, where `store()`'s public-key check is, so
+        that both surfaces meet it without either remembering to ask. It refuses
+        a name another *stored* row holds; creating a duplicate stays allowed
+        (see `EntityNameTakenError`), and the run's own rule about two *loaded*
+        identities sharing a name belongs to the runtime, which is the only
+        place that knows what is loaded.
+        """
+        checked = parse_entity_name(name)
+        # Refused *before* `run`, where `store()` refuses a duplicate public key
+        # and for the same reason: `run` turns every exception into a `Failed`
+        # and marks the database degraded, so a refusal raised inside it would
+        # be reported as the store having broken.
+        listed = await self.list_all()
+        if isinstance(listed, Failed):
+            return listed
+        current = next((record for record in listed.value if record.public_key == public_key), None)
+        if current is None:
+            return Succeeded(value=None)
+        if current.name == checked:
+            return Succeeded(value=checked)
+        clash = next(
+            (
+                record
+                for record in listed.value
+                if record.name == checked and record.public_key != public_key
+            ),
+            None,
+        )
+        if clash is not None:
+            raise EntityNameTakenError(
+                f"the identity {clash.public_key.hex()[:16]} is already named "
+                f"{checked!r}; identities are named one exactly on the command "
+                "line, and nothing was renamed"
+            )
+
+        async def work(session: object) -> str | None:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(EntityRow).where(EntityRow.public_key == public_key).values(name=checked)
+            )
+            return current.name if result.rowcount else None
+
+        return await self.database.run("rename_entity", work)
 
     async def remove(self, public_key: bytes) -> Outcome[bool]:
         """Delete one stored identity, reporting whether a row went.
@@ -1038,7 +1193,7 @@ class RoomRepository:
         record = RoomRecord(
             id=uuid.uuid4(),
             entity_id=entity_id,
-            name=name,
+            name=parse_room_name(name),
             admin_password_hash=admin_password_hash,
             guest_password_hash=guest_password_hash,
             guest_open=guest_open,
@@ -1177,6 +1332,74 @@ class RoomRepository:
             return bool(result.rowcount)
 
         return await self.database.run("set_room_retention", work)
+
+    async def rename(self, room_id: uuid.UUID, name: str) -> Outcome[str | None]:
+        """Change one room's name, returning the name it had, or `None`.
+
+        A room's name is a local label: it is not advertised — the identity the
+        room is bound to carries the name the mesh sees — and a login response
+        does not hold it either. So this changes what an operator reads and
+        nothing a member could observe.
+
+        The duplicate check has no unique constraint behind it, unlike a
+        channel's or a webhook's; `room.name` is a plain column. It is enforced
+        here because `sighop room show` and the rest of that surface address a
+        room by name.
+        """
+        checked = parse_room_name(name)
+        # Refused before `run`, which turns an exception into a `Failed` and
+        # marks the database degraded — see `EntityRepository.rename`.
+        listed = await self.list_all()
+        if isinstance(listed, Failed):
+            return listed
+        current = next((record for record in listed.value if record.id == room_id), None)
+        if current is None:
+            return Succeeded(value=None)
+        if current.name == checked:
+            return Succeeded(value=checked)
+        clash = next(
+            (record for record in listed.value if record.name == checked and record.id != room_id),
+            None,
+        )
+        if clash is not None:
+            raise RoomNameTakenError(
+                f"a room named {checked!r} already exists ({clash.id}); rooms are "
+                "named one exactly on the command line, and nothing was renamed"
+            )
+
+        async def work(session: object) -> str | None:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(RoomRow).where(RoomRow.id == room_id).values(name=checked)
+            )
+            return current.name if result.rowcount else None
+
+        return await self.database.run("rename_room", work)
+
+    async def delete(self, room_id: uuid.UUID) -> Outcome[bool]:
+        """Delete one room, reporting whether a row went.
+
+        `room_member.room_id` and `message.room_id` are `ON DELETE CASCADE`, so
+        this takes the room's membership and its whole history with it and says
+        nothing about how much that was — which is exactly why every caller
+        counts first and states the cost before asking for this.
+
+        The identity is *not* touched. `room.entity_id` cascades from the entity
+        and not towards it, so the identity outlives its room, unbound and free
+        to carry a new one.
+        """
+
+        async def work(session: object) -> bool:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow).where(RoomRow.id == room_id)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            await session.delete(row)  # type: ignore[attr-defined]
+            return True
+
+        return await self.database.run("delete_room", work)
 
 
 def _room(row: RoomRow) -> RoomRecord:
@@ -1741,6 +1964,30 @@ class BotRepository:
         so a merge here would be a second, silent policy.
         """
         return await self._update(bot_id, "set_bot_config", config=dict(config))
+
+    async def delete(self, bot_id: uuid.UUID) -> Outcome[bool]:
+        """Delete one bot, reporting whether a row went.
+
+        `bot_state.bot_id` is `ON DELETE CASCADE`, so everything the bot has
+        persisted goes with it — for a greeter, every record of who has been
+        greeted. That is silent here, which is why a caller counts the keys and
+        says what they record before asking for this.
+
+        The identity is not touched: it outlives its bot, unbound.
+        """
+
+        async def work(session: object) -> bool:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(BotRow).where(BotRow.id == bot_id)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            await session.delete(row)  # type: ignore[attr-defined]
+            return True
+
+        return await self.database.run("delete_bot", work)
 
     async def _update(self, bot_id: uuid.UUID, operation: str, **values: object) -> Outcome[bool]:
         async def work(session: object) -> bool:
@@ -2683,6 +2930,39 @@ class WebhookRepository:
             return outcome
         return Succeeded(parsed.url_host if outcome.value else None)
 
+    async def rename(self, webhook_id: uuid.UUID, name: str) -> Outcome[str | None]:
+        """Change one webhook's name, returning the name it had, or `None`.
+
+        The sealed URL, the format, the triggers and the hop limit are
+        untouched, so a renamed webhook delivers where it always did. The clash
+        is checked here so the refusal can name it, as `create` does; the unique
+        constraint stays the backstop for the race this check loses.
+        """
+        checked = parse_name(name)
+        # Refused before `run`, as `create` refuses a clash — see
+        # `EntityRepository.rename` for why that boundary matters.
+        current = await self.get_by_id(webhook_id)
+        if isinstance(current, Failed):
+            return current
+        if current.value is None:
+            return Succeeded(value=None)
+        if current.value.name == checked:
+            return Succeeded(value=checked)
+        existing = await self.get_by_name(checked)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise WebhookExistsError(
+                f"a webhook named {checked!r} already exists; nothing was renamed"
+            )
+        previous = current.value.name
+
+        async def work(session: object) -> str | None:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(WebhookRow).where(WebhookRow.id == webhook_id).values(name=checked)
+            )
+            return previous if result.rowcount else None
+
+        return await self.database.run("rename_webhook", work)
+
     async def remove(self, webhook_id: uuid.UUID) -> Outcome[bool]:
         async def work(session: object) -> bool:
             result = await session.execute(  # type: ignore[attr-defined]
@@ -2997,6 +3277,39 @@ class ChannelRepository:
             return {int(channel_id): int(count) for channel_id, count in rows}
 
         return await self.database.run("count_messages_per_channel", work)
+
+    async def rename(self, channel_id: int, name: str) -> Outcome[str | None]:
+        """Change one channel's name, returning the name it had, or `None`.
+
+        The name is a label and not a key. A `psk` channel's key is sealed in
+        its own column and a `hashtag` or `public` channel derives its key from
+        its *hashtag*, never from this — so renaming changes neither the key nor
+        `channel_hash`, and the channel goes on decrypting exactly what it did.
+        """
+        checked = parse_channel_name(name)
+        # Refused before `run`, as `_add` refuses a clash — see
+        # `EntityRepository.rename` for why that boundary matters.
+        current = await self.get_by_id(channel_id)
+        if isinstance(current, Failed):
+            return current
+        if current.value is None:
+            return Succeeded(value=None)
+        if current.value.name == checked:
+            return Succeeded(value=checked)
+        existing = await self.get(checked)
+        if isinstance(existing, Succeeded) and existing.value is not None:
+            raise ChannelExistsError(
+                f"a channel named {checked!r} already exists; nothing was renamed"
+            )
+        previous = current.value.name
+
+        async def work(session: object) -> str | None:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(ChannelRow).where(ChannelRow.id == channel_id).values(name=checked)
+            )
+            return previous if result.rowcount else None
+
+        return await self.database.run("rename_channel", work)
 
     async def remove(self, channel_id: int) -> Outcome[int | None]:
         """Delete a channel and, by cascade, its history.

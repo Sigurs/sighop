@@ -175,3 +175,86 @@ async def test_outcome_columns_update(database: Database) -> None:
 async def test_persistence_exposes_the_repository(database: Database) -> None:
     persistence = Persistence(database=database)
     assert isinstance(persistence.webhooks, WebhookRepository)
+
+
+# --- Renaming a webhook ------------------------------------------------------
+
+
+@pytest.mark.database
+async def test_renaming_a_webhook_changes_the_name_and_nothing_else(
+    database: Database,
+) -> None:
+    hooks = WebhookRepository(database=database)
+    created = await _create(hooks, max_hops=3)
+    async with database.sessions() as session:
+        before = bytes(
+            (await session.execute(select(WebhookRow).where(WebhookRow.id == created.id)))
+            .scalar_one()
+            .sealed_url
+        )
+
+    renamed = await hooks.rename(created.id, "ops-hook")
+
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value == "dev-hook", "the previous name was not reported"
+    after = _value(await hooks.get_by_id(created.id))
+    assert after is not None
+    assert after.name == "ops-hook"
+    assert after.url_host == created.url_host
+    assert after.format == created.format
+    assert after.triggers == created.triggers
+    assert after.max_hops == 3
+    assert after.enabled is created.enabled
+    async with database.sessions() as session:
+        row = (
+            await session.execute(select(WebhookRow).where(WebhookRow.id == created.id))
+        ).scalar_one()
+    assert bytes(row.sealed_url) == before, "the sealed URL changed across a rename"
+
+
+@pytest.mark.database
+async def test_a_renamed_webhook_still_opens_the_same_url(database: Database) -> None:
+    hooks = WebhookRepository(database=database)
+    created = await _create(hooks)
+
+    await hooks.rename(created.id, "ops-hook")
+
+    opened = _value(await hooks.open_url(created.id, SECRET))
+    assert opened is not None
+    assert opened.url == URL
+
+
+@pytest.mark.database
+async def test_renaming_a_webhook_onto_a_name_in_use_is_refused(database: Database) -> None:
+    hooks = WebhookRepository(database=database)
+    created = await _create(hooks, name="dev-hook")
+    await _create(hooks, name="ops-hook")
+
+    with pytest.raises(WebhookExistsError, match="named 'ops-hook' already exists"):
+        await hooks.rename(created.id, "ops-hook")
+
+    assert sorted(record.name for record in _value(await hooks.list_all())) == [
+        "dev-hook",
+        "ops-hook",
+    ]
+
+
+@pytest.mark.database
+async def test_renaming_a_webhook_applies_the_name_rules(database: Database) -> None:
+    hooks = WebhookRepository(database=database)
+    created = await _create(hooks)
+
+    for refused in ("  ", "has space", "a\x01b"):
+        with pytest.raises(WebhookConfigError):
+            await hooks.rename(created.id, refused)
+
+    assert [record.name for record in _value(await hooks.list_all())] == ["dev-hook"]
+
+
+@pytest.mark.database
+async def test_renaming_a_webhook_that_does_not_exist_reports_so(database: Database) -> None:
+    import uuid as _uuid
+
+    renamed = await WebhookRepository(database=database).rename(_uuid.uuid4(), "nobody")
+    assert isinstance(renamed, Succeeded)
+    assert renamed.value is None

@@ -92,7 +92,11 @@
           {% endif %}
           <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>
         </form>
+        <a href="/admin/identities/{{ record.id }}/rename">rename…</a>
+        ·
         <a href="/admin/identities/{{ record.id }}/export">export…</a>
+        ·
+        <a href="/admin/identities/{{ record.id }}/remove">remove…</a>
       </td>
     </tr>
     {% endfor %}

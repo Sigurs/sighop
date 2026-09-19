@@ -19,6 +19,7 @@ from typing import cast
 import pytest
 
 from sighop.net.bus import PriorityClass, Submission, TxResult
+from sighop.protocol.identity import generate_identity
 from sighop.radio.modem import EU868_NARROW, ModemEvent, TransmitDone
 from sighop.radio.replay import CaptureReplay
 from sighop.runtime import Runtime, RuntimeConfig
@@ -401,3 +402,47 @@ async def test_the_radio_signal_is_not_the_startup_signal() -> None:
 
     assert run._ready.is_set()
     assert not run._radio_ready.is_set(), "the two signals moved together"
+
+
+# --- Renaming a loaded identity reaches the run ------------------------------
+
+
+async def test_renaming_an_identity_reaches_every_consumer_at_once() -> None:
+    """The messengers, the rooms and the bots were handed `adverts.stubs`, so
+    they hold these very objects: one in-place rename reaches all of them
+    (change web-delete-and-rename, design D1)."""
+    run = runtime(_events(CAPTURE), config=RuntimeConfig(stub_names=("skogen",)))
+    await run._restore()
+    stub = run.adverts.stubs[0]
+    key = stub.identity.public_key
+    assert run.messenger.entities[0] is stub, "the messenger was handed a copy"
+
+    assert run.rename_entity(key, "skogen-2") is True
+
+    assert stub.name == "skogen-2"
+    assert run.adverts.stubs[0] is stub, "the stub was replaced rather than renamed"
+    assert run.messenger.entities[0].name == "skogen-2"
+    assert run.channels.entities[0].name == "skogen-2"
+
+
+async def test_renaming_replaces_the_frozen_registry_entry() -> None:
+    """`keystore.LocalEntity` is frozen, so the registry entry is replaced —
+    safe because nothing holds one for behaviour (design D1)."""
+    run = runtime(_events(CAPTURE), config=RuntimeConfig(stub_names=("skogen",)))
+    await run._restore()
+    identity = generate_identity()
+    run.entities.add_stored("stored-one", identity)
+    assert [entity.name for entity in run.entities.entities] == ["stored-one"]
+
+    assert run.entities.rename(identity.public_key, "stored-two") is True
+
+    assert [entity.name for entity in run.entities.entities] == ["stored-two"]
+    assert run.entities.entities[0].identity.public_key == identity.public_key
+
+
+async def test_renaming_an_identity_this_run_does_not_hold_reports_so() -> None:
+    run = runtime(_events(CAPTURE), config=RuntimeConfig(stub_names=("skogen",)))
+    await run._restore()
+
+    assert run.rename_entity(generate_identity().public_key, "nobody") is False
+    assert run.adverts.stubs[0].name == "skogen"

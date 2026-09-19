@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}delete room · sighop{% endblock %}
+
+{% block content %}
+<h1>delete room</h1>
+
+{% if room is none %}
+<p class="unavailable"><strong>No such room.</strong> It may already have been deleted.</p>
+{% else %}
+<div class="guarded">
+  <p><strong>This action {{ description }}</strong></p>
+  <table class="counters">
+    <tbody>
+      <tr><td>room</td><td>{{ room.name }}</td></tr>
+      <tr><td>members that will be deleted</td>
+          <td class="mono">{{ 'unknown — the count could not be read' if members is none or members < 0 else members }}</td></tr>
+      <tr><td>stored messages that will be deleted</td>
+          <td class="mono">{{ 'unknown — the count could not be read' if messages is none or messages < 0 else messages }}</td></tr>
+      <tr><td>identity it speaks as</td>
+          <td class="mono">{{ identity.name if identity else 'unknown' }}</td></tr>
+    </tbody>
+  </table>
+  <p><strong>This cannot be undone.</strong></p>
+  <p class="note">
+    The identity{% if identity %} <span class="mono">{{ identity.name }}</span>{% endif %}
+    is <strong>not</strong> deleted. It stays stored with its key material, serving
+    no room, and can carry a new one — or be removed in its own right from the
+    <a href="/admin/identities">identities</a> page.
+  </p>
+  <p class="note">
+    Recorded as its own event naming your account. This run stops serving the
+    room as soon as it is deleted.
+  </p>
+  <form method="post" action="/admin/rooms/{{ room.id }}/delete">
+    <input type="hidden" name="_token" value="{{ token }}">
+    <input type="hidden" name="nonce" value="{{ nonce }}">
+    <button type="submit">confirm: delete {{ room.name }}, its members and its history</button>
+  </form>
+  <p><a href="/admin/rooms">cancel, and delete nothing</a></p>
+</div>
+{% endif %}
+{% endblock %}

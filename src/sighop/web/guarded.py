@@ -65,8 +65,13 @@ POST_TO_ROOM = "post_to_room"
 ADVERT_ZERO_HOP = "advert_zero_hop"
 ADVERT_FLOOD = "advert_flood"
 REMOVE_CHANNEL = "remove_channel"
+REMOVE_IDENTITY = "remove_identity"
+REMOVE_ROOM = "remove_room"
+REMOVE_BOT = "remove_bot"
 
-REAUTHENTICATED_ACTIONS = frozenset({REVEAL_KEY, EXPORT_KEY, ENABLE_TRANSMIT, RAISE_CEILING})
+REAUTHENTICATED_ACTIONS = frozenset(
+    {REVEAL_KEY, EXPORT_KEY, ENABLE_TRANSMIT, RAISE_CEILING, REMOVE_IDENTITY}
+)
 """The guarded actions whose confirmation carries the acting user's password."""
 
 ACTION_DESCRIPTIONS = {
@@ -108,6 +113,23 @@ ACTION_DESCRIPTIONS = {
     REMOVE_CHANNEL: (
         "removes this channel and deletes every message recorded in it. The "
         "history cannot be recovered; a channel added again later starts empty."
+    ),
+    REMOVE_IDENTITY: (
+        "removes this identity and destroys its stored key material. Nothing "
+        "recovers it: the node this key speaks as is gone, and every contact "
+        "holding its public key is holding one nobody can answer for. Disabling "
+        "an identity is the reversible action, and it is offered beside this one."
+    ),
+    REMOVE_ROOM: (
+        "deletes this room, its membership and its whole stored history. None "
+        "of it can be recovered. The identity the room speaks as is not deleted: "
+        "it stays stored, serving no room, and can carry a new one."
+    ),
+    REMOVE_BOT: (
+        "deletes this bot and everything it has stored. For a greeter that is "
+        "every record of who has been greeted, so every known contact becomes "
+        "eligible to be greeted again. The identity the bot speaks as is not "
+        "deleted: it stays stored, running no bot, and can carry a new one."
     ),
 }
 
