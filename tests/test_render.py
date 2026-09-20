@@ -458,6 +458,46 @@ def test_the_startup_banner_warns_about_a_raised_ceiling():
     assert "above the EU 868 10% limit" in text
 
 
+@pytest.mark.parametrize("transmit_enabled", [False, True])
+def test_the_startup_banner_states_the_default_path_hash_size(transmit_enabled: bool):
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=transmit_enabled,
+        ceiling_pct=10.0,
+        above_regulatory_default=False,
+    )
+
+    assert "path hash size 3 bytes (default)" in text
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        (1, "path hash size 1 byte (SIGHOP_PATH_HASH_SIZE)"),
+        (2, "path hash size 2 bytes (SIGHOP_PATH_HASH_SIZE)"),
+        (3, "path hash size 3 bytes (SIGHOP_PATH_HASH_SIZE)"),
+    ],
+)
+@pytest.mark.parametrize("transmit_enabled", [False, True])
+def test_the_startup_banner_names_the_variable_that_set_the_path_hash_size(
+    size: int, expected: str, transmit_enabled: bool
+):
+    from sighop.monitor.render import render_run_startup
+
+    text = render_run_startup(
+        "modem: Heltec V4 OLED",
+        transmit_enabled=transmit_enabled,
+        ceiling_pct=10.0,
+        above_regulatory_default=False,
+        path_hash_size=size,
+        path_hash_size_from_env=True,
+    )
+
+    assert expected in text
+
+
 def test_stubs_are_rendered_as_ephemeral():
     from sighop.monitor.render import render_stubs
     from sighop.net.adverts import EntityStub

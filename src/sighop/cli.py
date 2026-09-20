@@ -1188,6 +1188,9 @@ async def _run_monitor_replay(path: Path, out: IO[str] | None = None) -> int:
 def _run_config(
     args: argparse.Namespace, stored: Sequence[LoadedEntity] = (), *, replay: bool = False
 ) -> RuntimeConfig:
+    # Raises ConfigError on a bad SIGHOP_PATH_HASH_SIZE, before the pipeline
+    # exists and so before anything could be transmitted at a width not asked for.
+    path_hash_size, path_hash_size_from_env = Config.from_environment().path_hash_size()
     return RuntimeConfig(
         replay=replay,
         transmit_enabled=args.enable_transmit,
@@ -1206,6 +1209,8 @@ def _run_config(
         allow_flood=args.allow_flood,
         zero_hop_advert=args.zero_hop_advert,
         peer_wait_seconds=args.peer_wait,
+        path_hash_size=path_hash_size,
+        path_hash_size_from_env=path_hash_size_from_env,
     )
 
 

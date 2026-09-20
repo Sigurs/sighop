@@ -358,6 +358,41 @@ def test_capture_is_refused_for_a_replay_source(capsys) -> None:
     assert "cannot be combined with --replay" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("value", ["4", "three"])
+def test_an_invalid_path_hash_size_fails_the_run_before_the_pipeline_starts(
+    capsys, monkeypatch, value: str
+) -> None:
+    from sighop.cli import main
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("SIGHOP_PATH_HASH_SIZE", value)
+
+    def _refuse(self: Runtime) -> None:
+        raise AssertionError("the pipeline started with an invalid path hash size")
+
+    monkeypatch.setattr(Runtime, "run", _refuse)
+    code = main(["run", "--replay", str(CAPTURE), "--status-interval", "3600"])
+
+    assert code == 2
+    captured = capsys.readouterr()
+    assert "SIGHOP_PATH_HASH_SIZE" in captured.err
+    assert repr(value) in captured.err
+    assert "1, 2, 3" in captured.err
+    assert captured.out == ""
+
+
+def test_a_run_reports_the_path_hash_size_from_the_environment(capsys, monkeypatch) -> None:
+    from sighop.cli import main
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("SIGHOP_PATH_HASH_SIZE", "1")
+
+    code = main(["run", "--replay", str(CAPTURE), "--status-interval", "3600"])
+
+    assert code == 0
+    assert "path hash size 1 byte (SIGHOP_PATH_HASH_SIZE)" in capsys.readouterr().out
+
+
 # --- The radio-readiness signal (design D1) --------------------------------
 
 

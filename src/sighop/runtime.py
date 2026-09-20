@@ -27,6 +27,7 @@ from typing import IO
 from sighop.bots import drivers as bot_drivers
 from sighop.bots.base import BotRuntimeEvent, UnknownDriverError
 from sighop.bots.runtime import BotHost, BotWorker
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.db.engine import Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import BotRecord, LoadedEntity, RoomRecord
@@ -171,6 +172,12 @@ class RuntimeConfig:
     peer_wait_seconds: float = DEFAULT_PEER_WAIT_SECONDS
     channel_refresh_seconds: float = DEFAULT_CHANNEL_REFRESH_SECONDS
 
+    path_hash_size: int = DEFAULT_PATH_HASH_SIZE
+    """Width of every packet this node originates with an empty path; learned
+    routes keep their own. Node-wide, from `SIGHOP_PATH_HASH_SIZE`."""
+
+    path_hash_size_from_env: bool = False
+
 
 @dataclass(slots=True)
 class Runtime:
@@ -298,7 +305,12 @@ class Runtime:
             logger=self.logger,
             radio=self.radio,
         )
-        self.adverts = AdvertScheduler(submit=self.bus.submit, clock=self.clock, logger=self.logger)
+        self.adverts = AdvertScheduler(
+            submit=self.bus.submit,
+            clock=self.clock,
+            logger=self.logger,
+            path_hash_size=self.config.path_hash_size,
+        )
         # Persistent identities first: a stub's generated key is then made to
         # avoid their node hashes rather than the other way round. Stored
         # entities before keyfiles, so a collision between the two sources is
@@ -340,6 +352,7 @@ class Runtime:
             # no database and on a replay, which is the whole of "this run is
             # not recording conversations" (design D8, D13).
             records=None if self.persistence is None else self.persistence.dm_sink(),
+            path_hash_size=self.config.path_hash_size,
         )
         # Channels (channel-messaging D3): a bus subscriber for group text and a
         # reception observer for our own posts heard back. Station state, so the
@@ -352,6 +365,7 @@ class Runtime:
             on_event=self._on_channel_event,
             logger=self.logger,
             records=None if self.persistence is None else self.persistence.channel_sink(),
+            path_hash_size=self.config.path_hash_size,
         )
         if self.channel_loader is None and self.persistence is not None:
             self.channel_loader = self._load_stored_channels
@@ -907,7 +921,12 @@ class Runtime:
 
     def _route_known(self, contact: Contact) -> bool:
         try:
-            choose_route(self.pipeline.paths, contact, allow_flood=False)
+            choose_route(
+                self.pipeline.paths,
+                contact,
+                path_hash_size=self.config.path_hash_size,
+                allow_flood=False,
+            )
         except NoRouteError:
             return False
         return True
@@ -936,6 +955,7 @@ class Runtime:
             runtime_stats=self._server_stats,
             on_event=self._on_room_event,
             logger=self.logger,
+            path_hash_size=self.config.path_hash_size,
         )
         counted = await self.persistence.messages.count(record.id)
         self._room_messages[record.name] = counted.value if isinstance(counted, Succeeded) else 0
@@ -1176,6 +1196,8 @@ class Runtime:
                 ceiling_pct=self.scheduler.budget.ceiling_fraction * 100,
                 above_regulatory_default=self.scheduler.budget.above_regulatory_default,
                 entities=self.adverts.stubs,
+                path_hash_size=self.config.path_hash_size,
+                path_hash_size_from_env=self.config.path_hash_size_from_env,
             )
         )
         self._write(render_stubs(self.adverts.stubs))

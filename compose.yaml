@@ -18,6 +18,7 @@
 #        SIGHOP_WEB_BIND=...           — host address the panel is published on, default 127.0.0.1
 #        SIGHOP_WEB_PORT=...           — host port, default 8080
 #        SIGHOP_WEB_ALLOWED_HOST=...   — one more host name the panel answers to
+#        SIGHOP_PATH_HASH_SIZE=...     — 1, 2 or 3 bytes per hop hash on our floods, default 3
 #   3. docker compose up -d            — sighop migrates the database on start
 #   4. open http://localhost:8080/setup and enter the setup code printed by
 #      `docker compose logs sighop` — first-run setup creates the first account.
@@ -69,6 +70,7 @@ services:
     environment:
       DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL to the database's postgresql+asyncpg URL}"
       SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?set SIGHOP_SECRET_KEY, e.g. from sighop keys secret}"
+      SIGHOP_PATH_HASH_SIZE: "${SIGHOP_PATH_HASH_SIZE:-}"
     logging:
       driver: json-file
       options:

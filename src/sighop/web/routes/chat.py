@@ -644,7 +644,12 @@ def _state(record: DirectMessageRecord) -> tuple[Status, ...]:
 def _route_note(page: Panel, contact: Contact) -> dict[str, object]:
     """Whether a message to this contact can go without flooding, and why not."""
     try:
-        route = choose_route(page.state.pipeline.paths, contact, allow_flood=False)
+        route = choose_route(
+            page.state.pipeline.paths,
+            contact,
+            path_hash_size=page.state.messenger.path_hash_size,
+            allow_flood=False,
+        )
     except NoRouteError as exc:
         return {"known": False, "label": "", "reason": str(exc)}
     return {"known": True, "label": route.label, "reason": ""}
@@ -716,7 +721,12 @@ def _refusal(page: Panel, contact: Contact, text: str, *, flooding: bool) -> str
         )
     if not flooding:
         try:
-            choose_route(page.state.pipeline.paths, contact, allow_flood=False)
+            choose_route(
+                page.state.pipeline.paths,
+                contact,
+                path_hash_size=page.state.messenger.path_hash_size,
+                allow_flood=False,
+            )
         except NoRouteError as exc:
             return (
                 f"{exc} Flooding is offered below as an explicit choice; it is "

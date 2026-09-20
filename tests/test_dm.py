@@ -22,6 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.net.airtime import NoRadioReadback
 from sighop.net.bus import NetworkBus, PriorityClass, TxOutcome, TxResult
 from sighop.net.contacts import Contact, ContactStore
@@ -152,6 +153,7 @@ def messenger(
     radio=EU868_NARROW,
     radio_ready: asyncio.Event | None = None,
     logger: RecordingLogger | None = None,
+    path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
 ) -> DirectMessenger:
     return DirectMessenger(
         contacts=contacts or ContactStore(logger=RecordingLogger()),
@@ -165,6 +167,7 @@ def messenger(
         on_event=events.append if events is not None else None,
         logger=logger or RecordingLogger(),
         records=records,
+        path_hash_size=path_hash_size,
     )
 
 
@@ -256,7 +259,7 @@ def test_a_zero_hop_route_yields_an_empty_path_direct_packet() -> None:
     paths = PathStore()
     zero_hop_route_to(paths, peer.identity.public_key)
 
-    route = choose_route(paths, contact_for(peer.identity))
+    route = choose_route(paths, contact_for(peer.identity), path_hash_size=3)
     packet, _ = build_message_packet(
         sender=entity.identity,
         recipient_node_hash=peer.node_hash,
@@ -278,14 +281,81 @@ def test_an_unknown_route_refuses_to_send_without_the_flood_flag() -> None:
     paths = PathStore()
 
     with pytest.raises(NoRouteError, match="no route is known"):
-        choose_route(paths, contact_for(generate_identity()))
+        choose_route(paths, contact_for(generate_identity()), path_hash_size=3)
 
 
 def test_an_unknown_route_floods_when_flooding_was_permitted() -> None:
-    route = choose_route(PathStore(), contact_for(generate_identity()), allow_flood=True)
+    route = choose_route(
+        PathStore(), contact_for(generate_identity()), path_hash_size=2, allow_flood=True
+    )
 
     assert route.flood is True
     assert route.label == "FLOOD"
+    assert route.hash_size == 2
+
+
+def test_a_learned_one_byte_route_keeps_its_width_whatever_the_setting() -> None:
+    """Spec: a learned path's bytes are fixed at the width they were learned at."""
+    entity = Entity("us")
+    peer = Entity("them")
+    paths = PathStore()
+    paths._insert(
+        PathKey.for_public_key(peer.identity.public_key),
+        LearnedPath(b"\x0a\x0b", 1, 2, 8.0, START, "seed"),
+    )
+
+    route = choose_route(paths, contact_for(peer.identity), path_hash_size=3, allow_flood=True)
+    packet, _ = build_message_packet(
+        sender=entity.identity,
+        recipient_node_hash=peer.node_hash,
+        secret=b"\x01" * 32,
+        body=compose_body(timestamp=1, attempt=0, text=b"hi"),
+        route=route,
+    )
+
+    from sighop.protocol.packet import decode
+
+    decoded = decode(packet)
+    assert decoded.route_type is RouteType.DIRECT
+    assert decoded.hop_count == 2
+    assert decoded.hash_size == 1
+    assert decoded.path == b"\x0a\x0b"
+
+
+@pytest.mark.parametrize("size", [1, 3])
+async def test_a_flooded_message_and_its_acknowledgement_carry_the_configured_width(
+    size: int,
+) -> None:
+    from sighop.protocol.packet import decode
+
+    alice, bob = Entity("alice"), Entity("bob")
+    submit = RecordingSubmit()
+    sender = messenger(alice, submit=submit, allow_flood=True, path_hash_size=size)
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(alice.identity.public_key)
+    receiver_submit = RecordingSubmit()
+    receiver = messenger(
+        bob,
+        contacts=contacts,
+        submit=receiver_submit,
+        allow_flood=True,
+        path_hash_size=size,
+    )
+
+    secret = SharedSecretCache().get(alice.identity, bob.identity.public_key)
+    packet, _ = message_packet(sender=alice, recipient_node_hash=bob.node_hash, secret=secret)
+    await receiver.handle(_packet_for(packet))
+    ack = decode(receiver_submit.submissions[0].packet)
+    assert ack.route_type is RouteType.FLOOD
+    assert (ack.hash_size, ack.hop_count, ack.path) == (size, 0, b"")
+
+    task = asyncio.create_task(sender.send(alice, contact_for(bob.identity), "hej"))
+    while not submit.submissions:
+        await asyncio.sleep(0)
+    task.cancel()
+    message = decode(submit.submissions[0].packet)
+    assert message.route_type is RouteType.FLOOD
+    assert (message.hash_size, message.hop_count, message.path) == (size, 0, b"")
 
 
 def test_a_route_found_only_by_node_hash_is_marked_ambiguous() -> None:
@@ -297,7 +367,7 @@ def test_a_route_found_only_by_node_hash_is_marked_ambiguous() -> None:
         LearnedPath(b"", 1, 0, None, START, "seed"),
     )
 
-    route = choose_route(paths, contact_for(peer))
+    route = choose_route(paths, contact_for(peer), path_hash_size=3)
 
     assert route.ambiguous is True
     assert route.label.endswith("?")

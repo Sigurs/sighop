@@ -15,10 +15,12 @@ import pytest
 from sighop.config import (
     DEFAULT_CONNECT_TIMEOUT,
     DEFAULT_MAX_OVERFLOW,
+    DEFAULT_PATH_HASH_SIZE,
     DEFAULT_POOL_SIZE,
     DEFAULT_POOL_TIMEOUT,
     DEFAULT_SHUTDOWN_BUDGET,
     DEFAULT_STATEMENT_TIMEOUT,
+    PATH_HASH_SIZE_VARIABLE,
     REQUIRED_DRIVER,
     ROLE_CONNECTION_LIMIT,
     SECRET_KEY_SIZE,
@@ -26,6 +28,7 @@ from sighop.config import (
     ConfigError,
     DatabaseConfig,
     generate_secret_key,
+    parse_path_hash_size,
     parse_secret_key,
 )
 
@@ -201,3 +204,46 @@ def test_a_secret_of_the_wrong_length_says_so_and_is_not_reshaped() -> None:
         parse_secret_key(short)
     assert "16 bytes" in str(excinfo.value)
     assert "32" in str(excinfo.value)
+
+
+# --- Path hash size (add-path-hash-size-setting) ---------------------------
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_an_unset_or_blank_path_hash_size_is_the_default_of_three(value: str | None) -> None:
+    assert DEFAULT_PATH_HASH_SIZE == 3
+    assert parse_path_hash_size(value) == 3
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", 1), ("2", 2), ("3", 3), (" 2 ", 2)])
+def test_a_supported_path_hash_size_is_accepted(value: str, expected: int) -> None:
+    assert parse_path_hash_size(value) == expected
+
+
+@pytest.mark.parametrize("value", ["0", "4", "three", "-1"])
+def test_an_unsupported_path_hash_size_is_refused_not_clamped(value: str) -> None:
+    with pytest.raises(ConfigError) as caught:
+        parse_path_hash_size(value)
+    message = str(caught.value)
+    assert PATH_HASH_SIZE_VARIABLE in message
+    assert repr(value) in message
+    assert "1, 2, 3" in message
+
+
+def test_the_path_hash_size_is_read_from_the_environment() -> None:
+    config = Config.from_environment({PATH_HASH_SIZE_VARIABLE: "2"})
+    assert config.path_hash_size() == (2, True)
+    assert config.as_json()["path_hash_size"] == "2"
+
+
+@pytest.mark.parametrize("environ", [{}, {PATH_HASH_SIZE_VARIABLE: ""}])
+def test_an_unset_path_hash_size_is_the_default_and_not_from_the_environment(
+    environ: dict[str, str],
+) -> None:
+    assert Config.from_environment(environ).path_hash_size() == (3, False)
+
+
+def test_an_invalid_path_hash_size_fails_only_where_it_is_used() -> None:
+    config = Config.from_environment({PATH_HASH_SIZE_VARIABLE: "4"})
+    with pytest.raises(ConfigError, match=PATH_HASH_SIZE_VARIABLE):
+        config.path_hash_size()

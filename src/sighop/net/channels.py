@@ -43,6 +43,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Protocol
 
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.logging import Logger, get_logger
 from sighop.net.bus import (
     NetworkBus,
@@ -413,11 +414,14 @@ TRANSMIT_DISABLED = (
 )
 
 
-def build_channel_packet(channel: LoadedChannel, plaintext: bytes) -> tuple[bytes, bytes]:
+def build_channel_packet(
+    channel: LoadedChannel, plaintext: bytes, *, path_hash_size: int
+) -> tuple[bytes, bytes]:
     """Encrypt-then-MAC a group text body into one flooded `GRP_TXT` packet.
 
     Returns `(packet bytes, payload bytes)`: the payload is what deduplication
-    keys on, and so what our own post heard back is recognised by.
+    keys on, and so what our own post heard back is recognised by — which is
+    why `path_hash_size`, a header field, cannot disturb that recognition.
     """
     mac, ciphertext = encrypt_then_mac(channel.key.secret, plaintext)
     envelope = GroupEnvelope(
@@ -436,7 +440,7 @@ def build_channel_packet(channel: LoadedChannel, plaintext: bytes) -> tuple[byte
             ),
             transport_codes=None,
             hop_count=0,
-            hash_size=1,
+            hash_size=path_hash_size,
             path=b"",
             payload=payload,
         )
@@ -522,8 +526,10 @@ class ChannelMessenger:
         logger: Logger | None = None,
         records: ChannelMessageSink | None = None,
         registry: RepeatRegistry | None = None,
+        path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
     ) -> None:
         self.submit = submit
+        self.path_hash_size = path_hash_size
         self.entities = entities
         """Live view of the loaded identities — the runtime's list, not a copy."""
 
@@ -855,7 +861,9 @@ class ChannelMessenger:
         timestamp = max(int(now.timestamp()), self._last_timestamp + 1)
         self._last_timestamp = timestamp
         plaintext = build_group_text_body(timestamp, entity.name, text)
-        packet, payload = build_channel_packet(channel, plaintext)
+        packet, payload = build_channel_packet(
+            channel, plaintext, path_hash_size=self.path_hash_size
+        )
         post_id = uuid.uuid4().hex[:16]
         record = ChannelMessageRecord(
             channel_id=channel.id,

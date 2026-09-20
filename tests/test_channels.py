@@ -159,6 +159,7 @@ def messenger(
     submit: RecordingSubmit | None = None,
     gate: bool = True,
     clock: TickingClock | None = None,
+    **kwargs: object,
 ) -> tuple[ChannelMessenger, Sink, list[object], RecordingSubmit]:
     sink = Sink()
     events: list[object] = []
@@ -172,6 +173,7 @@ def messenger(
         on_event=events.append,
         logger=RecordingLogger(),
         records=sink,
+        **kwargs,  # type: ignore[arg-type]
     )
     return m, sink, events, submit
 
@@ -439,7 +441,8 @@ async def test_a_budget_drop_resolves_not_transmitted_with_the_reason_and_no_ret
 
 
 def echo_of(packet: bytes, *, hops: int) -> bytes:
-    """The same payload as a repeater would forward it: a longer flood path."""
+    """The same payload as a repeater would forward it: a longer flood path,
+    appended at the width the origin chose (`Mesh.cpp:349`)."""
     decoded = decode_packet(packet)
     assert not isinstance(decoded, DecodeFailure)
     return encode_packet(
@@ -447,16 +450,35 @@ def echo_of(packet: bytes, *, hops: int) -> bytes:
             header=decoded.header,
             transport_codes=None,
             hop_count=hops,
-            hash_size=1,
-            path=bytes(range(hops)),
+            hash_size=decoded.hash_size,
+            path=bytes(range(hops * decoded.hash_size)),
             payload=decoded.payload,
         )
     )
 
 
-async def test_three_copies_of_our_post_count_three_repeats_and_record_nothing_inbound() -> None:
+@pytest.mark.parametrize("size", [1, 2, 3])
+async def test_a_post_floods_at_the_configured_path_hash_size(size: int) -> None:
     entity = Entity("dev-companion")
-    m, sink, events, submit = messenger(HASHTAG, entities=(entity,))
+    m, _sink, _events, submit = messenger(HASHTAG, entities=(entity,), path_hash_size=size)
+
+    await m.post(2, entity, "hello").resolution
+
+    decoded = decode_packet(submit.submissions[0].packet)
+    assert not isinstance(decoded, DecodeFailure)
+    assert decoded.route_type is RouteType.FLOOD
+    assert decoded.payload_type is PayloadType.GRP_TXT
+    assert decoded.hash_size == size
+    assert decoded.hop_count == 0
+    assert decoded.path == b""
+
+
+@pytest.mark.parametrize("size", [1, 3])
+async def test_three_copies_of_our_post_count_three_repeats_and_record_nothing_inbound(
+    size: int,
+) -> None:
+    entity = Entity("dev-companion")
+    m, sink, events, submit = messenger(HASHTAG, entities=(entity,), path_hash_size=size)
     post = m.post(2, entity, "hello")
     await post.resolution
 
@@ -545,7 +567,7 @@ def test_replacing_the_set_changes_what_is_decrypted() -> None:
 
 
 def test_build_channel_packet_returns_the_payload_dedup_keys_on() -> None:
-    packet, payload = build_channel_packet(HASHTAG, b"\x00" * 5 + b"x: y")
+    packet, payload = build_channel_packet(HASHTAG, b"\x00" * 5 + b"x: y", path_hash_size=3)
     decoded = decode_packet(packet)
     assert not isinstance(decoded, DecodeFailure) and decoded.payload == payload
 

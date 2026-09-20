@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckMatch, AckRegistry, AckUnowned
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
@@ -170,13 +171,18 @@ class Route:
         return f"DIRECT h{self.hop_count}{suffix}"
 
 
-def choose_route(paths: PathStore, contact: Contact, *, allow_flood: bool = False) -> Route:
+def choose_route(
+    paths: PathStore, contact: Contact, *, path_hash_size: int, allow_flood: bool = False
+) -> Route:
     """The route to a contact, or a refusal (design D4).
 
     A route keyed by the peer's public key is preferred; a route keyed by its
     node hash is used when that is all there is — an inbound direct message
     names only a hash, so its acknowledgement has nothing else to go on — and is
     marked ambiguous rather than presented as certain.
+
+    `path_hash_size` is the width of a flood we originate; a learned route keeps
+    the width it was learned at, because its path bytes are fixed at that width.
     """
     learned = paths.lookup_public_key(contact.public_key)
     ambiguous = False
@@ -190,7 +196,7 @@ def choose_route(paths: PathStore, contact: Contact, *, allow_flood: bool = Fals
                 f"({contact.public_key.hex()[:16]}); flooding was not permitted, "
                 "and a flood is repeated by every repeater in the mesh"
             )
-        return Route(flood=True)
+        return Route(flood=True, hash_size=path_hash_size)
     return Route(
         flood=False,
         path=learned.path,
@@ -609,6 +615,7 @@ class DirectMessenger:
         logger: Logger | None = None,
         acks: AckRegistry | None = None,
         records: DirectMessageSink | None = None,
+        path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
     ) -> None:
         self.contacts = contacts
         self.paths = paths
@@ -624,6 +631,7 @@ class DirectMessenger:
         from the capture's provenance before it starts — and then nothing
         waits, which is exactly the behaviour those had before this existed."""
         self.allow_flood = allow_flood
+        self.path_hash_size = path_hash_size
         self._on_event = on_event
         self._log = logger or get_logger(component="dm")
         # Design D11: the expectation table is shared. When one is handed in,
@@ -775,7 +783,9 @@ class DirectMessenger:
         flooding = self.allow_flood if allow_flood is None else allow_flood
         # Composition limits are checked before anything is routed or queued.
         compose_body(timestamp=0, attempt=0, text=raw, txt_type=txt_type)
-        route = choose_route(self.paths, contact, allow_flood=flooding)
+        route = choose_route(
+            self.paths, contact, path_hash_size=self.path_hash_size, allow_flood=flooding
+        )
 
         timestamp = int(self.clock.now().timestamp())
         pending = _Pending(
@@ -1152,7 +1162,12 @@ class DirectMessenger:
         """Answer a decrypted message at class 0, routed as an outbound one is."""
         checksum = ack_checksum_for(body, contact.public_key)
         try:
-            route = choose_route(self.paths, contact, allow_flood=self.allow_flood)
+            route = choose_route(
+                self.paths,
+                contact,
+                path_hash_size=self.path_hash_size,
+                allow_flood=self.allow_flood,
+            )
         except NoRouteError as exc:
             self._log.error(
                 "ack_not_routed",

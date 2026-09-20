@@ -277,7 +277,7 @@ def test_a_stub_advert_verifies_through_the_real_verifier() -> None:
     sched = scheduler(clock)
     stub = sched.add_stub("skogen", node_type=NodeType.ROOM_SERVER)
 
-    raw = build_advert_packet(stub, int(clock.now().timestamp()))
+    raw = build_advert_packet(stub, int(clock.now().timestamp()), path_hash_size=3)
     packet = decode_packet(raw)
     assert not isinstance(packet, DecodeFailure), packet
     advert = parse_advert(packet.payload)
@@ -296,13 +296,54 @@ def test_an_advert_is_a_flood_packet_with_no_path() -> None:
     sched = scheduler(clock)
     stub = sched.add_stub("skogen")
 
-    packet = decode_packet(build_advert_packet(stub, int(clock.now().timestamp())))
+    packet = decode_packet(
+        build_advert_packet(stub, int(clock.now().timestamp()), path_hash_size=3)
+    )
 
     assert not isinstance(packet, DecodeFailure)
     assert packet.route_type is RouteType.FLOOD
     assert packet.payload_type is PayloadType.ADVERT
     assert packet.hop_count == 0
     assert packet.path == b""
+
+
+async def test_a_scheduled_flood_advert_carries_the_default_path_hash_size() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink, min_entity_gap_seconds=0.0)
+    stub = sched.add_stub("skogen")
+    stub.next_flood_at = clock.now()
+
+    sched.tick()
+
+    (submission,) = sink.submissions
+    packet = decode_packet(submission.packet)
+    assert not isinstance(packet, DecodeFailure)
+    assert packet.route_type is RouteType.FLOOD
+    assert packet.hash_size == 3
+    assert packet.hop_count == 0
+    assert packet.path == b""
+
+
+@pytest.mark.parametrize("size", [1, 2, 3])
+async def test_requested_adverts_carry_the_configured_path_hash_size(size: int) -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink, min_entity_gap_seconds=0.0, path_hash_size=size)
+    stub = sched.add_stub("skogen")
+
+    sched.request_zero_hop(stub)
+    sched.request_flood(stub)
+
+    zero_hop, flood = (decode_packet(s.packet) for s in sink.submissions)
+    assert not isinstance(zero_hop, DecodeFailure)
+    assert not isinstance(flood, DecodeFailure)
+    assert zero_hop.route_type is RouteType.DIRECT
+    assert flood.route_type is RouteType.FLOOD
+    for packet in (zero_hop, flood):
+        assert packet.hash_size == size
+        assert packet.hop_count == 0
+        assert packet.path == b""
 
 
 async def test_adverts_are_submitted_as_class_three_with_a_deadline() -> None:
@@ -635,7 +676,7 @@ def test_a_rename_changes_the_name_the_next_advert_carries() -> None:
 
     assert sched.rename(stub.identity.public_key, "skogen-2") is True
 
-    advert = parse_advert(decode_packet(build_advert_packet(stub, 1)).payload)
+    advert = parse_advert(decode_packet(build_advert_packet(stub, 1, path_hash_size=3)).payload)
     assert not isinstance(advert, DecodeFailure)
     verification = verify_advert(advert)
     assert isinstance(verification, VerifiedAdvert)

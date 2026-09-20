@@ -59,6 +59,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Protocol
 
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.db.engine import Outcome, Succeeded
 from sighop.db.repositories import (
     MemberRecord,
@@ -522,6 +523,7 @@ class RoomServer:
         runtime_stats: Callable[[], ServerStats] | None = None,
         on_event: Callable[[RoomEvent], None] | None = None,
         logger: Logger | None = None,
+        path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
     ) -> None:
         self.entity = entity
         self.room = room
@@ -539,6 +541,8 @@ class RoomServer:
         that loses them. `None` where nobody supplied one — a unit test, or the
         replay path, which has the radio before it starts — and then a reply
         never waits."""
+        self.path_hash_size = path_hash_size
+        """Width of the floods this room originates; a learned route keeps its own."""
         self.telemetry = list(telemetry)
         self.runtime_stats = runtime_stats
         self._on_event = on_event
@@ -889,14 +893,15 @@ class RoomServer:
                     extra_raw=response,
                 )
             )
+            flood = Route(flood=True, hash_size=self.path_hash_size)
             packet = self._encrypted_packet(
                 PayloadType.PATH,
                 member.node_hash,
                 secret,
                 plaintext,
-                Route(flood=True),
+                flood,
             )
-            await self._submit_reply(record, packet, Route(flood=True), origin="room_login")
+            await self._submit_reply(record, packet, flood, origin="room_login")
             return
 
         route = self._route_to(member)
@@ -1297,7 +1302,7 @@ class RoomServer:
                     extra_raw=body,
                 )
             )
-            route = Route(flood=True)
+            route = Route(flood=True, hash_size=self.path_hash_size)
             packet = self._encrypted_packet(
                 PayloadType.PATH, member.node_hash, secret, plaintext, route
             )
@@ -1699,7 +1704,7 @@ class RoomServer:
         peer name; a reply to a request that arrived flooded has no other way
         home, and the throttle is what buys the safety back.
         """
-        return self._known_route_to(member) or Route(flood=True)
+        return self._known_route_to(member) or Route(flood=True, hash_size=self.path_hash_size)
 
     def _encrypted_packet(
         self,

@@ -35,6 +35,7 @@ import datetime as dt
 import random
 from dataclasses import dataclass, field, replace
 
+from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.logging import Logger, get_logger
 from sighop.net.bus import PriorityClass, Submission, TxHandle
 from sighop.net.tx import Clock, SystemClock
@@ -151,8 +152,13 @@ class EntityStub:
         }
 
 
-def build_advert_packet(stub: EntityStub, timestamp: int, *, zero_hop: bool = False) -> bytes:
+def build_advert_packet(
+    stub: EntityStub, timestamp: int, *, path_hash_size: int, zero_hop: bool = False
+) -> bytes:
     """A real, signed advert for `stub`, encoded to wire bytes.
+
+    `path_hash_size` is the width repeaters append their hashes at; it has no
+    default so no caller silently floods at a width nobody chose.
 
     Signed through `protocol/`'s existing path — no new cryptography here, and
     no import in the other direction: `protocol/` stays free of `net/`.
@@ -175,7 +181,7 @@ def build_advert_packet(stub: EntityStub, timestamp: int, *, zero_hop: bool = Fa
             ),
             transport_codes=None,
             hop_count=0,
-            hash_size=1,
+            hash_size=path_hash_size,
             path=b"",
             payload=build_advert(advert),
         )
@@ -200,6 +206,7 @@ class AdvertScheduler:
     deadline_seconds: float = DEFAULT_ADVERT_DEADLINE_SECONDS
     rng: random.Random = field(default_factory=random.Random)
     logger: Logger | None = None
+    path_hash_size: int = DEFAULT_PATH_HASH_SIZE
     stubs: list[EntityStub] = field(default_factory=list)
     last_global_flood_at: dt.datetime | None = None
     deferrals: int = 0
@@ -452,7 +459,9 @@ class AdvertScheduler:
         """
         assert self.logger is not None
         now = self.clock.now()
-        packet = build_advert_packet(stub, int(now.timestamp()), zero_hop=True)
+        packet = build_advert_packet(
+            stub, int(now.timestamp()), path_hash_size=self.path_hash_size, zero_hop=True
+        )
         handle: TxHandle = self.submit(  # type: ignore[operator]
             Submission(
                 packet=packet,
@@ -493,7 +502,7 @@ class AdvertScheduler:
         """
         assert self.logger is not None
         now = self.clock.now()
-        packet = build_advert_packet(stub, int(now.timestamp()))
+        packet = build_advert_packet(stub, int(now.timestamp()), path_hash_size=self.path_hash_size)
         handle: TxHandle = self.submit(  # type: ignore[operator]
             Submission(
                 packet=packet,
@@ -540,7 +549,7 @@ class AdvertScheduler:
         return max(0.0, self.min_entity_gap_seconds - elapsed)
 
     def _submit_advert(self, stub: EntityStub, now: dt.datetime) -> TxHandle:
-        packet = build_advert_packet(stub, int(now.timestamp()))
+        packet = build_advert_packet(stub, int(now.timestamp()), path_hash_size=self.path_hash_size)
         submission = Submission(
             packet=packet,
             priority=PriorityClass.ADVERT,

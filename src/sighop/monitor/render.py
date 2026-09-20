@@ -25,6 +25,7 @@ from sighop.bots.base import (
     BotSuppressed,
     BotWouldAct,
 )
+from sighop.config import DEFAULT_PATH_HASH_SIZE, PATH_HASH_SIZE_VARIABLE
 from sighop.net.adverts import EntityStub
 from sighop.net.channels import (
     ChannelConfigReadFailed,
@@ -314,6 +315,8 @@ def render_run_startup(
     ceiling_pct: float,
     above_regulatory_default: bool,
     entities: Sequence[EntityStub] = (),
+    path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
+    path_hash_size_from_env: bool = False,
 ) -> str:
     """The banner. With the gate open it says what that now means.
 
@@ -351,6 +354,10 @@ def render_run_startup(
             "!! duty-cycle ceiling is configured above the EU 868 10% limit; "
             "sighop will permit more airtime than the sub-band allows"
         )
+    # Gate open or closed: the width is worth checking before keying the transmitter.
+    unit = "byte" if path_hash_size == 1 else "bytes"
+    source = PATH_HASH_SIZE_VARIABLE if path_hash_size_from_env else "default"
+    lines.append(f"path hash size {path_hash_size} {unit} ({source})")
     return "\n".join(lines)
 
 

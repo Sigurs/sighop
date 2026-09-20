@@ -37,6 +37,7 @@ from sqlalchemy.exc import ArgumentError
 
 DATABASE_URL_VARIABLE = "DATABASE_URL"
 SECRET_KEY_VARIABLE = "SIGHOP_SECRET_KEY"
+PATH_HASH_SIZE_VARIABLE = "SIGHOP_PATH_HASH_SIZE"
 
 DATABASE_SCHEMA_VARIABLE = "SIGHOP_DB_SCHEMA"
 """The schema every connection's search path is set to. Normally unset, and the
@@ -83,6 +84,15 @@ session and the test suite before anyone meets `too many connections for role`."
 SECRET_KEY_SIZE = 32
 """XSalsa20-Poly1305's key size (design D4). Exact — never padded, truncated or
 hashed into shape, because each of those silently accepts a weaker secret."""
+
+PATH_HASH_SIZES = ("1", "2", "3")
+DEFAULT_PATH_HASH_SIZE = 3
+"""Bytes per hop hash on packets sighop originates with an empty path.
+
+Repeaters append at the width the origin chose (`Mesh.cpp:349`) and firmware's
+`sendFlood` accepts 1 to 3, so 3 is the least collision-prone width the mesh takes.
+Learned routes keep the width they were learned at; this governs only floods and
+zero-hop packets we start."""
 
 REDACTED = "***"
 
@@ -265,6 +275,10 @@ class Config:
 
     database: DatabaseConfig | None = None
     secret_key: str | None = None
+    path_hash_size_raw: str | None = None
+    """Raw `SIGHOP_PATH_HASH_SIZE`, validated only by `path_hash_size()`, so a
+    typo fails `sighop run` and not `sighop keys` or `sighop db`, which never
+    transmit — the same reasoning as the secret key."""
 
     @property
     def persistent(self) -> bool:
@@ -272,6 +286,10 @@ class Config:
 
     def secret_key_bytes(self) -> bytes:
         return parse_secret_key(self.secret_key)
+
+    def path_hash_size(self) -> tuple[int, bool]:
+        """The path hash size in force, and whether the environment set it."""
+        return parse_path_hash_size(self.path_hash_size_raw), self.path_hash_size_raw is not None
 
     def __repr__(self) -> str:
         secret = "None" if self.secret_key is None else f"'{REDACTED}'"
@@ -281,6 +299,7 @@ class Config:
         fields: dict[str, object] = {
             "persistence": "on" if self.persistent else "off",
             "secret_key_present": self.secret_key is not None,
+            "path_hash_size": self.path_hash_size_raw,
         }
         if self.database is not None:
             fields.update(self.database.as_json())
@@ -302,9 +321,11 @@ class Config:
         url = database_url or env.get(DATABASE_URL_VARIABLE) or None
         secret = env.get(SECRET_KEY_VARIABLE) or None
         schema = env.get(DATABASE_SCHEMA_VARIABLE) or None
+        path_hash_size = (env.get(PATH_HASH_SIZE_VARIABLE) or "").strip() or None
         return cls(
             database=None if url is None else DatabaseConfig(url=url, schema=schema),
             secret_key=secret,
+            path_hash_size_raw=path_hash_size,
         )
 
 
@@ -336,6 +357,24 @@ def parse_secret_key(value: str | None) -> bytes:
             "generate one with `sighop keys secret`"
         )
     return raw
+
+
+def parse_path_hash_size(value: str | None) -> int:
+    """`SIGHOP_PATH_HASH_SIZE` as 1, 2 or 3; unset or blank is the default.
+
+    Anything else is refused rather than clamped: a width the operator did not
+    ask for would change every flood's on-air bytes without a word.
+    """
+    if value is None or not value.strip():
+        return DEFAULT_PATH_HASH_SIZE
+    text = value.strip()
+    if text not in PATH_HASH_SIZES:
+        raise ConfigError(
+            f"{PATH_HASH_SIZE_VARIABLE} is {value!r}; it must be one of "
+            f"{', '.join(PATH_HASH_SIZES)} (bytes per hop hash), or unset for "
+            f"{DEFAULT_PATH_HASH_SIZE}"
+        )
+    return int(text)
 
 
 def generate_secret_key() -> str:

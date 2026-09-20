@@ -476,6 +476,34 @@ async def test_a_flooded_login_is_answered_with_a_path_return_carrying_the_respo
 
     decoded = decode_packet(packet)
     assert decoded.route_type is RouteType.FLOOD
+    assert decoded.hash_size == 3, "the default width for a flood we originate"
+    assert (decoded.hop_count, decoded.path) == (0, b"")
+
+
+@pytest.mark.parametrize("size", [1, 2, 3])
+async def test_a_path_return_to_a_member_with_no_route_floods_at_the_configured_width(
+    size: int,
+) -> None:
+    """The request came in at 1-byte hashes; our flood home uses our own width."""
+    from sighop.protocol.packet import decode as decode_packet
+
+    lounge, client = Entity("lounge"), Entity("client")
+    submit = RecordingSubmit()
+    server = server_for(lounge, submit=submit)
+    server.path_hash_size = size
+
+    await server.handle(
+        _packet_for(
+            login_packet(client=client, server=lounge, route_type=RouteType.FLOOD, path=b"\xab")
+        )
+    )
+
+    decoded = decode_packet(submit.submissions[0].packet)
+    assert decoded.route_type is RouteType.FLOOD
+    assert (decoded.hash_size, decoded.hop_count, decoded.path) == (size, 0, b"")
+    _, plaintext = _decrypt_reply(server, client, submit.submissions[0].packet)
+    body = parse_returned_path_body(plaintext)
+    assert (body.hash_size, body.path) == (1, b"\xab"), "the returned path keeps its width"
 
 
 async def test_a_direct_login_is_answered_with_a_response_along_the_known_route() -> None:
