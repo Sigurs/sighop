@@ -36,6 +36,39 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 To update: replace the file, update the version, URL and hash above, and run the
 asset tests. Nothing else in the project depends on the version.
 
+## `idiomorph-ext.min.js`
+
+The HTMX extension build of idiomorph: it registers the `morph` swap, so a
+conversation refreshed every three seconds updates the nodes that changed
+instead of discarding and rebuilding every row. Replacing the rows is what
+threw away a reader's selection and scroll position mid-conversation.
+
+- **Version**: 0.8.0
+- **Source**: <https://registry.npmjs.org/idiomorph/-/idiomorph-0.8.0.tgz> (`package/dist/idiomorph-ext.min.js`)
+- **Upstream**: <https://github.com/bigskysoftware/idiomorph> (tag `v0.8.0`)
+- **SHA-256**: `5811b9a7eda14878b7dab4378bf60432e1bb6f11fcfb970cc26540642650181e`
+- **License**: Zero-Clause BSD (0BSD), the same terms and the same authors as
+  htmx, reproduced below from the package's `LICENSE`.
+
+```
+Zero-Clause BSD
+===============
+
+Permission to use, copy, modify, and/or distribute this software for
+any purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
+WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES
+OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE
+FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY
+DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
+AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+```
+
+To update: replace the file, update the version, URL and hash above, and run the
+asset tests.
+
 ## Everything else here
 
 `panel.css` and `feed.js` are this project's own, written by hand. `feed.js` is

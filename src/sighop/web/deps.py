@@ -29,6 +29,7 @@ from sighop.web.guarded import NonceStore, audit
 from sighop.web.render import (
     REGULATORY_NOTE,
     meter_for,
+    navigation,
     persistence_view,
 )
 from sighop.web.state import PanelState
@@ -77,10 +78,15 @@ class Panel:
         silently stopped working. It is the signed-in session's own token
         (milestone 9 design D6), and the signed-in username is beside it for the
         sign-out control.
+
+        The navigation is assembled here for the same reason: which page is
+        being looked at is a fact about the request, and a route that had to
+        declare its own would be one forgotten flag away from an unmarked page.
         """
         session = current_session(request)
         status = self.state.scheduler.status()
         return {
+            "navigation": navigation(request.url.path),
             "state": self.state,
             "scheduler": self.state.scheduler,
             "status": status,

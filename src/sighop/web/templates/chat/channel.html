@@ -34,8 +34,13 @@
     </label>
   </p>
   <p>
-    <textarea name="text" rows="3" cols="72"
-              placeholder="up to {{ max_text_len }} bytes, the identity's name and ': ' included">{{ draft }}</textarea>
+    {# A post is `<name><separator><text>` and the whole of it rides inside the
+       limit, so the count carries the name of whichever identity is selected —
+       the same bytes `check_post_length` counts. #}
+    <textarea name="text" rows="3" cols="72" data-limit="{{ max_text_len }}"
+              data-prefix-from="identity" data-prefix-separator="{{ name_separator }}"
+              placeholder="up to {{ max_text_len }} bytes, the identity's name and '{{ name_separator }}' included">{{ draft }}</textarea>
+    <span class="count" aria-live="polite"></span>
   </p>
   {% if channel.kind == 'public' %}
   <p class="note"><strong>{{ public_note }}</strong></p>

@@ -292,7 +292,8 @@ async def test_a_retention_bound_states_how_many_messages_are_stored(
     async with _live(app) as client:
         body = (await client.get(f"/admin/rooms/{room.id}/retention")).text
 
-    assert "3</strong> stored message(s)" in body
+    # `plural()` writes the real plural now, and the whole phrase is emphasised.
+    assert "3 stored messages</strong>" in body
     assert "retention wins over sync" in body
 
 
@@ -919,7 +920,8 @@ async def test_the_chat_page_lists_channel_kind_hash_guessable_and_count(
     async with _live(app) as client:
         body = (await client.get("/chat")).text
     assert "Public" in body and ">public<" in body and ">11<" in body
-    assert ">guessable<" in body
+    # Guessable is a status glyph with its meaning on hover, not a word per row.
+    assert 'class="status status-guessable"' in body
     assert "sighop channel key" in body and "not shown here" in body
 
 
@@ -977,6 +979,35 @@ async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Da
 
 
 @pytest.mark.database
+async def test_channel_administration_is_closed_until_it_is_wanted(database: Database) -> None:
+    """The three add-a-channel forms are on the chat page, as `web-chat`
+    requires, but folded away on an ordinary visit — and never folded away over
+    a refusal the operator has to read (`web-admin`)."""
+    app, _state, _log = _channel_state(database)
+    async with _live(app) as client:
+        ordinary = (await client.get("/chat")).text
+        refused = await _apost(
+            client,
+            app,
+            "/admin/channels/psk",
+            name="short",
+            key=base64.b64encode(bytes(8)).decode(),
+        )
+        added = await _apost(client, app, "/admin/channels/hashtag", hashtag="dev-sighop")
+        after_add = (await client.get(added.headers["location"])).text
+
+    # Present, and closed, on a visit with nothing to say.
+    assert '<details class="channel-admin"' in ordinary
+    assert '<details class="channel-admin" open>' not in ordinary
+    assert "/admin/channels/psk" in ordinary, "the form is on the page, merely folded"
+
+    # Open wherever there is a reason or a result inside it to read.
+    assert '<details class="channel-admin" open>' in refused.text
+    assert "decodes to 8 bytes" in refused.text
+    assert '<details class="channel-admin" open>' in after_add
+
+
+@pytest.mark.database
 async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
     database: Database,
 ) -> None:
@@ -1009,7 +1040,7 @@ async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
         again = (await client.get("/chat")).text
 
     assert bare.status_code == 403
-    assert "40 recorded message(s) will be deleted" in form
+    assert "40 recorded messages will be deleted" in form
     assert confirmed.status_code == 303
     assert confirmed.headers["location"] == "/chat?removed=Public"
     listed = await ChannelRepository(database=database).list_all()

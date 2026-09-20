@@ -7,16 +7,18 @@
 
 <h2>radio</h2>
 {% if readings %}
-<table class="counters">
-  <tbody>
-    {% for reading in readings %}
-    <tr>
-      <td>{{ reading.label }}</td>
-      <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      {% for reading in readings %}
+      <tr>
+        <td>{{ reading.label }}</td>
+        <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 <p class="note">
   Every value here is the board's own answer to the startup probe. A value the
   board did not answer is shown as <strong>absent</strong> with the reason —
@@ -51,20 +53,22 @@
 </p>
 
 <h2>station controls</h2>
-<table class="counters">
-  <tbody>
-    <tr>
-      <td>transmission</td>
-      <td class="mono">{{ 'enabled' if transmit_enabled else 'disabled' }}</td>
-      <td><a href="/admin/transmit">enable transmission…</a></td>
-    </tr>
-    <tr>
-      <td>airtime ceiling</td>
-      <td class="mono">{{ '%g'|format(ceiling_fraction * 100) }}%</td>
-      <td><a href="/admin/ceiling">raise the airtime ceiling…</a></td>
-    </tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr>
+        <td>transmission</td>
+        <td class="mono">{{ 'enabled' if transmit_enabled else 'disabled' }}</td>
+        <td><a href="/admin/transmit">enable transmission…</a></td>
+      </tr>
+      <tr>
+        <td>airtime ceiling</td>
+        <td class="mono">{{ '%g'|format(ceiling_fraction * 100) }}%</td>
+        <td><a href="/admin/ceiling">raise the airtime ceiling…</a></td>
+      </tr>
+    </tbody>
+  </table>
+</div>
 <p class="note">
   Each link opens a confirmation that states what the change does and asks for
   your password; following it changes nothing. The regulatory default ceiling is
@@ -82,13 +86,15 @@
   state from knowing that it disagrees.
 </p>
 {% else %}
-<table class="counters">
-  <tbody>
-    <tr><td>applied</td><td class="mono">{{ applied or '(none)' }}</td></tr>
-    <tr><td>expected</td><td class="mono">{{ expected }}</td></tr>
-    <tr><td>agree</td><td class="mono">{{ 'yes' if agree else 'NO' }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>applied</td><td class="mono">{{ applied or '(none)' }}</td></tr>
+      <tr><td>expected</td><td class="mono">{{ expected }}</td></tr>
+      <tr><td>agree</td><td class="mono">{{ 'yes' if agree else 'NO' }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 {% if agree %}
 <p class="note">

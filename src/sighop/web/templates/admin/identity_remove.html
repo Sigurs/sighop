@@ -16,14 +16,16 @@
   <p class="unavailable"><strong>Nothing was removed.</strong> {{ refusal.reason }}</p>
   {% endif %}
 
-  <table class="counters">
-    <tbody>
-      <tr><td>identity</td><td>{{ record.name }}</td></tr>
-      <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
-      <tr><td>node hash</td><td class="mono">{{ '%02x' % record.node_hash }}</td></tr>
-      <tr><td>loaded by this run</td><td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="counters">
+      <tbody>
+        <tr><td>identity</td><td>{{ record.name }}</td></tr>
+        <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
+        <tr><td>node hash</td><td class="mono">{{ '%02x' % record.node_hash }}</td></tr>
+        <tr><td>loaded by this run</td><td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
+      </tbody>
+    </table>
+  </div>
 
   {% if serving %}
   <p class="unavailable">

@@ -6,13 +6,15 @@
 {% block content %}
 <h1>identity renamed</h1>
 
-<table class="counters">
-  <tbody>
-    <tr><td>was</td><td class="mono">{{ previous }}</td></tr>
-    <tr><td>now</td><td class="mono">{{ new_name }}</td></tr>
-    <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>was</td><td class="mono">{{ previous }}</td></tr>
+      <tr><td>now</td><td class="mono">{{ new_name }}</td></tr>
+      <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <p>
   <strong>The stored identity is renamed.</strong>

@@ -2418,6 +2418,10 @@ class WebUserExistsError(RuntimeError):
     """An account with this normalised username exists. Names the existing one."""
 
 
+class UnknownIdentityError(RuntimeError):
+    """A default chat identity naming an `entity` row that does not exist."""
+
+
 def normalise_username(value: str) -> str:
     """The one form a username is stored, compared and looked up in (design D1).
 
@@ -2463,13 +2467,17 @@ class WebUserRecord:
     enabled: bool
     created_at: dt.datetime
     password_set_at: dt.datetime
+    default_entity_id: uuid.UUID | None = None
+    """The identity this account chats as unless another is chosen. A
+    preference: it grants nothing, and `entity.id` clears it on removal."""
 
     def __repr__(self) -> str:
         return (
             f"WebUserRecord(id={self.id}, username={self.username!r}, "
             f"password_hash=<redacted>, enabled={self.enabled}, "
             f"created_at={self.created_at.isoformat()}, "
-            f"password_set_at={self.password_set_at.isoformat()})"
+            f"password_set_at={self.password_set_at.isoformat()}, "
+            f"default_entity_id={self.default_entity_id})"
         )
 
     def as_json(self) -> dict[str, object]:
@@ -2479,6 +2487,9 @@ class WebUserRecord:
             "enabled": self.enabled,
             "created_at": self.created_at.isoformat(),
             "password_set_at": self.password_set_at.isoformat(),
+            "default_entity_id": (
+                None if self.default_entity_id is None else str(self.default_entity_id)
+            ),
         }
 
 
@@ -2664,6 +2675,44 @@ class WebUserRepository:
 
         return await self.database.run("count_enabled_web_users", work)
 
+    async def set_default_identity(
+        self, username: str, entity_id: uuid.UUID | None
+    ) -> Outcome[bool]:
+        """Set or clear the identity this account chats as. `None` clears it.
+
+        An identity no `entity` row holds is refused here rather than left to
+        the foreign key, because the caller is a person choosing from a list and
+        an integrity error is not an answer to "which identity?". The constraint
+        stays the backstop, and `ON DELETE SET NULL` stays the cleanup: this
+        check loses a race with a removal and the schema does not.
+
+        `False` means no account of that name was updated.
+        """
+        if entity_id is not None:
+            held = await self._entity_exists(entity_id)
+            if isinstance(held, Failed):
+                return held
+            if not held.value:
+                raise UnknownIdentityError(
+                    f"no identity {entity_id} is stored; a default chat identity "
+                    "names one of this platform's own identities, and the stored "
+                    "default is unchanged"
+                )
+        return await self._update(
+            username, "set_web_user_default_identity", default_entity_id=entity_id
+        )
+
+    async def _entity_exists(self, entity_id: uuid.UUID) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            found = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(EntityRow.id).where(EntityRow.id == entity_id)
+                )
+            ).scalar_one_or_none()
+            return found is not None
+
+        return await self.database.run("get_entity_for_default_identity", work)
+
     async def _update(self, username: str, operation: str, **values: object) -> Outcome[bool]:
         name = normalise_username(username)
 
@@ -2684,6 +2733,7 @@ def _web_user(row: WebUserRow) -> WebUserRecord:
         enabled=row.enabled,
         created_at=row.created_at,
         password_set_at=row.password_set_at,
+        default_entity_id=row.default_entity_id,
     )
 
 

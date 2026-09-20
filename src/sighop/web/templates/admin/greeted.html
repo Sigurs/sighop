@@ -19,32 +19,34 @@
 <p class="unavailable">{{ clearing_note }}</p>
 
 {% if records %}
-<table>
-  <thead>
-    <tr><th class="mono">contact</th><th>name</th><th>state</th>
-        <th class="mono">recorded</th><th></th></tr>
-  </thead>
-  <tbody>
-    {% for record in records %}
-    <tr>
-      <td>{{ display.key(record.public_key) }}</td>
-      <td>{{ record.name or '—' }}</td>
-      <td class="mono">
-        {{ record.outcome }}{% if not record.settled %}
-        after {{ plural(record.attempts, 'attempt') }}{% endif %}
-      </td>
-      <td class="mono">{{ display.when(record.at, record.at_raw or '—') }}</td>
-      <td>
-        <form method="post" action="/admin/bots/{{ bot.id }}/greeted/clear">
-          <input type="hidden" name="_token" value="{{ token }}">
-          <input type="hidden" name="public_key" value="{{ record.public_key }}">
-          <button type="submit">clear this record</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th class="mono">contact</th><th>name</th><th>state</th>
+          <th class="mono">recorded</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for record in records %}
+      <tr>
+        <td>{{ display.key(record.public_key) }}</td>
+        <td>{{ record.name or '—' }}</td>
+        <td class="mono">
+          {{ record.outcome }}{% if not record.settled %}
+          after {{ plural(record.attempts, 'attempt') }}{% endif %}
+        </td>
+        <td class="mono">{{ display.when(record.at, record.at_raw or '—') }}</td>
+        <td>
+          <form method="post" action="/admin/bots/{{ bot.id }}/greeted/clear">
+            <input type="hidden" name="_token" value="{{ token }}">
+            <input type="hidden" name="public_key" value="{{ record.public_key }}">
+            <button type="submit">clear this record</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="empty">
   <strong>No greeting records.</strong> This bot has acted on nobody and owes a

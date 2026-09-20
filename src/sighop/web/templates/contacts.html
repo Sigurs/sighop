@@ -9,60 +9,63 @@
 <h1>contacts</h1>
 
 {% if rows %}
-<table>
-  <thead>
-    <tr>
-      <th>contact</th>
-      <th class="mono">public key</th>
-      <th class="mono">hash</th>
-      <th>type</th>
-      <th>first heard</th>
-      <th>last heard</th>
-      <th>route</th>
-      <th class="num">snr</th>
-      <th>confirmed</th>
-      {% if identities %}<th>message</th>{% endif %}
-    </tr>
-  </thead>
-  <tbody>
-    {% for row in rows %}
-    <tr>
-      <td>{{ identity.identity(row.identity, key=false) }}</td>
-      <td>{{ display.key(row.identity.key_hex) }}</td>
-      <td class="mono">{{ '0x%02x'|format(row.identity.node_hash) }}</td>
-      <td class="mono">{{ row.node_type or '—' }}</td>
-      <td class="mono">{{ display.when(row.first_heard) }}</td>
-      <td class="mono">{{ display.when(row.last_heard) }}</td>
-      <td>
-        {%- if row.route -%}
-          {{ display.status(row.route.status) }}
-          {%- if row.route.caveat %}<span class="route-ambiguous"> · ambiguous</span>{% endif -%}
-        {%- else -%}
-          <span class="absent">no route known</span>
-        {%- endif -%}
-      </td>
-      <td class="num">
-        {%- if row.route and row.route.snr_db is not none -%}
-          {{ '%+.2f'|format(row.route.snr_db) }}
-        {%- else -%}
-          <span class="absent">—</span>
-        {%- endif -%}
-      </td>
-      <td class="mono">
-        {{ display.when(row.route.confirmed_at if row.route else none) }}
-      </td>
-      {% if identities %}
-      <td>
-        {%- for entity in identities -%}
-        {%- if not loop.first %} · {% endif -%}
-        <a href="/chat/{{ entity.identity.public_key.hex() }}/{{ row.identity.key_hex }}">as {{ entity.name }}</a>
-        {%- endfor -%}
-      </td>
-      {% endif %}
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>contact</th>
+        <th class="mono">public key</th>
+        <th class="mono">hash</th>
+        <th>type</th>
+        <th>first heard</th>
+        <th>last heard</th>
+        <th>route</th>
+        <th class="num">snr</th>
+        <th>confirmed</th>
+        {% if identities %}<th>message</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ identity.identity(row.identity, key=false) }}</td>
+        <td>{{ display.key(row.identity.key_hex) }}</td>
+        <td class="mono">{{ '0x%02x'|format(row.identity.node_hash) }}</td>
+        <td class="mono">{{ row.node_type or '—' }}</td>
+        <td class="mono">{{ display.when(row.first_heard) }}</td>
+        <td class="mono">{{ display.when(row.last_heard) }}</td>
+        <td>
+          {%- if row.route -%}
+            {{ display.status(row.route.status) }}
+            {%- if row.route.caveat %}<span class="route-ambiguous"> · ambiguous</span>{% endif -%}
+          {%- else -%}
+            <span class="absent">no route known</span>
+          {%- endif -%}
+        </td>
+        <td class="num">
+          {%- if row.route and row.route.snr_db is not none -%}
+            {{ '%+.2f'|format(row.route.snr_db) }}
+          {%- else -%}
+            <span class="absent">—</span>
+          {%- endif -%}
+        </td>
+        <td class="mono">
+          {{ display.when(row.route.confirmed_at if row.route else none) }}
+        </td>
+        {% if identities %}
+        <td>
+          {% if sending_as %}
+          <a href="/chat/{{ sending_as.identity.public_key.hex() }}/{{ row.identity.key_hex }}">as {{ sending_as.name }}</a>
+          {% else %}
+          <a href="/chat">choose an identity to chat as</a>
+          {% endif %}
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% if not identities %}
 <p class="empty">
   <strong>No identity to send as.</strong> A conversation is between one local

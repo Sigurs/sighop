@@ -10,17 +10,19 @@
 {% else %}
 <div class="guarded">
   <p><strong>This action {{ description }}</strong></p>
-  <table class="counters">
-    <tbody>
-      <tr><td>room</td><td>{{ room.name }}</td></tr>
-      <tr><td>members that will be deleted</td>
-          <td class="mono">{{ 'unknown — the count could not be read' if members is none or members < 0 else members }}</td></tr>
-      <tr><td>stored messages that will be deleted</td>
-          <td class="mono">{{ 'unknown — the count could not be read' if messages is none or messages < 0 else messages }}</td></tr>
-      <tr><td>identity it speaks as</td>
-          <td class="mono">{{ identity.name if identity else 'unknown' }}</td></tr>
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="counters">
+      <tbody>
+        <tr><td>room</td><td>{{ room.name }}</td></tr>
+        <tr><td>members that will be deleted</td>
+            <td class="mono">{{ 'unknown — the count could not be read' if members is none or members < 0 else members }}</td></tr>
+        <tr><td>stored messages that will be deleted</td>
+            <td class="mono">{{ 'unknown — the count could not be read' if messages is none or messages < 0 else messages }}</td></tr>
+        <tr><td>identity it speaks as</td>
+            <td class="mono">{{ identity.name if identity else 'unknown' }}</td></tr>
+      </tbody>
+    </table>
+  </div>
   <p><strong>This cannot be undone.</strong></p>
   <p class="note">
     The identity{% if identity %} <span class="mono">{{ identity.name }}</span>{% endif %}

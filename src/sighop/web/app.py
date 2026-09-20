@@ -56,6 +56,7 @@ from sighop.web.feed import Connection, FeedHub
 from sighop.web.guard import UNAUTHENTICATED, RequestGuard, current_session
 from sighop.web.render import (
     contact_rows,
+    default_identity,
     install_display,
     queue_rows,
 )
@@ -200,12 +201,23 @@ def create_app(
 
     @app.get("/contacts", response_class=HTMLResponse)
     async def contacts(request: Request) -> HTMLResponse:
-        """Who we have heard, with the route a message to them would take."""
+        """Who we have heard, with the route a message to them would take.
+
+        Each row links to one conversation — as the identity this operator chats
+        as, or as the only identity this run holds. Resolved from the session,
+        so the page still reads nothing durable.
+        """
+        held = list(state.adverts.stubs)
+        session = current_session(request)
+        sending_as = default_identity(held, None if session is None else session.default_entity_id)
+        if sending_as is None and len(held) == 1:
+            sending_as = held[0]
         return page(
             request,
             "contacts.html",
             rows=contact_rows(state.contacts, state.pipeline.paths),
-            identities=list(state.adverts.stubs),
+            identities=held,
+            sending_as=sending_as,
         )
 
     @app.websocket("/feed")

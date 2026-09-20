@@ -18,23 +18,25 @@
 </p>
 {% endif %}
 
-<table class="counters">
-  <tbody>
-    <tr><td>name</td><td class="mono">{{ record.name }}</td></tr>
-    <tr><td>role</td><td class="mono">{{ record.type }}</td></tr>
-    <tr><td>adverts as</td>
-        <td class="mono">{{ record.node_type.name if record.node_type.name is defined
-                            else record.node_type }}</td></tr>
-    <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
-    <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td></tr>
-    <tr><td>enabled</td><td class="mono">{{ 'yes' if record.enabled else 'no' }}</td></tr>
-    <tr><td>created</td><td class="mono">{{ display.when(record.created_at) }}</td></tr>
-    <tr><td>loaded by this run</td>
-        <td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
-    <tr><td>serving</td>
-        <td class="mono">{{ serving|join(', ') if serving else '—' }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>name</td><td class="mono">{{ record.name }}</td></tr>
+      <tr><td>role</td><td class="mono">{{ record.type }}</td></tr>
+      <tr><td>adverts as</td>
+          <td class="mono">{{ record.node_type.name if record.node_type.name is defined
+                              else record.node_type }}</td></tr>
+      <tr><td>public key</td><td>{{ display.key(record.public_key) }}</td></tr>
+      <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td></tr>
+      <tr><td>enabled</td><td class="mono">{{ 'yes' if record.enabled else 'no' }}</td></tr>
+      <tr><td>created</td><td class="mono">{{ display.when(record.created_at) }}</td></tr>
+      <tr><td>loaded by this run</td>
+          <td class="mono">{{ 'yes' if loaded else 'no' }}</td></tr>
+      <tr><td>serving</td>
+          <td class="mono">{{ serving|join(', ') if serving else '—' }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 {% if is_bot %}
 <h2>bot</h2>
@@ -49,15 +51,17 @@
   <strong>The bot on this identity cannot be read.</strong> The database is unreachable.
 </p>
 {% elif bot %}
-<table class="counters">
-  <tbody>
-    <tr><td>driver</td><td class="mono">{{ bot.driver }}</td></tr>
-    <tr><td>mode</td><td class="mono">{{ bot.mode }}</td></tr>
-    <tr><td>enabled</td><td class="mono">{{ 'yes' if bot.enabled else 'no' }}</td></tr>
-    <tr><td>running in this run</td><td class="mono">{{ 'yes' if running else 'no' }}</td></tr>
-    <tr><td>created</td><td class="mono">{{ display.when(bot.created_at) }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>driver</td><td class="mono">{{ bot.driver }}</td></tr>
+      <tr><td>mode</td><td class="mono">{{ bot.mode }}</td></tr>
+      <tr><td>enabled</td><td class="mono">{{ 'yes' if bot.enabled else 'no' }}</td></tr>
+      <tr><td>running in this run</td><td class="mono">{{ 'yes' if running else 'no' }}</td></tr>
+      <tr><td>created</td><td class="mono">{{ display.when(bot.created_at) }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <form method="post" action="/admin/bots/{{ bot.id }}/enabled">
   <input type="hidden" name="_token" value="{{ token }}">
@@ -78,29 +82,31 @@
 <h3>configuration</h3>
 {# One key at a time, as `sighop bot set` takes it: a refusal names the key it
    is about, and a valid change is not lost because another key was wrong. #}
-<table>
-  <thead><tr><th class="mono">key</th><th>value</th><th></th></tr></thead>
-  <tbody>
-    {% for key, value in bot.config.items()|sort %}
-    <tr>
-      <td class="mono">{{ key }}</td>
-      <td>
-        <form method="post" action="/admin/bots/{{ bot.id }}/config">
-          <input type="hidden" name="_token" value="{{ token }}">
-          <input type="hidden" name="key" value="{{ key }}">
-          <input class="mono" type="text" name="value"
-                 value="{{ refusal.value(key) if refusal and refusal.concerns(key)
-                           else ('' if value is none else value) }}">
-          <button type="submit">set</button>
-        </form>
-      </td>
-      <td class="note">
-        {% if refusal and refusal.concerns(key) %}{{ refusal.reason }}{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th class="mono">key</th><th>value</th><th></th></tr></thead>
+    <tbody>
+      {% for key, value in bot.config.items()|sort %}
+      <tr>
+        <td class="mono">{{ key }}</td>
+        <td>
+          <form method="post" action="/admin/bots/{{ bot.id }}/config">
+            <input type="hidden" name="_token" value="{{ token }}">
+            <input type="hidden" name="key" value="{{ key }}">
+            <input class="mono" type="text" name="value"
+                   value="{{ refusal.value(key) if refusal and refusal.concerns(key)
+                             else ('' if value is none else value) }}">
+            <button type="submit">set</button>
+          </form>
+        </td>
+        <td class="note">
+          {% if refusal and refusal.concerns(key) %}{{ refusal.reason }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 <p class="note">
   A value the driver rejects is refused with the driver's own reason, naming
   that key, and every other key is left exactly as it was — the same validator
@@ -109,14 +115,16 @@
 
 <h3>durable state</h3>
 {% if bot_state %}
-<table>
-  <thead><tr><th class="mono">key</th><th class="mono">value</th></tr></thead>
-  <tbody>
-    {% for key, value in bot_state.items()|sort %}
-    <tr><td class="mono">{{ key }}</td><td class="mono">{{ value }}</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th class="mono">key</th><th class="mono">value</th></tr></thead>
+    <tbody>
+      {% for key, value in bot_state.items()|sort %}
+      <tr><td class="mono">{{ key }}</td><td class="mono">{{ value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 <p class="note">
   These are the records that decide whether this bot acts on a given contact
   again. A <span class="mono">greeted:…</span> key is a contact this bot owes
@@ -163,15 +171,17 @@
 {% endif %}
 
 <h2>advert configuration</h2>
-<table>
-  <thead><tr><th class="mono">key</th><th class="mono">value</th></tr></thead>
-  <tbody>
-    {% for key, value in record.advert_config.items()|sort %}
-    <tr><td class="mono">{{ key }}</td>
-        <td class="mono">{{ 'none' if value is none else value }}</td></tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th class="mono">key</th><th class="mono">value</th></tr></thead>
+    <tbody>
+      {% for key, value in record.advert_config.items()|sort %}
+      <tr><td class="mono">{{ key }}</td>
+          <td class="mono">{{ 'none' if value is none else value }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 <p class="note">
   No private key and no ciphertext appears on this page, and there is no option

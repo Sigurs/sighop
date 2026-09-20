@@ -12,32 +12,53 @@
 {% endif %}
 
 {% if conversations %}
-<table>
-  <thead>
-    <tr><th>identity</th><th>contact</th><th class="num">messages</th>
-        <th>last activity</th><th></th></tr>
-  </thead>
-  <tbody>
-    {% for row in conversations %}
-    <tr{% if row.new %} class="conversation-new"{% endif %}>
-      <td class="mono">{{ row.entity_name }}</td>
-      <td>{{ identity.identity(row.peer, key=false) }}</td>
-      <td class="num">{{ row.messages }}</td>
-      <td class="mono">{{ display.when(row.latest_at) }}</td>
-      <td>
-        <a href="/chat/{{ row.entity_key }}/{{ row.peer_key }}">open</a>
-        {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>identity</th><th>contact</th><th class="num">messages</th>
+          <th>last activity</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for row in conversations %}
+      <tr{% if row.new %} class="conversation-new"{% endif %}>
+        <td class="mono">{{ row.entity_name }}</td>
+        <td>{{ identity.identity(row.peer, key=false) }}</td>
+        <td class="num">{{ row.messages }}</td>
+        <td class="mono">{{ display.when(row.latest_at) }}</td>
+        <td>
+          <a href="/chat/{{ row.entity_key }}/{{ row.peer_key }}">open</a>
+          {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="empty">
   <strong>No conversations.</strong> Start one from the
   <a href="/contacts">contacts</a> page: each contact links to a conversation as
-  each identity this run holds.
+  the identity you chat as.
 </p>
+{% endif %}
+{% if storable_identities %}
+<form method="post" action="/chat/identity" class="composer">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <input type="hidden" name="next" value="/chat">
+  <p>
+    <label>chat as
+      <select name="identity">
+        <option value="" {% if not chatting_as %}selected{% endif %}>choose for each message</option>
+        {% for entity in storable_identities %}
+        <option value="{{ entity.identity.public_key.hex() }}"
+                {% if chatting_as == entity.identity.public_key.hex() %}selected{% endif %}>{{ entity.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">save</button>
+  </p>
+  <p class="note">{{ chatting_as_note }}</p>
+</form>
 {% endif %}
 {% if not identities %}
 <p class="empty">
@@ -73,38 +94,40 @@
 {% if channels %}
 <p class="note">Reading a channel needs no identity. Channel sender names are not
 authenticated: anyone holding a channel's key can claim any name.</p>
-<table>
-  <thead>
-    <tr><th>channel</th>{% if not no_database %}<th>kind</th>{% endif %}<th>hash</th><th>key</th>
-        {% if not no_database %}<th class="num">messages</th><th>loaded</th>{% endif %}<th></th></tr>
-  </thead>
-  <tbody>
-    {% for row in channels %}
-    <tr{% if row.new %} class="conversation-new"{% endif %}>
-      <td>{{ row.name }}</td>
-      {% if not no_database %}<td class="mono">{{ row.kind or '—' }}</td>{% endif %}
-      <td class="mono">{{ '%02x' % row.channel_hash }}</td>
-      <td>{% if row.guessable %}{{ display.status(guessable_status) }}{% else %}pre-shared{% endif %}</td>
-      {% if not no_database %}
-      <td class="num">{{ row.messages if row.messages is not none else '—' }}</td>
-      <td class="mono">{{ 'yes' if row.loaded else 'not loaded' }}</td>
-      {% endif %}
-      <td>
-        {% if row.loaded %}
-        <a href="/chat/channel/{{ row.id }}">open</a>
-        {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>channel</th>{% if not no_database %}<th>kind</th>{% endif %}<th>hash</th><th>key</th>
+          {% if not no_database %}<th class="num">messages</th><th>loaded</th>{% endif %}<th></th></tr>
+    </thead>
+    <tbody>
+      {% for row in channels %}
+      <tr{% if row.new %} class="conversation-new"{% endif %}>
+        <td>{{ row.name }}</td>
+        {% if not no_database %}<td class="mono">{{ row.kind or '—' }}</td>{% endif %}
+        <td class="mono">{{ '%02x' % row.channel_hash }}</td>
+        <td>{% if row.guessable %}{{ display.status(guessable_status) }}{% else %}pre-shared{% endif %}</td>
+        {% if not no_database %}
+        <td class="num">{{ row.messages if row.messages is not none else '—' }}</td>
+        <td class="mono">{{ 'yes' if row.loaded else 'not loaded' }}</td>
         {% endif %}
-        {% if row.stored %}
-        {% if row.loaded %}·{% endif %}
-        <a href="/admin/channels/{{ row.id }}/rename">rename…</a>
-        ·
-        <a href="/admin/channels/{{ row.id }}/remove">remove…</a>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+        <td>
+          {% if row.loaded %}
+          <a href="/chat/channel/{{ row.id }}">open</a>
+          {% if row.new %}<span class="new-marker">{{ row.new }} new</span>{% endif %}
+          {% endif %}
+          {% if row.stored %}
+          {% if row.loaded %}·{% endif %}
+          <a href="/admin/channels/{{ row.id }}/rename">rename…</a>
+          ·
+          <a href="/admin/channels/{{ row.id }}/remove">remove…</a>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="empty">
   <strong>No channels loaded.</strong> Group text on the air is left undecrypted
@@ -118,7 +141,19 @@ authenticated: anyone holding a channel's key can claim any name.</p>
 {% if no_database %}
 <p class="unavailable"><strong>No channel administration.</strong> {{ no_database_note }}</p>
 {% else %}
-<p class="note">Guessable: {{ guessable_statement }}.</p>
+{# What "guessable" means was stated here as well as on every guessable row's
+   own marking, which carries it on hover, and again in the hashtag form where
+   it is the thing being decided. Said once per place it matters, rather than
+   three times on one page (`web-display`). #}
+
+{# The three add-a-channel forms are on this page, as `web-chat` requires, but
+   closed until they are wanted: reading a channel is the ordinary visit, and
+   adding one is not. Opened by construction whenever there is something to
+   read in them — a refusal to correct, or a result to confirm — so a reason is
+   never behind a control the operator has to find (`web-admin`). Plain
+   `<details>`: no script is involved in opening it. #}
+<details class="channel-admin" {% if refusal or just_added or removed %}open{% endif %}>
+<summary>add a channel — hashtag, pre-shared key{% if not public_stored %}, or Public again{% endif %}</summary>
 
 {% set adding_hashtag = refusal if refusal and refusal.field in ('hashtag', '') else none %}
 <h2>add a hashtag channel</h2>
@@ -168,6 +203,7 @@ authenticated: anyone holding a channel's key can claim any name.</p>
   <button type="submit">add Public again</button>
 </form>
 {% endif %}
+</details>
 
 <h2>channel keys are not shown here</h2>
 <p class="note">{{ keys_note }}</p>

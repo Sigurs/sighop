@@ -7,6 +7,7 @@ no rendering of an account carries its hash.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
 import uuid
 from collections.abc import Awaitable, Callable
@@ -15,15 +16,21 @@ from dataclasses import dataclass, field
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sighop.config import generate_secret_key
 from sighop.db.engine import Database, Failed, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
+    EntityRepository,
+    UnknownIdentityError,
     UsernameError,
     WebUserExistsError,
     WebUserRecord,
     WebUserRepository,
 )
+from sighop.protocol.identity import generate_identity
+from sighop.protocol.payloads import NodeType
 
+SECRET = base64.b64decode(generate_secret_key())
 HASH = "$argon2id$v=19$m=65536,t=2,p=1$c2FsdHNhbHQ$dGFndGFndGFn"
 OTHER_HASH = "$argon2id$v=19$m=65536,t=2,p=1$b3RoZXJzYWx0$b3RoZXJ0YWc"
 
@@ -302,4 +309,54 @@ def test_no_rendering_of_an_account_carries_its_hash() -> None:
         "enabled",
         "created_at",
         "password_set_at",
+        "default_entity_id",
     }
+
+
+# --- 2.1 The default chat identity ------------------------------------------
+
+
+@pytest.mark.database
+async def test_the_default_identity_is_set_cleared_and_read_back(
+    database: Database,
+) -> None:
+    users = WebUserRepository(database=database)
+    _value(await users.add("dev-operator", password_hash=HASH))
+    entity = _value(
+        await EntityRepository(database=database).store(
+            name="dev-companion",
+            identity=generate_identity(),
+            secret=SECRET,
+            node_type=NodeType.CHAT,
+        )
+    )
+
+    assert _value(await users.get("dev-operator")).default_entity_id is None
+    assert _value(await users.set_default_identity("Dev-Operator", entity.id))
+    assert _value(await users.get("dev-operator")).default_entity_id == entity.id
+
+    assert _value(await users.set_default_identity("dev-operator", None))
+    assert _value(await users.get("dev-operator")).default_entity_id is None
+
+
+@pytest.mark.database
+async def test_setting_a_default_for_an_account_that_is_not_there_reports_false(
+    database: Database,
+) -> None:
+    users = WebUserRepository(database=database)
+    assert not _value(await users.set_default_identity("nobody", None))
+
+
+@pytest.mark.database
+async def test_an_identity_no_row_holds_is_refused_naming_it(database: Database) -> None:
+    """The refusal is the repository's, not the foreign key's: the caller is a
+    person choosing from a list, and an integrity error is not an answer."""
+    users = WebUserRepository(database=database)
+    _value(await users.add("dev-operator", password_hash=HASH))
+    unknown = uuid.uuid4()
+
+    with pytest.raises(UnknownIdentityError) as excinfo:
+        await users.set_default_identity("dev-operator", unknown)
+
+    assert str(unknown) in str(excinfo.value)
+    assert _value(await users.get("dev-operator")).default_entity_id is None

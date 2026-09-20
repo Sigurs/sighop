@@ -78,48 +78,50 @@
 <h2>stored</h2>
 {{ collection.state(stored, "identities") }}
 {% if stored.readable and stored.items %}
-<table>
-  <thead>
-    <tr><th>name</th><th>role</th><th class="mono">public key</th>
-        <th class="mono">hash</th><th>enabled</th><th>created</th><th>serving</th><th></th></tr>
-  </thead>
-  <tbody>
-    {% for record in stored %}
-    {% set serving = bindings.get(record.id|string, []) %}
-    <tr>
-      <td><a href="/admin/identities/{{ record.id }}">{{ record.name }}</a></td>
-      <td class="mono">{{ record.type }}</td>
-      <td>{{ display.key(record.public_key) }}</td>
-      <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
-      <td class="mono">{{ 'yes' if record.enabled else 'no' }}</td>
-      <td class="mono">{{ display.when(record.created_at) }}</td>
-      <td class="mono">
-        {%- if serving -%}
-        <a href="/admin/identities/{{ record.id }}">{{ serving|join(', ') }}</a>
-        {%- else -%}—{%- endif -%}
-      </td>
-      <td>
-        <form method="post" action="/admin/identities/{{ record.id }}/enabled">
-          <input type="hidden" name="_token" value="{{ token }}">
-          <input type="hidden" name="enabled" value="{{ 'false' if record.enabled else 'true' }}">
-          {% if record.enabled and serving %}
-          <p class="unavailable">
-            Disabling this identity stops {{ serving|join(' and ') }}. That
-            room or bot has no other identity to run on.
-          </p>
-          {% endif %}
-          <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>
-        </form>
-        <a href="/admin/identities/{{ record.id }}/rename">rename…</a>
-        ·
-        <a href="/admin/identities/{{ record.id }}/export">export…</a>
-        ·
-        <a href="/admin/identities/{{ record.id }}/remove">remove…</a>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>name</th><th>role</th><th class="mono">public key</th>
+          <th class="mono">hash</th><th>enabled</th><th>created</th><th>serving</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for record in stored %}
+      {% set serving = bindings.get(record.id|string, []) %}
+      <tr>
+        <td><a href="/admin/identities/{{ record.id }}">{{ record.name }}</a></td>
+        <td class="mono">{{ record.type }}</td>
+        <td>{{ display.key(record.public_key) }}</td>
+        <td class="mono">{{ '0x%02x'|format(record.node_hash) }}</td>
+        <td class="mono">{{ 'yes' if record.enabled else 'no' }}</td>
+        <td class="mono">{{ display.when(record.created_at) }}</td>
+        <td class="mono">
+          {%- if serving -%}
+          <a href="/admin/identities/{{ record.id }}">{{ serving|join(', ') }}</a>
+          {%- else -%}—{%- endif -%}
+        </td>
+        <td>
+          <form method="post" action="/admin/identities/{{ record.id }}/enabled">
+            <input type="hidden" name="_token" value="{{ token }}">
+            <input type="hidden" name="enabled" value="{{ 'false' if record.enabled else 'true' }}">
+            {% if record.enabled and serving %}
+            <p class="unavailable">
+              Disabling this identity stops {{ serving|join(' and ') }}. That
+              room or bot has no other identity to run on.
+            </p>
+            {% endif %}
+            <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>
+          </form>
+          <a href="/admin/identities/{{ record.id }}/rename">rename…</a>
+          ·
+          <a href="/admin/identities/{{ record.id }}/export">export…</a>
+          ·
+          <a href="/admin/identities/{{ record.id }}/remove">remove…</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% endif %}
 
 <h2>create an identity</h2>

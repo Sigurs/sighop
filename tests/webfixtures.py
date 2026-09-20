@@ -425,7 +425,11 @@ def signed_in(client: object, username: str = OPERATOR, *, send_token: bool = Tr
     """
     auth: Authenticator = _app_of(client).state.auth  # type: ignore[attr-defined]
     record = auth.accounts.accounts[normalise_username(username)]  # type: ignore[attr-defined]
-    token, session = auth.sessions.issue(record.username, password_set_at=record.password_set_at)
+    token, session = auth.sessions.issue(
+        record.username,
+        password_set_at=record.password_set_at,
+        default_entity_id=record.default_entity_id,
+    )
     client.cookies.set(SESSION_COOKIE, token)  # type: ignore[attr-defined]
     if send_token:
         client.headers[TOKEN_HEADER] = session.csrf_token  # type: ignore[attr-defined]

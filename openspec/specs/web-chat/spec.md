@@ -13,7 +13,10 @@ actually are.
 ### Requirement: A conversation is between one local identity and one contact
 The system SHALL present conversations keyed by the pair of a local identity and a contact, SHALL
 require the operator to have chosen both before a message can be composed, and SHALL NOT merge the
-messages of two local identities with the same contact into one conversation.
+messages of two local identities with the same contact into one conversation. The conversation's
+composer SHALL offer the identity to send as, preselected with the operator's default where this run
+holds it, and sending as another identity SHALL place the message in that identity's conversation
+with the same contact.
 
 #### Scenario: Two identities talking to one contact
 - **WHEN** two local identities have each exchanged messages with the same contact
@@ -22,6 +25,10 @@ messages of two local identities with the same contact into one conversation.
 #### Scenario: Composing without a chosen identity
 - **WHEN** no local identity is selected
 - **THEN** no message can be composed, and the interface says an identity must be chosen
+
+#### Scenario: Sending as another identity
+- **WHEN** an operator opens a conversation, selects an identity other than the one shown, and sends
+- **THEN** the message is sent as the selected identity and appears in that identity's conversation with the contact
 
 ### Requirement: Sending uses the platform's own send path and reports its outcome
 The system SHALL send a composed message through the same composition, routing, retry and
@@ -68,7 +75,10 @@ refusal SHALL NOT be recorded as a message, and text SHALL NOT be truncated to f
 ### Requirement: Received messages appear in their conversation as they arrive
 The system SHALL show a received direct message in its conversation as the platform receives it,
 without the operator reloading, carrying the time it was received and the wire timestamp its sender
-put on it where those differ.
+put on it where those differ. Bringing a conversation up to date SHALL NOT disturb what the
+operator is doing in it: text the operator has selected SHALL stay selected, the scroll position
+SHALL be kept, and a message already on screen SHALL NOT be redrawn unless what it states has
+changed.
 
 #### Scenario: A message arrives while a conversation is open
 - **WHEN** a direct message for the open conversation is received
@@ -77,6 +87,14 @@ put on it where those differ.
 #### Scenario: A message arrives for another conversation
 - **WHEN** a direct message is received for a conversation that is not open
 - **THEN** the interface indicates that conversation has something new, and the message is in it when opened
+
+#### Scenario: Reading while the conversation updates
+- **WHEN** the operator has selected the text of a message and the conversation is brought up to date
+- **THEN** the selection survives and the view does not jump
+
+#### Scenario: A state that changed
+- **WHEN** a sent message's delivery state changes from awaiting acknowledgement to acknowledged
+- **THEN** that message's state is redrawn to state it
 
 ### Requirement: A received message's sender is identified by the key that decrypted it, and is not presented as an authenticated identity
 The system SHALL identify a received message by the contact whose key decrypted it, and SHALL state
@@ -127,7 +145,10 @@ marking as guessable where it is a hashtag or Public channel, and an indication 
 received since it was last opened. Where a database is configured, the same list SHALL carry each
 channel's administration: its kind, hash and message count, links to rename and remove it, the
 stored channels this run could not load, and the forms that add a hashtag channel, add a
-pre-shared-key channel and re-add Public.
+pre-shared-key channel and re-add Public. Those add-a-channel forms MAY be collapsed behind a
+disclosure that is closed when the page is first opened, provided the disclosure names what it
+holds; where a submission was refused, or a channel was just added or removed, the forms SHALL be
+expanded and the reason or result visible without the operator opening anything.
 
 #### Scenario: Opening chat with channels loaded
 - **WHEN** the chat interface is opened on a run with the Public channel and one hashtag channel loaded
@@ -140,6 +161,10 @@ pre-shared-key channel and re-add Public.
 #### Scenario: Administering channels from chat
 - **WHEN** the chat interface is opened on a run with a database
 - **THEN** each listed channel links to its rename and remove confirmations, and the forms to add a channel are on the same page
+
+#### Scenario: A refused addition is not hidden
+- **WHEN** the chat page is re-shown after a pre-shared key was refused
+- **THEN** the reason and the form it was submitted from are both visible without the operator expanding anything
 
 ### Requirement: A channel conversation shows the channel's history and new messages as they arrive
 The system SHALL show a channel's recorded history and SHALL show a received channel message without
@@ -168,18 +193,27 @@ SHALL state in the conversation that anyone holding the channel key can claim an
 - **THEN** the interface states that channel sender names are not authenticated
 
 ### Requirement: A channel post is composed as a chosen identity and reports what can be known
-The system SHALL require an identity to be chosen before a channel post can be composed, SHALL send
-it through the platform's channel post path, and SHALL show the post under the identity that posted
-it with its state: awaiting transmission, transmitted, or not transmitted with the reason; and the
-number of repeats heard, drawn as a repeat glyph and count whose hover states it is repeater
-evidence rather than delivery. That no acknowledgement exists for channel messages SHALL be stated
-once on the channel page and in the transmitted glyph's hover text, not repeated in every row. A post
-refused by the platform SHALL be refused at composition with the reason stated, the author's text
-preserved, and nothing recorded.
+The system SHALL require an identity to be chosen before a channel post can be composed, SHALL
+preselect the operator's default identity where this run holds it while leaving every other loaded
+identity selectable for that post, SHALL send it through the platform's channel post path, and SHALL
+show the post under the identity that posted it with its state: awaiting transmission, transmitted,
+or not transmitted with the reason; and the number of repeats heard, drawn as a repeat glyph and
+count whose hover states it is repeater evidence rather than delivery. That no acknowledgement
+exists for channel messages SHALL be stated once on the channel page and in the transmitted glyph's
+hover text, not repeated in every row. A post refused by the platform SHALL be refused at
+composition with the reason stated, the author's text preserved, and nothing recorded.
 
 #### Scenario: Composing without an identity
-- **WHEN** no identity is chosen in a channel conversation
+- **WHEN** no identity is chosen in a channel conversation and the operator holds no usable default
 - **THEN** no post can be composed, and the interface says an identity must be chosen
+
+#### Scenario: Composing with a default identity
+- **WHEN** a channel conversation is opened by an operator whose default identity this run holds
+- **THEN** the composer opens with that identity selected, and a post made without touching the selection is sent as it
+
+#### Scenario: Overriding the default for one post
+- **WHEN** an operator selects an identity other than their default and posts
+- **THEN** the post is sent as the selected identity, and the operator's default is unchanged
 
 #### Scenario: A transmitted post
 - **WHEN** a post is transmitted and 2 repeats are heard
@@ -214,15 +248,119 @@ point are not being recorded.
 - **THEN** receiving and posting continue, and the interface states that messages from this point are not being recorded
 
 ### Requirement: A conversation with a contact is started from the contact list
-The system SHALL offer, on each row of the contact list, a link per identity loaded by this run
-that opens the conversation between that identity and that contact. The chat page SHALL NOT repeat
-a contacts-by-identities grid, and SHALL point to the contact list for starting a conversation.
-Following such a link SHALL transmit nothing.
+The system SHALL offer, on each row of the contact list, one link that opens a conversation with
+that contact as the operator's default identity where this run holds it, and as the run's only
+identity where exactly one is loaded. Where neither applies — several identities are loaded and
+none is the operator's default — the row SHALL offer no conversation link and SHALL point to where
+an identity to chat as is chosen, because a conversation cannot be opened without one. The contact
+list SHALL NOT draw one link per loaded identity, the chat page SHALL NOT repeat a
+contacts-by-identities grid, and the chat page SHALL point to the contact list for starting a
+conversation. Following such a link SHALL transmit nothing.
 
 #### Scenario: Starting a conversation
-- **WHEN** the contact list is opened on a run with two loaded identities and one contact
-- **THEN** that contact's row links to a conversation as each of the two identities
+- **WHEN** the contact list is opened on a run with two loaded identities and one contact, by an operator whose default is one of them
+- **THEN** that contact's row offers one conversation link, and it opens the conversation as the default identity
+
+#### Scenario: One identity loaded and no default
+- **WHEN** the contact list is opened on a run holding exactly one identity by an operator with no default
+- **THEN** that contact's row offers one conversation link, and it opens the conversation as that identity
+
+#### Scenario: Several identities and no default
+- **WHEN** the contact list is opened on a run holding two identities by an operator with no default
+- **THEN** no conversation link is offered on the row, and it points to where an identity to chat as is chosen
 
 #### Scenario: No identity loaded
 - **WHEN** the contact list is opened on a run with no loaded identity
 - **THEN** no conversation link is offered, and the page says a conversation needs an identity to send as
+
+### Requirement: An operator holds a default identity to chat as
+The system SHALL let each signed-in operator hold one default local identity, SHALL preselect that
+identity in every chat composer, and SHALL keep it across sign-out and restart. The default SHALL
+belong to the operator rather than to the run: two operators signed into the same run SHALL be able
+to hold different defaults, and one operator's choice SHALL NOT change another's. The default SHALL
+be settable and clearable from the chat interface, choosing among the identities this run holds,
+and SHALL transmit nothing when set, cleared or applied.
+
+#### Scenario: Setting a default
+- **WHEN** an operator sets one of the run's identities as their default
+- **THEN** the chat interface reports that identity as their default, and the channel and conversation composers open with it selected
+
+#### Scenario: Two operators
+- **WHEN** two operators are signed in and each sets a different default identity
+- **THEN** each operator's composers open with their own default, and neither sees the other's
+
+#### Scenario: The default survives a sign-out
+- **WHEN** an operator who has set a default signs out and signs back in
+- **THEN** their composers open with the same identity selected
+
+#### Scenario: Clearing the default
+- **WHEN** an operator clears their default identity
+- **THEN** no identity is preselected, and the composers ask for one to be chosen as they do for an operator who has never set one
+
+#### Scenario: Setting a default while the database is degraded
+- **WHEN** an operator sets or clears their default identity while the configured database is degraded
+- **THEN** the change is refused with the reason stated, and the default in force is left as it was
+
+#### Scenario: Setting a default transmits nothing
+- **WHEN** a default identity is set, cleared or applied to a composer
+- **THEN** nothing is transmitted
+
+### Requirement: A default identity that this run cannot use is not silently substituted
+The system SHALL apply an operator's default only while this run holds that identity. Where the
+default names an identity this run has not loaded, or one that has been removed, the system SHALL
+preselect nothing, SHALL state that no identity is chosen, and SHALL NOT compose as a different
+identity. An identity's removal SHALL clear every default that names it.
+
+#### Scenario: The default identity is not loaded by this run
+- **WHEN** an operator whose default names an identity this run does not hold opens a composer
+- **THEN** no identity is preselected, the interface says an identity must be chosen, and no post or message is composed as another identity
+
+#### Scenario: The default identity is removed
+- **WHEN** the identity an operator holds as their default is removed from the platform
+- **THEN** that operator no longer holds a default, and their composers ask for an identity to be chosen
+
+#### Scenario: The database is degraded
+- **WHEN** a composer is opened while the configured database is degraded
+- **THEN** the default this session already knows is still preselected, every identity this run holds is still offered, and posting and sending continue to be accepted
+
+### Requirement: Composed length is counted against the limit as it is typed
+The system SHALL show, beside a direct-message or channel composer, how much of what a single
+message can carry the composed text uses, updated as it is typed, counting the same bytes the
+refusal counts rather than characters. Where the text exceeds the limit the composer SHALL say so
+before it is submitted. This SHALL NOT replace the refusal at submission, SHALL NOT truncate or
+alter the operator's text, and SHALL NOT prevent submission — where the page's script does not run,
+the composer behaves exactly as it does today and the refusal at submission still applies.
+
+#### Scenario: Typing within the limit
+- **WHEN** the operator types text that fits in one message
+- **THEN** the composer shows how many of the available bytes are used, updating as they type
+
+#### Scenario: Typing past the limit
+- **WHEN** the composed text exceeds what one message can carry
+- **THEN** the composer says so before submission, and the text is neither truncated nor altered
+
+#### Scenario: Multi-byte text
+- **WHEN** the composed text contains characters that encode to more than one byte
+- **THEN** the count reflects the bytes the refusal would count, not the number of characters
+
+#### Scenario: No script
+- **WHEN** the page's script does not run
+- **THEN** the composer still submits and a message over the limit is still refused with its reason at submission
+
+### Requirement: A composed message can be sent from the keyboard
+The system SHALL send a composed direct message or channel post when the operator presses
+Ctrl+Enter (or the platform's equivalent modifier with Enter) in the composer, submitting exactly
+what the send control submits, including the chosen identity and whether flooding was permitted. A
+plain Enter SHALL insert a newline rather than send, so a multi-line message can be written.
+
+#### Scenario: Sending from the keyboard
+- **WHEN** the operator presses Ctrl+Enter in a composer holding text
+- **THEN** the message is submitted exactly as pressing the send control would submit it
+
+#### Scenario: A newline
+- **WHEN** the operator presses Enter alone in a composer
+- **THEN** a newline is inserted and nothing is submitted
+
+#### Scenario: A keyboard send that is refused
+- **WHEN** a send submitted from the keyboard is one the platform would refuse
+- **THEN** it is refused with the same reason and the text preserved, exactly as a send from the control is

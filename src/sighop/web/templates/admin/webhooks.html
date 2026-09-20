@@ -26,14 +26,16 @@
 {% endif %}
 
 {% if counters %}
-<table class="counters">
-  <tbody>
-    <tr><td>delivered this run</td><td class="mono">{{ counters.delivered }}</td></tr>
-    <tr><td>failed this run</td><td class="mono">{{ counters.failed }}</td></tr>
-    <tr><td>dropped this run</td><td class="mono">{{ counters.dropped }}</td></tr>
-    <tr><td>pending</td><td class="mono">{{ counters.pending }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>delivered this run</td><td class="mono">{{ counters.delivered }}</td></tr>
+      <tr><td>failed this run</td><td class="mono">{{ counters.failed }}</td></tr>
+      <tr><td>dropped this run</td><td class="mono">{{ counters.dropped }}</td></tr>
+      <tr><td>pending</td><td class="mono">{{ counters.pending }}</td></tr>
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="note">This run sends no webhooks (a replay, or no usable SIGHOP_SECRET_KEY).</p>
 {% endif %}
@@ -42,20 +44,22 @@
 {% if webhooks.readable and webhooks.items %}
 {% for hook in webhooks %}
 <h2>{{ hook.name }}</h2>
-<table class="counters">
-  <tbody>
-    <tr><td>target</td><td class="mono">{{ hook.url_host }}</td></tr>
-    <tr><td>format</td><td class="mono">{{ hook.format }}</td></tr>
-    <tr><td>triggers</td><td class="mono">{{ hook.triggers|join(', ') }}</td></tr>
-    <tr><td>hop limit</td>
-        <td class="mono">{{ 'none' if hook.max_hops is none else hook.max_hops }}</td></tr>
-    <tr><td>enabled</td><td class="mono">{{ 'yes' if hook.enabled else 'no' }}</td></tr>
-    <tr><td>last delivered</td>
-        <td class="mono">{{ display.when(hook.last_delivered_at, 'never') }}</td></tr>
-    <tr><td>last failed</td>
-        <td class="mono">{{ display.when(hook.last_failed_at, 'never') }}{% if hook.last_failure %} ({{ hook.last_failure }}){% endif %}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>target</td><td class="mono">{{ hook.url_host }}</td></tr>
+      <tr><td>format</td><td class="mono">{{ hook.format }}</td></tr>
+      <tr><td>triggers</td><td class="mono">{{ hook.triggers|join(', ') }}</td></tr>
+      <tr><td>hop limit</td>
+          <td class="mono">{{ 'none' if hook.max_hops is none else hook.max_hops }}</td></tr>
+      <tr><td>enabled</td><td class="mono">{{ 'yes' if hook.enabled else 'no' }}</td></tr>
+      <tr><td>last delivered</td>
+          <td class="mono">{{ display.when(hook.last_delivered_at, 'never') }}</td></tr>
+      <tr><td>last failed</td>
+          <td class="mono">{{ display.when(hook.last_failed_at, 'never') }}{% if hook.last_failure %} ({{ hook.last_failure }}){% endif %}</td></tr>
+    </tbody>
+  </table>
+</div>
 {% if hook.plaintext_http %}
 <p class="unavailable">This webhook uses plain http: its URL and every payload cross the network unencrypted.</p>
 {% endif %}

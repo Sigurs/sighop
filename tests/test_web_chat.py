@@ -15,15 +15,22 @@ Two of the assertions are negative and are the important ones:
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime as dt
+import re
+import uuid
+from pathlib import Path
 
 import httpx2
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from sighop.db.engine import Database
+import sighop.web
+from sighop.config import generate_secret_key
+from sighop.db.engine import Database, Succeeded
 from sighop.net.bus import Submission
+from sighop.net.channels import MAX_CHANNEL_TEXT_LEN
 from sighop.net.contacts import Contact
 from sighop.net.dm import (
     INBOUND,
@@ -41,14 +48,18 @@ from sighop.web.chat import ConversationLog
 from sighop.web.guard import TOKEN_FIELD
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
+    MemoryAccounts,
     StubState,
     authenticator,
     csrf,
+    session_of,
     signed_async_client,
     signed_client,
+    signed_in,
     stub_state,
 )
 
+STATIC_DIR = Path(sighop.web.__file__).parent / "static"
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
@@ -317,6 +328,71 @@ def test_text_over_the_limit_is_refused_with_the_overage_and_kept() -> None:
     assert log.conversation(stub.identity.public_key, contact.public_key) == [], (
         "a refused message entered the conversation's history"
     )
+
+
+def test_the_composer_counts_the_bytes_the_refusal_counts() -> None:
+    """The count is predictive, not authoritative: it carries the same limit the
+    refusal applies, and for a channel post the identity's name and separator
+    that ride inside that limit (`web-chat`)."""
+    contact = _contact()
+    app, state, _ = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+
+    with _client(app) as client:
+        conversation = client.get(
+            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
+        ).text
+
+    assert f'data-limit="{MAX_TEXT_LEN}"' in conversation
+    assert '<span class="count"' in conversation
+    # A direct message carries nothing besides its text.
+    assert "data-prefix-from" not in conversation
+
+    script = (STATIC_DIR / "display.js").read_text()
+    # Bytes, because the limit is in bytes: a two-byte character must not count
+    # as one.
+    assert "TextEncoder" in script and "encoder.encode(text).length" in script
+    # And never a disabled send control: the refusal at submission decides.
+    assert not re.search(r"\.disabled\s*=", script)
+    assert 'setAttribute("disabled"' not in script
+
+
+def test_a_channel_post_counts_the_name_that_rides_inside_its_limit() -> None:
+    app, state, _ = _channel_app()
+    stub = state.adverts.stubs[0]
+
+    with _client(app) as client:
+        page = client.get("/chat/channel/2?identity=" + stub.identity.public_key.hex()).text
+
+    assert f'data-limit="{MAX_CHANNEL_TEXT_LEN}"' in page
+    assert 'data-prefix-from="identity"' in page
+    assert 'data-prefix-separator=": "' in page
+
+
+def test_a_message_is_submittable_from_the_keyboard_and_without_a_script() -> None:
+    """Ctrl+Enter submits the form the button submits. Where no script runs at
+    all, the composer is an ordinary form and the refusal at submission is
+    unchanged — which is what makes the counter safe to be wrong."""
+    script = (STATIC_DIR / "display.js").read_text()
+    assert 'event.key !== "Enter" || !(event.ctrlKey || event.metaKey)' in script
+    assert "form.requestSubmit()" in script
+    assert "preventDefault" in script
+
+    contact = _contact()
+    app, state, log = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+    long = "x" * (MAX_TEXT_LEN + 3)
+
+    # The same POST a keyboard send makes, with nothing the script contributes.
+    with _client(app) as client:
+        refused = client.post(
+            f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
+            data={TOKEN_FIELD: csrf(client), "text": long},
+        )
+
+    assert refused.status_code == 400
+    assert "3 over" in refused.text
+    assert log.conversation(stub.identity.public_key, contact.public_key) == []
     assert state.scheduler.status().stats.submitted == 0, "a refused message was queued"
 
 
@@ -422,6 +498,96 @@ def test_a_received_message_appears_in_its_conversation() -> None:
 
     assert "hej fran andra sidan" in after
     assert "hx-trigger" in after, "the list does not refresh itself"
+
+
+def test_a_refresh_updates_the_rows_that_changed_rather_than_all_of_them() -> None:
+    """A conversation refreshes every three seconds. Replacing the whole table
+    threw away whatever the reader had selected and wherever they had scrolled
+    to; morphing touches only what differs, and each row carries the `ref` it is
+    matched by, so a message arriving at the top leaves the rest alone
+    (`web-chat`)."""
+    contact = _contact()
+    app, state, log = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+    path = f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
+
+    with _client(app) as client:
+        log.offer(
+            _record(
+                stub.identity.public_key,
+                contact.public_key,
+                ref="pkt-1",
+                direction=INBOUND,
+                text=b"first",
+                outcome=RecordedOutcome.RECEIVED,
+            )
+        )
+        first = client.get(f"{path}/messages").text
+        log.offer(
+            _record(
+                stub.identity.public_key,
+                contact.public_key,
+                ref="pkt-2",
+                direction=INBOUND,
+                text=b"second",
+                outcome=RecordedOutcome.RECEIVED,
+            )
+        )
+        second = client.get(f"{path}/messages").text
+
+    assert 'hx-ext="morph"' in first and 'hx-swap="morph:outerHTML"' in first
+    assert 'id="m-pkt-1"' in first
+    # The row drawn before is still identified the same way after a message
+    # arrives above it, which is what the morph matches on.
+    assert 'id="m-pkt-1"' in second and 'id="m-pkt-2"' in second
+    assert second.index('id="m-pkt-2"') < second.index('id="m-pkt-1"'), (
+        "newest first: the new row is above the one already on screen"
+    )
+
+
+def test_a_state_that_changed_is_redrawn_and_a_timestamp_stays_current() -> None:
+    """The other half of the rule: morphing must not mean a stale row. A
+    delivery state that moved is different content, so it is rewritten; and the
+    relative times `display.js` maintains are re-rendered after every swap."""
+    contact = _contact()
+    app, state, log = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+    path = f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
+
+    with _client(app) as client:
+        log.offer(
+            _record(
+                stub.identity.public_key,
+                contact.public_key,
+                ref="pkt-1",
+                direction=OUTBOUND,
+                text=b"hei",
+                outcome=RecordedOutcome.IN_FLIGHT,
+            )
+        )
+        awaiting = client.get(f"{path}/messages").text
+        log.offer(
+            _record(
+                stub.identity.public_key,
+                contact.public_key,
+                ref="pkt-1",
+                direction=OUTBOUND,
+                text=b"hei",
+                outcome=RecordedOutcome.ACKNOWLEDGED,
+                attempts=1,
+                ack_latency_ms=3010.0,
+            )
+        )
+        acknowledged = client.get(f"{path}/messages").text
+
+    assert "awaiting transmission" in awaiting
+    assert "delivered — acknowledged after 1 attempt" in acknowledged
+    assert "awaiting transmission" not in acknowledged
+    # Same row, rewritten in place rather than a second one appended.
+    assert acknowledged.count('id="m-pkt-1"') == 1
+
+    script = (STATIC_DIR / "display.js").read_text()
+    assert "htmx:afterSwap" in script, "relative times would stop advancing after a morph"
 
 
 def test_a_conversation_that_is_not_open_is_marked_as_having_something_new() -> None:
@@ -986,7 +1152,8 @@ def test_a_transmitted_post_states_repeats_and_that_no_acknowledgement_exists() 
     with _client(app) as client:
         body = client.get("/chat/channel/2/messages").text
         page = client.get("/chat/channel/2?identity=" + stub.identity.public_key.hex()).text
-    rows = body.split('<tr class="message')[1:]
+    # Rows now open with the `ref` the refresh matches them by.
+    rows = body.split('<tr id="p-')[1:]
     repeated = next(row for row in rows if "status-repeats" in row)
     quiet = next(row for row in rows if "status-repeats" not in row)
     # The transmitted glyph's hover says no acknowledgement exists; the row
@@ -1125,3 +1292,398 @@ def test_a_post_from_the_interface_is_run_output_naming_the_account() -> None:
     [line] = [line for line in output if "post as" in line]
     assert "#dev-sighop" in line and "dev-companion" in line
     assert f"by account '{OPERATOR}'" in line
+
+
+# --- The identity an operator chats as (`web-chat`) --------------------------
+
+
+def _chatting_as(client: object, entity_id: str | None) -> None:
+    """Put a default on the signed-in session, as sign-in and revalidation do."""
+    session_of(client).default_entity_id = entity_id
+
+
+def _selected(html: str) -> list[str]:
+    """The option values the rendered select opens with."""
+    return re.findall(r'<option value="([^"]*)"[^>]*selected', html)
+
+
+def test_the_channel_composer_opens_with_the_operators_default_selected() -> None:
+    app, state, _log = _channel_app(stub_names=("dev-companion", "dev-second"))
+    first, second = tuple(state.adverts.stubs)
+
+    with _client(app) as client:
+        _chatting_as(client, second.entity_id)
+        page = client.get("/chat/channel/1").text
+
+    assert _selected(page) == [second.identity.public_key.hex()]
+    assert first.identity.public_key.hex() in page, "every identity stays selectable"
+
+
+def test_a_default_this_run_does_not_hold_selects_nothing_and_says_so() -> None:
+    app, _state, _log = _channel_app(stub_names=("dev-companion",))
+
+    with _client(app) as client:
+        _chatting_as(client, "an-identity-this-run-never-loaded")
+        page = client.get("/chat/channel/1").text
+        posted = client.post(
+            "/chat/channel/1",
+            data={"text": "hej", "identity": "", TOKEN_FIELD: csrf(client)},
+        )
+
+    assert _selected(page) == [""], "the unchosen option, never a substitute"
+    assert "An identity must be chosen" in posted.text
+    assert posted.status_code == 400
+
+
+def test_an_identity_named_in_the_query_wins_over_the_default() -> None:
+    app, state, _log = _channel_app(stub_names=("dev-companion", "dev-second"))
+    first, second = tuple(state.adverts.stubs)
+
+    with _client(app) as client:
+        _chatting_as(client, second.entity_id)
+        page = client.get(f"/chat/channel/1?identity={first.identity.public_key.hex()}").text
+
+    assert _selected(page) == [first.identity.public_key.hex()]
+
+
+def test_only_stored_identities_are_offered_as_a_default() -> None:
+    """A generated key does not outlive the run; the preference does."""
+    app, _state, _log = _channel_app(stub_names=("dev-companion",))
+
+    with _client(app) as client:
+        index = client.get("/chat").text
+
+    assert 'action="/chat/identity"' not in index, "no identity here can be kept"
+
+
+def test_an_identity_with_no_stored_row_is_refused_as_a_default() -> None:
+    app, state, _log = _channel_app(stub_names=("dev-companion",))
+    generated = state.adverts.stubs[0]
+
+    with _client(app) as client:
+        refused_post = client.post(
+            "/chat/identity",
+            data={"identity": generated.identity.public_key.hex(), TOKEN_FIELD: csrf(client)},
+        )
+
+    assert refused_post.status_code == 400
+    assert "not stored" in refused_post.text
+    assert "any single message" in refused_post.text
+
+
+def test_an_identity_this_run_does_not_hold_is_refused_as_a_default() -> None:
+    app, _state, _log = _channel_app(stub_names=("dev-companion",))
+
+    with _client(app) as client:
+        refused_post = client.post(
+            "/chat/identity",
+            data={"identity": generate_identity().public_key.hex(), TOKEN_FIELD: csrf(client)},
+        )
+
+    assert refused_post.status_code == 400
+    assert "not one this run holds" in refused_post.text
+
+
+def test_setting_a_default_without_a_database_is_refused_and_changes_nothing() -> None:
+    app, state, _log = _channel_app(stub_names=("dev-companion",))
+    stored = state.adverts.add_identity(
+        "dev-stored", generate_identity(), entity_id=str(uuid.uuid4())
+    )
+
+    with _client(app) as client:
+        _chatting_as(client, "an-identity-this-run-never-loaded")
+        refused_post = client.post(
+            "/chat/identity",
+            data={"identity": stored.identity.public_key.hex(), TOKEN_FIELD: csrf(client)},
+        )
+        assert session_of(client).default_entity_id == "an-identity-this-run-never-loaded"
+
+    assert refused_post.status_code == 400
+    assert "unreachable" in refused_post.text
+    assert "the default in force is the one you already had" in refused_post.text
+
+
+def test_setting_a_default_needs_the_session_token() -> None:
+    app, state, _log = _channel_app(stub_names=("dev-companion",))
+    stored = state.adverts.add_identity(
+        "dev-stored", generate_identity(), entity_id=str(uuid.uuid4())
+    )
+
+    with signed_client(
+        app, send_token=False, base_url="http://127.0.0.1:8080", follow_redirects=False
+    ) as client:
+        without = client.post("/chat/identity", data={"identity": stored.identity.public_key.hex()})
+
+    assert without.status_code == 403
+
+
+@pytest.mark.database
+async def test_a_default_is_written_to_the_account_and_applied_at_once(
+    database: Database,
+) -> None:
+    """The row is the durable home, the session is what the next page reads."""
+    from sighop.db.persistence import Persistence
+    from sighop.db.repositories import EntityRepository, WebUserRepository
+    from sighop.protocol.payloads import NodeType
+
+    persistence = Persistence(database=database)
+    users = WebUserRepository(database=database)
+    added = await users.add("dev-operator", password_hash="$argon2id$v=19$m=1,t=1,p=1$c2E$dGFn")
+    assert isinstance(added, Succeeded)
+    key = generate_identity()
+    stored = await EntityRepository(database=database).store(
+        name="dev-stored",
+        identity=key,
+        secret=base64.b64decode(generate_secret_key()),
+        node_type=NodeType.CHAT,
+    )
+    assert isinstance(stored, Succeeded)
+
+    state = stub_state(persistence=persistence, radio=EU868_NARROW)
+    identity = state.adverts.add_identity("dev-stored", key, entity_id=str(stored.value.id))
+    accounts = MemoryAccounts()
+    accounts.add("dev-operator", "operator-password")
+    app = create_app(
+        state,
+        auth=authenticator(accounts),
+        hosts=HOSTS,
+        logger=RecordingLogger(),
+    )
+
+    async with signed_async_client(
+        transport=httpx2.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
+    ) as client:
+        session = session_of(client)
+        set_it = await client.post(
+            "/chat/identity",
+            data={"identity": identity.identity.public_key.hex(), TOKEN_FIELD: session.csrf_token},
+        )
+        assert set_it.status_code == 303
+        assert set_it.headers["location"] == "/chat"
+        assert session.default_entity_id == str(stored.value.id), "applied to this session at once"
+        held = await users.get("dev-operator")
+        assert isinstance(held, Succeeded) and held.value is not None
+        assert held.value.default_entity_id == stored.value.id, "and written to the account"
+
+        channel_page = (await client.get("/chat")).text
+        assert identity.identity.public_key.hex() in channel_page
+
+        cleared = await client.post(
+            "/chat/identity", data={"identity": "", TOKEN_FIELD: session.csrf_token}
+        )
+        assert cleared.status_code == 303
+        assert session.default_entity_id is None
+        held = await users.get("dev-operator")
+        assert isinstance(held, Succeeded) and held.value is not None
+        assert held.value.default_entity_id is None
+
+
+@pytest.mark.database
+async def test_a_default_only_ever_redirects_to_an_in_app_path(database: Database) -> None:
+    """`safe_next`: a destination is a same-origin path or `/`, never a URL."""
+    from sighop.db.persistence import Persistence
+    from sighop.db.repositories import WebUserRepository
+
+    persistence = Persistence(database=database)
+    users = WebUserRepository(database=database)
+    added = await users.add("dev-operator", password_hash="$argon2id$v=19$m=1,t=1,p=1$c2E$dGFn")
+    assert isinstance(added, Succeeded)
+
+    state = stub_state(persistence=persistence, radio=EU868_NARROW)
+    accounts = MemoryAccounts()
+    accounts.add("dev-operator", "operator-password")
+    app = create_app(state, auth=authenticator(accounts), hosts=HOSTS, logger=RecordingLogger())
+
+    async with signed_async_client(
+        transport=httpx2.ASGITransport(app=app), base_url="http://127.0.0.1:8080"
+    ) as client:
+        token = session_of(client).csrf_token
+        for destination in ("https://evil.example/", "//evil.example", "/chat/channel/1"):
+            answered = await client.post(
+                "/chat/identity",
+                data={"identity": "", "next": destination, TOKEN_FIELD: token},
+            )
+            assert answered.status_code == 303
+            assert answered.headers["location"] in ("/", "/chat/channel/1")
+
+
+def test_a_post_made_without_touching_the_selection_goes_as_the_default() -> None:
+    """What the composer opens with is what a post is sent as — and any other
+    loaded identity is still one selection away."""
+    app, state, _log = _channel_app(stub_names=("dev-companion", "dev-second"))
+    first, second = tuple(state.adverts.stubs)
+
+    with _client(app) as client:
+        _chatting_as(client, second.entity_id)
+        opened = client.get("/chat/channel/2").text
+        assert _selected(opened) == [second.identity.public_key.hex()]
+
+        untouched = client.post(
+            "/chat/channel/2",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "as my default",
+                "identity": _selected(opened)[0],
+            },
+        )
+        as_default = client.get(untouched.headers["location"]).text
+
+        overridden = client.post(
+            "/chat/channel/2",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": "as the other one",
+                "identity": first.identity.public_key.hex(),
+            },
+        )
+        as_other = client.get(overridden.headers["location"]).text
+
+    assert untouched.status_code == 303 and overridden.status_code == 303
+    assert "as my default" in as_default and "dev-second" in as_default
+    assert "as the other one" in as_other and "dev-companion" in as_other
+
+
+# --- The conversation composer chooses the identity (design D5) --------------
+
+
+def test_the_conversation_composer_opens_on_the_conversations_own_identity() -> None:
+    contact = _contact()
+    app, state, _log = _built(contacts=[contact], stub_names=("first", "second"))
+    one, two = state.adverts.stubs
+
+    with _client(app) as client:
+        page = client.get(f"/chat/{two.identity.public_key.hex()}/{contact.public_key.hex()}").text
+
+    assert _selected(page) == [two.identity.public_key.hex()]
+    assert one.identity.public_key.hex() in page, "every identity is one selection away"
+
+
+def _recording_sends(state: StubState) -> list[tuple[str, str]]:
+    """Every send the route makes, as (identity name, text) — the question the
+    composer's selection answers."""
+    made: list[tuple[str, str]] = []
+    original = state.messenger.send
+
+    async def record(entity, contact, text, **kwargs):
+        made.append((entity.name, text))
+        return await original(entity, contact, text, **kwargs)
+
+    state.messenger.send = record  # type: ignore[method-assign]
+    return made
+
+
+async def _posted(app, path: str, **fields: str):
+    """One POST, with the send's own task given a turn to run."""
+    async with signed_async_client(
+        transport=httpx2.ASGITransport(app=app),
+        base_url="http://127.0.0.1:8080",
+        follow_redirects=False,
+    ) as client:
+        response = await client.post(path, data={TOKEN_FIELD: csrf(client), **fields})
+        for _ in range(20):
+            await asyncio.sleep(0)
+        return response
+
+
+async def test_sending_as_another_identity_lands_in_that_identitys_conversation() -> None:
+    contact = _contact()
+    app, state, _log = _built(contacts=[contact], stub_names=("first", "second"))
+    one, two = state.adverts.stubs
+    made = _recording_sends(state)
+
+    sent = await _posted(
+        app,
+        f"/chat/{one.identity.public_key.hex()}/{contact.public_key.hex()}",
+        text="sent as the second",
+        identity=two.identity.public_key.hex(),
+    )
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == (
+        f"/chat/{two.identity.public_key.hex()}/{contact.public_key.hex()}"
+    ), "the redirect lands in the conversation the message was sent as"
+    assert made == [("second", "sent as the second")]
+
+
+async def test_a_send_with_no_selection_behaves_as_it_always_has() -> None:
+    """Every existing caller posts no `identity` at all; the path's own is used."""
+    contact = _contact()
+    app, state, _log = _built(contacts=[contact])
+    stub = state.adverts.stubs[0]
+    made = _recording_sends(state)
+
+    sent = await _posted(
+        app,
+        f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}",
+        text="unchanged",
+    )
+
+    assert sent.status_code == 303
+    assert sent.headers["location"] == (
+        f"/chat/{stub.identity.public_key.hex()}/{contact.public_key.hex()}"
+    )
+    assert made == [("companion", "unchanged")]
+
+
+def test_a_refused_send_keeps_the_draft_and_the_identity_it_was_sent_as() -> None:
+    contact = _contact()
+    app, state, log = _built(contacts=[contact], stub_names=("first", "second"))
+    one, two = state.adverts.stubs
+    long = "x" * (MAX_TEXT_LEN + 3)
+
+    with _client(app) as client:
+        refused_send = client.post(
+            f"/chat/{one.identity.public_key.hex()}/{contact.public_key.hex()}",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "text": long,
+                "identity": two.identity.public_key.hex(),
+            },
+        )
+
+    assert refused_send.status_code == 400
+    assert long in refused_send.text, "the author's text was not preserved"
+    assert _selected(refused_send.text) == [two.identity.public_key.hex()]
+    assert log.conversation(two.identity.public_key, contact.public_key) == []
+
+
+def test_one_operators_default_is_neither_seen_nor_changed_by_another() -> None:
+    """The preference belongs to an account, not to the run (`web-auth`)."""
+    app, state, _log = _channel_app(stub_names=("dev-companion", "dev-second"))
+    first, second = tuple(state.adverts.stubs)
+    accounts: MemoryAccounts = app.state.auth.accounts
+    accounts.add("second-operator", "operator-password")
+
+    with _client(app) as one, _client(app) as two:
+        signed_in(two, "second-operator")
+        _chatting_as(one, first.entity_id)
+        _chatting_as(two, second.entity_id)
+
+        assert _selected(one.get("/chat/channel/1").text) == [first.identity.public_key.hex()]
+        assert _selected(two.get("/chat/channel/1").text) == [second.identity.public_key.hex()]
+        assert session_of(one).default_entity_id == first.entity_id, "unchanged by the other"
+
+
+def test_setting_clearing_and_applying_a_default_transmits_nothing() -> None:
+    """Reading and preference-keeping are not radio events (`web-chat`)."""
+    app, state, _log = _channel_app(stub_names=("dev-companion",))
+    contact = _contact()
+    state.contacts.restore([contact])
+    stored = state.adverts.add_identity(
+        "dev-stored", generate_identity(), entity_id=str(uuid.uuid4())
+    )
+    before = state.scheduler.status().stats.submitted
+
+    with _client(app) as client:
+        client.post(
+            "/chat/identity",
+            data={"identity": stored.identity.public_key.hex(), TOKEN_FIELD: csrf(client)},
+        )
+        client.post("/chat/identity", data={"identity": "", TOKEN_FIELD: csrf(client)})
+        _chatting_as(client, stored.entity_id)
+        client.get("/chat")
+        client.get("/contacts")
+        client.get("/chat/channel/1")
+        client.get(f"/chat/{stored.identity.public_key.hex()}/{contact.public_key.hex()}")
+
+    assert state.scheduler.status().stats.submitted == before

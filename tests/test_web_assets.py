@@ -107,3 +107,30 @@ def test_every_navigation_target_is_a_path_on_this_application(path: Path | None
         f"{path.name} links to {offenders}; every target must be an absolute path on "
         "this application so no page depends on where it was served from"
     )
+
+
+@pytest.mark.parametrize(
+    "path", _templates() or [None], ids=lambda p: "none" if p is None else p.name
+)
+def test_every_table_scrolls_inside_its_own_box(path: Path | None) -> None:
+    """A table wider than the viewport must scroll in place rather than widen
+    the page (`web-display`). The panel's tables run to ten and thirteen
+    columns, so on a phone this is every one of them.
+
+    Read as the convention it is: the line opening a table is preceded by the
+    line opening its wrapper, which is what the panel's own templates do.
+    """
+    if path is None:
+        pytest.skip("no templates yet")
+    lines = path.read_text().splitlines()
+    bare: list[int] = []
+    for number, line in enumerate(lines, start=1):
+        if not re.match(r"\s*<table\b", line):
+            continue
+        before = next((earlier for earlier in reversed(lines[: number - 1]) if earlier.strip()), "")
+        if 'class="table-wrap"' not in before:
+            bare.append(number)
+    assert not bare, (
+        f"{path.name} opens a table outside a .table-wrap at line(s) {bare}; it would "
+        "widen the whole page on a narrow viewport"
+    )

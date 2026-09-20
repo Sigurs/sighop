@@ -14,34 +14,36 @@
 
 {{ collection.state(posts, "messages") }}
 {% if posts.readable and posts.items %}
-<table>
-  <thead>
-    <tr>
-      <th class="num">ordering timestamp</th>
-      <th>author</th>
-      <th>stored at</th>
-      <th>text</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for post in posts %}
-    <tr>
-      <td class="num mono">{{ post.post_timestamp }}</td>
-      <td>{{ identity.identity(post.author) }}</td>
-      <td class="mono">{{ display.when(post.posted_at) }}</td>
-      <td>
-        {% if post.displayable %}
-          {{ post.text }}
-        {% else %}
-          <span class="undisplayable">not valid text</span>
-          <span class="mono">{{ post.bytes }} bytes: {{ post.raw }}</span>
-          <span class="mono">rendered: {{ post.text }}</span>
-        {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th class="num">ordering timestamp</th>
+        <th>author</th>
+        <th>stored at</th>
+        <th>text</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for post in posts %}
+      <tr>
+        <td class="num mono">{{ post.post_timestamp }}</td>
+        <td>{{ identity.identity(post.author) }}</td>
+        <td class="mono">{{ display.when(post.posted_at) }}</td>
+        <td>
+          {% if post.displayable %}
+            {{ post.text }}
+          {% else %}
+            <span class="undisplayable">not valid text</span>
+            <span class="mono">{{ post.bytes }} bytes: {{ post.raw }}</span>
+            <span class="mono">rendered: {{ post.text }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 {% if older is not none %}
 <p><a href="/rooms/{{ room.id }}?before={{ older }}">older messages…</a></p>

@@ -320,7 +320,8 @@ class Runtime:
             self._adopt_entity(
                 self.entities.add_stored(
                     stored.name, stored.identity, node_type=stored.record.node_type
-                )
+                ),
+                entity_id=str(stored.record.id),
             )
         for path in self.config.entity_keyfiles:
             self._adopt_entity(self.entities.load(path))
@@ -539,8 +540,16 @@ class Runtime:
             return
         self._print(render_channel_event(event))
 
-    def _adopt_entity(self, entity: LocalEntity) -> None:
-        """Give a local identity to the advert scheduler, whatever it came from."""
+    def _adopt_entity(self, entity: LocalEntity, *, entity_id: str | None = None) -> None:
+        """Give a local identity to the advert scheduler, whatever it came from.
+
+        A stored identity is adopted under its `entity` row id rather than its
+        name, because that id is what durable state elsewhere refers to it by —
+        an operator's default chat identity (`web-chat`) is a reference to that
+        row, and a name is neither unique across sources nor stable across a
+        rename. An identity with no row — a keyfile's, a generated stub's —
+        keeps its name, as it always has.
+        """
         self.adverts.add_identity(
             entity.name,
             entity.identity,
@@ -548,6 +557,7 @@ class Runtime:
                 entity.node_type if isinstance(entity.node_type, NodeType) else NodeType.CHAT
             ),
             keyfile=entity.source,
+            entity_id=entity_id,
         )
 
     # --- Lifecycle ---------------------------------------------------------

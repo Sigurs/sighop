@@ -21,7 +21,11 @@
   --fg: #d8dce3;
   --fg-dim: #8b93a1;
   --rule: #2b303a;
+  --rule-soft: #20242b;
   --accent: #6ea8fe;
+
+  /* The empty part of a gauge, behind whatever fills it. */
+  --bg-track: #23262d;
 
   /* Budget state. */
   --ok: #5fb37a;
@@ -84,6 +88,15 @@ a {
   color: var(--accent);
 }
 
+/* The page being looked at. Weight and a rule under it, not colour alone —
+   the same rule every other marking in this interface is held to. */
+.nav a.current {
+  color: var(--fg);
+  font-weight: 600;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 0.15rem;
+}
+
 .signout {
   margin-left: auto;
   display: flex;
@@ -129,7 +142,7 @@ a {
   flex: 1 1 12rem;
   max-width: 28rem;
   height: 0.7rem;
-  background: #23262d;
+  background: var(--bg-track);
   border: 1px solid var(--rule);
   display: block;
   overflow: hidden;
@@ -227,6 +240,15 @@ h2 {
   border-left-color: var(--alarm);
 }
 
+/* A composer's textarea carries `cols`, which is a width in characters, and a
+   long option in a select is as wide as its text: on a narrow screen either is
+   wider than the screen itself. */
+textarea,
+input,
+select {
+  max-width: 100%;
+}
+
 /* --- Tables: dense, fixed-width where the data is ------------------------ */
 
 table {
@@ -253,7 +275,7 @@ th {
 
 td {
   padding: 0.2rem 0.6rem 0.2rem 0;
-  border-bottom: 1px solid #20242b;
+  border-bottom: 1px solid var(--rule-soft);
   vertical-align: top;
 }
 
@@ -515,12 +537,29 @@ table.feed td {
 }
 
 .key {
+  position: relative;
   white-space: nowrap;
 }
 
 .key code {
   font-family: var(--mono);
   cursor: help;
+}
+
+/* The last-resort holder: the full key, selected for copying by hand, where
+   neither the clipboard nor an off-screen copy was available. Out of the flow
+   and on top, so showing it moves nothing and widens no column. */
+.key-full {
+  position: absolute;
+  z-index: 20;
+  top: 1.6em;
+  left: 0;
+  padding: 0.2em 0.4em;
+  color: var(--fg);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  user-select: all;
 }
 
 .copy {
@@ -551,4 +590,122 @@ time.when {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   cursor: help;
+}
+
+/* --- Folded-away administration ------------------------------------------ */
+
+/* The add-a-channel forms. The summary reads as a control rather than as a
+   heading: it is the thing the operator clicks when they came to add a
+   channel, and nothing else on the page opens. */
+.channel-admin {
+  margin: 1.2rem 0;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--bg-raised);
+}
+
+.channel-admin > summary {
+  padding: 0.45rem 0.6rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.channel-admin > summary:hover,
+.channel-admin > summary:focus-visible {
+  color: var(--fg);
+  background: var(--bg-sunken);
+}
+
+.channel-admin[open] > summary {
+  border-bottom: 1px solid var(--rule);
+}
+
+/* The forms inside it keep the panel's own spacing, indented from the edge of
+   the box rather than running into it. */
+.channel-admin > *:not(summary) {
+  margin-left: 0.6rem;
+  margin-right: 0.6rem;
+}
+
+/* --- The composer -------------------------------------------------------- */
+
+/* How much of the limit the composed message uses. Over the limit it says so
+   in words as well as in colour, and the send control stays enabled either
+   way — the refusal at submission is what decides. */
+.count {
+  margin-left: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.count.over {
+  color: var(--alarm);
+  font-weight: 600;
+}
+
+/* --- Narrow viewports ----------------------------------------------------- */
+
+/* A phone, at about 360 px. Nothing is hidden here that a wider viewport shows:
+   a status an operator cannot see is the failure this whole interface is built
+   against (`web-display`). Things wrap, stack, and scroll in their own boxes —
+   the page itself never scrolls sideways. */
+@media (max-width: 40rem) {
+  .panel-head {
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+    padding: 0.5rem 0.6rem;
+  }
+
+  /* Every link still reachable, over as many lines as it takes. */
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0;
+  }
+
+  .nav a {
+    margin-right: 0.8rem;
+  }
+
+  .signout {
+    margin-left: 0;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .meter {
+    padding: 0.5rem 0.6rem;
+  }
+
+  .meter-row {
+    flex-wrap: wrap;
+  }
+
+  /* The bar takes the width it needs on its own line rather than squeezing the
+     figures beside it out of legibility. */
+  .meter-track {
+    order: 3;
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .panel {
+    padding: 0.6rem;
+  }
+
+  /* A composer's controls stack instead of running off the edge. */
+  .composer p {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+
+  .composer label {
+    flex: 1 1 100%;
+  }
 }

@@ -24,11 +24,17 @@
 {# A public key: its first three bytes, the whole key on hover and behind the
    copy control. Display only — links and form values keep the full key, and a
    revealed private key never comes through here. `type="button"` so the
-   control never submits a form it sits in. #}
+   control never submits a form it sits in.
+
+   The `.key-full` holder is left empty and hidden. Where neither the clipboard
+   nor an off-screen copy is available, `display.js` fills it with the full key
+   and selects it for copying by hand; it is positioned out of the flow, so the
+   abbreviation beside it never moves and no column changes width. #}
 {% macro key(value) -%}
 {%- set full = value if value is string else value.hex() -%}
 <span class="key"><code class="mono" title="{{ full }}">{{ full[:6] }}…</code>
-  {#- #}<button type="button" class="copy" data-copy="{{ full }}" title="copy full key" aria-label="copy full key">⧉</button></span>
+  {#- #}<button type="button" class="copy" data-copy="{{ full }}" title="copy full key" aria-label="copy full key">⧉</button>
+  {#- #}<span class="key-full mono" hidden></span></span>
 {%- endmacro %}
 
 {# A timestamp. The server writes compact UTC, marked UTC; `display.js`

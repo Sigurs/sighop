@@ -8,25 +8,30 @@ does not enforce is a constraint that does not exist.
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
 import uuid
 
 import pytest
-from sqlalchemy import DateTime, Table, UniqueConstraint, inspect
+from sqlalchemy import DateTime, Table, UniqueConstraint, inspect, select
 from sqlalchemy.exc import IntegrityError
 
-from sighop.config import DatabaseConfig
+from sighop.config import DatabaseConfig, generate_secret_key
 from sighop.db import migrations
-from sighop.db.engine import Database, SchemaVersionError
+from sighop.db.engine import Database, SchemaVersionError, Succeeded
 from sighop.db.models import WebUser
 from sighop.db.repositories import (
     MAX_USERNAME_LENGTH,
+    EntityRepository,
     UsernameError,
     normalise_username,
 )
+from sighop.protocol.identity import generate_identity
+from sighop.protocol.payloads import NodeType
 from tests.dbfixtures import SCHEMA_PREFIX, _connect, _create_schema, _drop_schema
 
 MIGRATION = "0005_web_users.py"
+SECRET = base64.b64decode(generate_secret_key())
 
 
 def _full_width(text: str) -> str:
@@ -243,3 +248,44 @@ async def test_a_database_at_0004_is_refused_naming_both_revisions_and_the_comma
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)
+
+
+# --- 1.4 The default chat identity the account row carries -------------------
+
+
+@pytest.mark.database
+async def test_removing_an_identity_clears_every_default_naming_it(
+    database: Database,
+) -> None:
+    """`ON DELETE SET NULL` is the cleanup (migration 0009).
+
+    A default that outlived the identity it names would be a composer quietly
+    posting as something else, so the constraint is asserted against a real
+    server rather than trusted from the model: a cascade SQLAlchemy declares and
+    Postgres does not enforce is a cascade that does not exist.
+    """
+    entities = EntityRepository(database=database)
+    stored = await entities.store(
+        name="dev-companion",
+        identity=generate_identity(),
+        secret=SECRET,
+        node_type=NodeType.CHAT,
+    )
+    assert isinstance(stored, Succeeded)
+    entity = stored.value
+
+    async with database.sessions() as session:
+        session.add(_row(default_entity_id=entity.id))
+        await session.commit()
+
+    removed = await entities.remove(entity.public_key)
+    assert isinstance(removed, Succeeded)
+    assert removed.value
+
+    async with database.sessions() as session:
+        held = (
+            await session.execute(select(WebUser).where(WebUser.username == "dev-operator"))
+        ).scalar_one()
+        assert held.default_entity_id is None, (
+            "removing an identity must clear the default of every account naming it"
+        )

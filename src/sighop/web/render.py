@@ -52,6 +52,61 @@ thing from a contact whose advert did not verify, and the two must not share a
 glyph (`web-dashboard`)."""
 
 
+# --- Navigation (`web-dashboard`) --------------------------------------------
+
+
+NAV: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("/", "overview", ()),
+    ("/contacts", "contacts", ()),
+    ("/chat", "chat", ("/admin/channels",)),
+    ("/rooms", "rooms", ("/admin/rooms",)),
+    ("/admin/identities", "identities", ("/admin/bots", "/admin/advert")),
+    ("/admin/webhooks", "webhooks", ()),
+    ("/system", "system", ("/admin/transmit", "/admin/ceiling")),
+)
+"""The seven pages, and the paths that sit beneath each of them.
+
+The third element is what `consolidate-web-pages` decided but the URL does not
+show: channels are administered from chat, rooms from the rooms page, a bot and
+an advert from the identity that owns them, and the gate and the ceiling from
+the system page. A page under one of those prefixes marks the page it belongs
+to, not the one its path happens to start with.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class NavEntry:
+    """One navigation link, and whether it is the page being looked at."""
+
+    href: str
+    label: str
+    current: bool
+
+
+def _current_nav(path: str) -> str | None:
+    """The `NAV` entry a path belongs to, by longest matching prefix.
+
+    `None` for a path under none of them — the login and setup pages, which
+    carry no navigation anyway. Overview matches only itself: it is `/`, so a
+    prefix match would claim every page in the panel.
+    """
+    best: str | None = None
+    longest = -1
+    for href, _, beneath in NAV:
+        for prefix in (href, *beneath):
+            if path != prefix and not (prefix != "/" and path.startswith(prefix + "/")):
+                continue
+            if len(prefix) > longest:
+                best, longest = href, len(prefix)
+    return best
+
+
+def navigation(path: str) -> tuple[NavEntry, ...]:
+    """The navigation for a path, with exactly one entry marked or none."""
+    current = _current_nav(path)
+    return tuple(NavEntry(href, label, href == current) for href, label, _ in NAV)
+
+
 # --- Display conventions (`web-display`) -------------------------------------
 
 
@@ -759,3 +814,28 @@ def entity_rows(state: PanelState, feed: FeedHub | None) -> list[dict[str, objec
             }
         )
     return rows
+
+
+def default_identity(
+    stubs: Iterable[EntityStub], default_entity_id: str | None
+) -> EntityStub | None:
+    """The identity an operator chats as, or `None` — one rule, one lookup.
+
+    `None` whenever this run does not hold the identity the account names: a
+    default that is quietly replaced by another identity would compose a post as
+    someone the operator did not choose, which is the one thing `web-chat`
+    forbids of it. Every composer and the contact list resolve through here, so
+    the fallback cannot be right on one page and wrong on the next.
+
+    Matched by `entity_id` rather than by name or public key, so a renamed
+    identity stays the default and a recreated one — a new row, a new key — does
+    not inherit it. It reads nothing: the account's choice already travels on
+    the session (design D2), which is what keeps this callable from a template
+    context assembled without awaiting anything.
+    """
+    if not default_entity_id:
+        return None
+    for stub in stubs:
+        if stub.entity_id == default_entity_id:
+            return stub
+    return None

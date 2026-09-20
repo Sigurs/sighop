@@ -41,6 +41,7 @@ import hashlib
 import hmac
 import secrets
 import time
+import uuid
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -104,6 +105,9 @@ class Account(Protocol):
 
     @property
     def password_set_at(self) -> dt.datetime: ...
+
+    @property
+    def default_entity_id(self) -> uuid.UUID | None: ...
 
 
 class AccountStore(Protocol):
@@ -227,6 +231,15 @@ class Session:
     """False while the database could not confirm the account at revalidation.
     Pages are served; every guarded action is refused (design D4)."""
 
+    default_entity_id: str | None = None
+    """The identity this account chats as, carried here so that rendering a
+    composer never waits on a read that can fail (`web-chat` design D2). Read
+    from the account row at sign-in and refreshed by the same revalidation that
+    carries `password_set_at`, so a default set in one browser reaches this
+    session within a minute. An outage leaves the last known value in force:
+    which identity a post is composed as must not change because a database
+    stopped answering."""
+
 
 @dataclass(slots=True)
 class SessionStore:
@@ -253,6 +266,7 @@ class SessionStore:
         username: str,
         *,
         password_set_at: dt.datetime,
+        default_entity_id: uuid.UUID | None = None,
         replacing: str | None = None,
     ) -> tuple[str, Session]:
         """A new session and the raw token for its cookie, which only the caller holds.
@@ -276,6 +290,7 @@ class SessionStore:
             password_set_at=password_set_at,
             csrf_token=secrets.token_urlsafe(32),
             verified_at=now,
+            default_entity_id=None if default_entity_id is None else str(default_entity_id),
         )
         self._sessions[session.key] = session
         return token, session
@@ -515,6 +530,13 @@ class Authenticator:
             return None
         session.verified = True
         session.verified_at = clock()
+        if account is not None:
+            # The preference travels with the account, so a default set in
+            # another browser reaches this session here — the window an account
+            # change already accepts, rather than a read on every page.
+            session.default_entity_id = (
+                None if account.default_entity_id is None else str(account.default_entity_id)
+            )
         return session
 
     # --- Signing in ---------------------------------------------------------
@@ -575,6 +597,7 @@ class Authenticator:
             token, session = self.sessions.issue(
                 account.username,
                 password_set_at=account.password_set_at,
+                default_entity_id=account.default_entity_id,
                 replacing=presented,
             )
             return self._login_event(
@@ -699,6 +722,7 @@ class Authenticator:
             token, session = self.sessions.issue(
                 account.username,
                 password_set_at=account.password_set_at,
+                default_entity_id=account.default_entity_id,
                 replacing=presented,
             )
             return self._setup_event(

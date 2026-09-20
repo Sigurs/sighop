@@ -10,15 +10,17 @@
 {% else %}
 <div class="guarded">
   <p><strong>This action {{ description }}</strong></p>
-  <table class="counters">
-    <tbody>
-      <tr><td>channel</td><td>{{ channel.name }}</td></tr>
-      <tr><td>kind</td><td class="mono">{{ channel.kind }}</td></tr>
-      <tr><td>hash</td><td class="mono">{{ '%02x' % channel.channel_hash }}</td></tr>
-      <tr><td>messages that will be deleted</td>
-          <td class="mono">{{ 'unknown — the count could not be read' if messages is none else messages }}</td></tr>
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="counters">
+      <tbody>
+        <tr><td>channel</td><td>{{ channel.name }}</td></tr>
+        <tr><td>kind</td><td class="mono">{{ channel.kind }}</td></tr>
+        <tr><td>hash</td><td class="mono">{{ '%02x' % channel.channel_hash }}</td></tr>
+        <tr><td>messages that will be deleted</td>
+            <td class="mono">{{ 'unknown — the count could not be read' if messages is none else messages }}</td></tr>
+      </tbody>
+    </table>
+  </div>
   {% if messages is not none %}
   <p><strong>{{ plural(messages, 'recorded message') }} will be deleted.</strong></p>
   {% endif %}

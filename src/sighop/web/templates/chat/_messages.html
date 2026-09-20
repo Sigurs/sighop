@@ -4,7 +4,7 @@
 {% import "_identity.html" as identity %}
 {% import "_display.html" as display %}
 <div id="conversation" hx-get="/chat/{{ entity_key }}/{{ peer_key }}/messages"
-     hx-trigger="every 3s" hx-swap="outerHTML">
+     hx-trigger="every 3s" hx-ext="morph" hx-swap="morph:outerHTML">
 {# Inside the refreshed partial, so a database that goes away mid-conversation
    is said on the next refresh rather than on the next reload (web-chat). #}
 {% if not history_readable %}
@@ -13,34 +13,40 @@
 <p class="unavailable">{{ not_recorded }}</p>
 {% endif %}
 {% if messages %}
-<table class="conversation">
-  <thead>
-    <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
-  </thead>
-  <tbody>
-    {% for message in messages %}
-    <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
-      <td class="mono">{{ display.when(message.handled_at) }}</td>
-      <td>
-        {%- if message.inbound -%}
-          {{ identity.identity(peer, key=false) }}
-        {%- else -%}
-          {{ entity.name }}
-        {%- endif -%}
-      </td>
-      <td class="message-text">
-        {% if message.displayable %}
-          {{ message.text }}
-        {% else %}
-          <span class="undisplayable">not valid text</span>
-          <span class="mono">{{ message.raw }}</span>
-        {% endif %}
-      </td>
-      <td class="message-state">{{ display.statuses(message.state) }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="conversation">
+    <thead>
+      <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
+    </thead>
+    <tbody>
+      {% for message in messages %}
+      {# Identified by its `ref`, the same key the durable and live halves are
+         merged on: the morph matches a row to the row it already drew rather
+         than to whatever now sits in that position, and a message arriving at
+         the top leaves every row below it untouched. #}
+      <tr id="m-{{ message.ref }}" class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
+        <td class="mono">{{ display.when(message.handled_at) }}</td>
+        <td>
+          {%- if message.inbound -%}
+            {{ identity.identity(peer, key=false) }}
+          {%- else -%}
+            {{ entity.name }}
+          {%- endif -%}
+        </td>
+        <td class="message-text">
+          {% if message.displayable %}
+            {{ message.text }}
+          {% else %}
+            <span class="undisplayable">not valid text</span>
+            <span class="mono">{{ message.raw }}</span>
+          {% endif %}
+        </td>
+        <td class="message-state">{{ display.statuses(message.state) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="empty"><strong>No messages yet.</strong> Nothing has been sent or received here.</p>
 {% endif %}

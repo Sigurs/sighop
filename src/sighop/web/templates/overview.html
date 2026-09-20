@@ -7,16 +7,18 @@
 <h1>live packet feed</h1>
 <p id="feed-status" class="feed-status feed-ok">connecting…</p>
 <div class="feed-wrap">
-  <table class="feed">
-    <thead>
-      <tr>
-        <th>time</th><th>dir</th><th>route</th><th>payload</th><th class="num">bytes</th>
-        <th>path</th><th class="num">hops</th><th class="num">snr</th><th class="num">rssi</th>
-        <th>dup</th><th>outcome</th><th>detail</th><th>packet id</th>
-      </tr>
-    </thead>
-    <tbody id="feed-rows"></tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="feed">
+      <thead>
+        <tr>
+          <th>time</th><th>dir</th><th>route</th><th>payload</th><th class="num">bytes</th>
+          <th>path</th><th class="num">hops</th><th class="num">snr</th><th class="num">rssi</th>
+          <th>dup</th><th>outcome</th><th>detail</th><th>packet id</th>
+        </tr>
+      </thead>
+      <tbody id="feed-rows"></tbody>
+    </table>
+  </div>
 </div>
 <p class="note">
   Recorded history is painted first and the rule marks where the live stream
@@ -25,46 +27,52 @@
 </p>
 
 <h2>transmit queue</h2>
-<table class="counters">
-  <thead>
-    <tr><th>priority</th><th class="num">queued</th></tr>
-  </thead>
-  <tbody>
-    {% for queue in queues %}
-    <tr>
-      <td class="mono">{{ queue.priority }} · {{ queue.name }}</td>
-      <td class="num">{{ queue.depth }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <thead>
+      <tr><th>priority</th><th class="num">queued</th></tr>
+    </thead>
+    <tbody>
+      {% for queue in queues %}
+      <tr>
+        <td class="mono">{{ queue.priority }} · {{ queue.name }}</td>
+        <td class="num">{{ queue.depth }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 <h2>scheduler</h2>
-<table class="counters">
-  <tbody>
-    <tr><td>submitted</td><td class="num">{{ status.stats.submitted }}</td></tr>
-    <tr><td>transmitted</td><td class="num">{{ status.stats.transmitted }}</td></tr>
-    <tr><td>suppressed</td><td class="num">{{ status.stats.suppressed }}</td></tr>
-    <tr><td>dropped</td><td class="num">{{ status.stats.dropped }}</td></tr>
-    <tr><td>failed</td><td class="num">{{ status.stats.failed }}</td></tr>
-    <tr><td>busy retries</td><td class="num">{{ status.stats.busy_retries }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>submitted</td><td class="num">{{ status.stats.submitted }}</td></tr>
+      <tr><td>transmitted</td><td class="num">{{ status.stats.transmitted }}</td></tr>
+      <tr><td>suppressed</td><td class="num">{{ status.stats.suppressed }}</td></tr>
+      <tr><td>dropped</td><td class="num">{{ status.stats.dropped }}</td></tr>
+      <tr><td>failed</td><td class="num">{{ status.stats.failed }}</td></tr>
+      <tr><td>busy retries</td><td class="num">{{ status.stats.busy_retries }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <h2>reception</h2>
-<table class="counters">
-  <tbody>
-    <tr><td>delivered to subscribers</td><td class="num">{{ delivered }}</td></tr>
-    <tr><td>considered for duplication</td><td class="num">{{ dedup.considered }}</td></tr>
-    <tr><td>duplicates dropped</td><td class="num">{{ dedup.duplicates }}</td></tr>
-    <tr>
-      <td>duplicate cache</td>
-      <td class="num">{{ dedup.entries }} / {{ dedup.max_entries }}</td>
-    </tr>
-    <tr><td>learned path destinations</td><td class="num">{{ paths }}</td></tr>
-    <tr><td>contacts</td><td class="num">{{ contacts }}</td></tr>
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>delivered to subscribers</td><td class="num">{{ delivered }}</td></tr>
+      <tr><td>considered for duplication</td><td class="num">{{ dedup.considered }}</td></tr>
+      <tr><td>duplicates dropped</td><td class="num">{{ dedup.duplicates }}</td></tr>
+      <tr>
+        <td>duplicate cache</td>
+        <td class="num">{{ dedup.entries }} / {{ dedup.max_entries }}</td>
+      </tr>
+      <tr><td>learned path destinations</td><td class="num">{{ paths }}</td></tr>
+      <tr><td>contacts</td><td class="num">{{ contacts }}</td></tr>
+    </tbody>
+  </table>
+</div>
 
 {{ identity.verification_legend() }}
 

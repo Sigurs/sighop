@@ -18,25 +18,27 @@
 <div class="guarded">
   <p><strong>This action {{ description }}</strong></p>
 
-  <table class="counters">
-    <tbody>
-      <tr><td>identity</td><td>{{ stub.name }}</td></tr>
-      <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td></tr>
-      <tr><td>public key</td><td>{{ display.key(stub.identity.public_key) }}</td></tr>
-      <tr><td>next scheduled flood</td>
-          <td class="mono">{{ display.when(stub.next_flood_at, 'none') }}</td></tr>
-      <tr><td>last flood</td>
-          <td class="mono">{{ display.when(stub.last_flood_at, 'none this run') }}</td></tr>
-      <tr><td>transmit gate</td>
-          <td class="mono">{{ 'open' if transmit_enabled else 'closed' }}</td></tr>
-      <tr><td>radio readback</td>
-          <td class="mono">{{ 'yes' if radio_known else 'not yet' }}</td></tr>
-      {% if kind == 'flood' %}
-      <tr><td>inter-entity gap remaining</td>
-          <td class="mono">{{ '%d s'|format(gap_remaining|round(0, 'ceil')) if gap_remaining > 0 else 'none' }}</td></tr>
-      {% endif %}
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="counters">
+      <tbody>
+        <tr><td>identity</td><td>{{ stub.name }}</td></tr>
+        <tr><td>node hash</td><td class="mono">{{ '0x%02x'|format(stub.node_hash) }}</td></tr>
+        <tr><td>public key</td><td>{{ display.key(stub.identity.public_key) }}</td></tr>
+        <tr><td>next scheduled flood</td>
+            <td class="mono">{{ display.when(stub.next_flood_at, 'none') }}</td></tr>
+        <tr><td>last flood</td>
+            <td class="mono">{{ display.when(stub.last_flood_at, 'none this run') }}</td></tr>
+        <tr><td>transmit gate</td>
+            <td class="mono">{{ 'open' if transmit_enabled else 'closed' }}</td></tr>
+        <tr><td>radio readback</td>
+            <td class="mono">{{ 'yes' if radio_known else 'not yet' }}</td></tr>
+        {% if kind == 'flood' %}
+        <tr><td>inter-entity gap remaining</td>
+            <td class="mono">{{ '%d s'|format(gap_remaining|round(0, 'ceil')) if gap_remaining > 0 else 'none' }}</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
 
   {% if not transmit_enabled %}
   <p class="unavailable">

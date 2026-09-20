@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Form, Request
@@ -45,14 +46,19 @@ from sighop.net.dm import (
     RecordedOutcome,
     choose_route,
 )
+from sighop.protocol.payloads import GROUP_NAME_SEPARATOR
+from sighop.web.auth import safe_next
 from sighop.web.deps import Panel, panel
+from sighop.web.guard import current_session
 from sighop.web.render import (
     Refusal,
     Status,
+    default_identity,
     duration,
     identity_for,
     identity_for_key,
     plural,
+    refused,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -133,6 +139,9 @@ async def render_index(
         "chat/index.html",
         conversations=await _conversations(page),
         identities=list(page.state.adverts.stubs),
+        chatting_as=chatting_as(page, request),
+        chatting_as_note=CHATTING_AS_NOTE,
+        storable_identities=storable_identities(page),
         recorded=_recorded(page),
         not_recorded=NOT_RECORDED,
         **await channels_context(page, added=added, removed=removed),
@@ -298,6 +307,124 @@ def _entity_name(page: Panel, public_key: bytes) -> str:
     return public_key.hex()[:16]
 
 
+CHATTING_AS_NOTE = (
+    "Your composers open with this identity chosen; every message can still be "
+    "sent as another. It belongs to your account, not to this run: another "
+    "operator signed in here keeps their own."
+)
+
+DEFAULT_IDENTITY_NEEDS_DURABLE_STORAGE = (
+    "A default identity to chat as belongs to your account, and accounts are "
+    "stored in the database. It is unreachable, so nothing was changed and the "
+    "default in force is the one you already had."
+)
+
+DEFAULT_IDENTITY_NOT_HELD = (
+    "That identity is not one this run holds, so it was not made your default: "
+    "a default names an identity this platform can compose as."
+)
+
+DEFAULT_IDENTITY_NOT_STORED = (
+    "That identity is not stored: it was generated for this run or loaded from "
+    "a keyfile, and a default is held against your account, which outlives both. "
+    "Nothing was changed; it can still be chosen for any single message."
+)
+
+
+@router.post("/identity", response_model=None)
+async def set_chatting_as(
+    request: Request,
+    page: PanelDep,
+    identity: Annotated[str, Form()] = "",
+    next_path: Annotated[str, Form(alias="next")] = "/chat",
+) -> RedirectResponse | HTMLResponse:
+    """Set or clear the identity this operator chats as. Transmits nothing.
+
+    A preference, so no password step: it grants nothing, changes no key
+    material and reaches no radio (design D7). An empty `identity` clears it.
+    The session is updated with the row, so the composers change on the next
+    page rather than at the next revalidation.
+    """
+    stub = None if not identity else _entity(page, identity)
+    if identity and stub is None:
+        return await render_index(
+            request,
+            page,
+            refusal=refused(DEFAULT_IDENTITY_NOT_HELD, field="identity"),
+            status_code=400,
+        )
+    # What was submitted is judged before the database is: an outage is not the
+    # reason an identity this run cannot keep was refused.
+    chosen = None
+    if stub is not None:
+        chosen = _stored_id(stub)
+        if chosen is None:
+            return await render_index(
+                request,
+                page,
+                refusal=refused(DEFAULT_IDENTITY_NOT_STORED, field="identity"),
+                status_code=400,
+            )
+    if page.persistence is None or page.degraded:
+        return await render_index(
+            request,
+            page,
+            refusal=refused(DEFAULT_IDENTITY_NEEDS_DURABLE_STORAGE, field="identity"),
+            status_code=400,
+        )
+    written = await page.persistence.web_users.set_default_identity(page.actor(request), chosen)
+    if isinstance(written, Failed):
+        return await render_index(
+            request,
+            page,
+            refusal=refused(DEFAULT_IDENTITY_NEEDS_DURABLE_STORAGE, field="identity"),
+            status_code=400,
+        )
+    session = current_session(request)
+    if session is not None:
+        session.default_entity_id = None if stub is None else stub.entity_id
+    return RedirectResponse(safe_next(next_path), status_code=SEE_OTHER)
+
+
+def _stored_id(stub: object) -> uuid.UUID | None:
+    """The `entity` row this identity is, or `None` when it has no row.
+
+    A stored identity is adopted under its row id; one generated for this run or
+    loaded from a keyfile is adopted under its name, and has no row for an
+    account's default to reference (`runtime._adopt_entity`).
+    """
+    try:
+        return uuid.UUID(stub.entity_id)  # type: ignore[attr-defined]
+    except ValueError:
+        return None
+
+
+def storable_identities(page: Panel) -> list[object]:
+    """The identities that can be an account's default: the stored ones.
+
+    Every loaded identity stays selectable for a single message; only these can
+    be *kept*, because the preference outlives the run and a generated key does
+    not.
+    """
+    return [stub for stub in page.state.adverts.stubs if _stored_id(stub) is not None]
+
+
+def chatting_as(page: Panel, request: Request) -> str:
+    """The public key of the identity this operator chats as, or an empty string.
+
+    One lookup behind every composer and the contact list: the account's choice
+    travels on its session, so this awaits nothing and a degraded database
+    leaves the default in force rather than changing who a post is composed as.
+    An identity this run does not hold resolves to nothing at all, never to a
+    substitute (`web-chat`).
+    """
+    session = current_session(request)
+    stub = default_identity(
+        page.state.adverts.stubs, None if session is None else session.default_entity_id
+    )
+    return "" if stub is None else stub.identity.public_key.hex()
+
+
 # --- One channel (channel-messaging D8) -------------------------------------
 #
 # Declared before the conversation routes, whose two path segments would
@@ -313,8 +440,10 @@ async def channel(
     if loaded is None:
         return page.page(request, "chat/missing.html", status_code=404)
     page.channel_log.opened(channel_id)
-    context = await _channel_context(page, loaded)
-    context["chosen"] = identity
+    context = await _channel_context(page, loaded, request)
+    # An identity named in the query is this page's own choice — the one a post
+    # was just made as — so it wins over the standing default.
+    context["chosen"] = identity or context["chosen"]
     return page.page(request, "chat/channel.html", **context)
 
 
@@ -325,7 +454,7 @@ async def channel_messages(channel_id: int, request: Request, page: PanelDep) ->
     if loaded is None:
         return page.page(request, "chat/missing.html", status_code=404)
     page.channel_log.opened(channel_id)
-    context = await _channel_context(page, loaded)
+    context = await _channel_context(page, loaded, request)
     return page.page(request, "chat/_channel_messages.html", **context)
 
 
@@ -361,7 +490,7 @@ async def post_to_channel(
         except ChannelPostError as exc:
             refusal = str(exc)
     if refusal:
-        context = await _channel_context(page, loaded)
+        context = await _channel_context(page, loaded, request)
         context.update(refusal=refusal, draft=text, chosen=identity)
         return page.page(request, "chat/channel.html", status_code=400, **context)
     return RedirectResponse(
@@ -369,14 +498,17 @@ async def post_to_channel(
     )
 
 
-async def _channel_context(page: Panel, loaded: LoadedChannel) -> dict[str, Any]:
+async def _channel_context(page: Panel, loaded: LoadedChannel, request: Request) -> dict[str, Any]:
     messages, readable = await _channel_messages(page, loaded.id)
     return {
         "channel": loaded,
         "messages": messages,
         "identities": list(page.state.adverts.stubs),
-        "chosen": "",
+        "chosen": chatting_as(page, request),
         "max_text_len": MAX_CHANNEL_TEXT_LEN,
+        # What rides inside the limit besides the text, so the composer counts
+        # the bytes `check_post_length` counts rather than restating the rule.
+        "name_separator": GROUP_NAME_SEPARATOR,
         "claims_note": CLAIMS_NOTE,
         "guessable_note": GUESSABLE_NOTE,
         "guessable_status": GUESSABLE,
@@ -528,6 +660,11 @@ async def _conversation_context(page: Panel, entity: object, contact: Contact) -
     return {
         "entity": entity,
         "entity_key": entity_key.hex(),
+        "identities": list(page.state.adverts.stubs),
+        # The conversation shown is the one being sent in, so the composer opens
+        # on its own identity: the default already decided which conversation the
+        # contact list opened (design D5).
+        "chosen": entity_key.hex(),
         "contact": contact,
         "peer": identity_for(contact),
         "peer_key": contact.public_key.hex(),
@@ -666,6 +803,7 @@ async def send(
     page: PanelDep,
     text: Annotated[str, Form()] = "",
     flood: Annotated[str, Form()] = "",
+    identity: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
     """Compose, refuse or submit — and never truncate (design D11).
 
@@ -674,7 +812,12 @@ async def send(
     way to say no to a form, and this is the side of the protocol where that is
     true.
     """
-    entity = _entity(page, entity_key)
+    # The composer's own selection is what this message is sent as; the path's
+    # identity is the conversation it was composed in. Sending as another
+    # identity belongs in that identity's conversation, so the redirect below
+    # lands there (design D5).
+    chosen_key = identity or entity_key
+    entity = _entity(page, chosen_key)
     contact = _contact(page, peer_key)
     if entity is None or contact is None:
         return page.page(request, "chat/missing.html", status_code=404)
@@ -694,7 +837,7 @@ async def send(
         _send(page, entity, contact, text, flooding=flooding),
         name="web-chat-send",
     )
-    return RedirectResponse(f"/chat/{entity_key}/{peer_key}", status_code=SEE_OTHER)
+    return RedirectResponse(f"/chat/{chosen_key}/{peer_key}", status_code=SEE_OTHER)
 
 
 def _refusal(page: Panel, contact: Contact, text: str, *, flooding: bool) -> str:

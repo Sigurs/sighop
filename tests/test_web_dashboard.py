@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -31,12 +32,13 @@ from sighop.radio.modem import EU868_NARROW, RadioParams
 from sighop.radio.probe import AbsenceReason, Absent, FirmwareVersion, ProbeResult
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.feed import EntityTraffic, FeedHub
-from sighop.web.render import contact_rows, modem_readings, queue_rows
+from sighop.web.render import contact_rows, modem_readings, navigation, queue_rows
 from tests.test_web_feed import _outcome, _reception, _submission
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
     StubState,
     authenticator,
+    session_of,
     signed_client,
     stub_state,
 )
@@ -199,19 +201,48 @@ def test_a_readback_that_disagrees_with_the_configuration_is_shown() -> None:
 # --- 11.3 The contact table -------------------------------------------------
 
 
-def test_a_contact_links_to_a_conversation_as_each_loaded_identity() -> None:
-    """consolidate-web-pages 6.1: conversations start from the contact list."""
+def test_a_contact_links_to_one_conversation_as_the_operators_default() -> None:
+    """One link per contact, not one per identity: the choice is held, not repeated."""
     state = stub_state(stub_names=("first", "second"))
     contact = _contact("peer")
     state.contacts.restore([contact])
+    one, two = state.adverts.stubs
+
+    with _client(_app(state)) as client:
+        session_of(client).default_entity_id = two.entity_id
+        body = client.get("/contacts").text
+
+    peer = contact.public_key.hex()
+    assert f'<a href="/chat/{two.identity.public_key.hex()}/{peer}">as second</a>' in body
+    assert f"/chat/{one.identity.public_key.hex()}/{peer}" not in body
+
+
+def test_one_loaded_identity_needs_no_default_to_link() -> None:
+    state = stub_state(stub_names=("only",))
+    contact = _contact("peer")
+    state.contacts.restore([contact])
+    only = state.adverts.stubs[0]
 
     with _client(_app(state)) as client:
         body = client.get("/contacts").text
 
-    peer = contact.public_key.hex()
-    for stub in state.adverts.stubs:
-        link = f'<a href="/chat/{stub.identity.public_key.hex()}/{peer}">as {stub.name}</a>'
-        assert link in body
+    assert (
+        f'<a href="/chat/{only.identity.public_key.hex()}/{contact.public_key.hex()}">as only</a>'
+        in body
+    )
+
+
+def test_several_identities_and_no_default_point_to_where_one_is_chosen() -> None:
+    """A conversation cannot be opened without an identity, so the row says where
+    to choose one rather than guessing."""
+    state = stub_state(stub_names=("first", "second"))
+    state.contacts.restore([_contact("peer")])
+
+    with _client(_app(state)) as client:
+        body = client.get("/contacts").text
+
+    assert 'href="/chat/' not in body
+    assert '<a href="/chat">choose an identity to chat as</a>' in body
 
 
 def test_with_no_identity_the_contact_list_offers_no_conversation() -> None:
@@ -390,6 +421,48 @@ def test_the_navigation_names_exactly_the_seven_pages() -> None:
     assert tuple(re.findall(r'href="([^"]*)"', nav)) == NAVIGATION
 
 
+@pytest.mark.parametrize(
+    ("path", "marked"),
+    [
+        ("/", "/"),
+        ("/contacts", "/contacts"),
+        ("/chat", "/chat"),
+        # A page beneath an entry marks the entry it is beneath.
+        ("/chat/aabb/ccdd", "/chat"),
+        ("/admin/identities/3", "/admin/identities"),
+        # And a page whose path says one thing while the panel says another:
+        # channels are administered from chat, rooms from rooms, a bot and an
+        # advert from its identity, the gate from system.
+        ("/admin/channels/2/rename", "/chat"),
+        ("/admin/rooms/1/password", "/rooms"),
+        ("/admin/bots/1/mode", "/admin/identities"),
+        ("/admin/advert/1/flood", "/admin/identities"),
+        ("/admin/transmit", "/system"),
+        ("/system", "/system"),
+        # Neither of the two pages served without a session carries navigation.
+        ("/login", None),
+        ("/setup", None),
+    ],
+)
+def test_the_navigation_marks_the_page_being_viewed(path: str, marked: str | None) -> None:
+    entries = navigation(path)
+    assert tuple(entry.href for entry in entries) == NAVIGATION
+    assert [entry.href for entry in entries if entry.current] == ([marked] if marked else [])
+
+
+def test_exactly_one_navigation_link_is_marked_on_a_page() -> None:
+    """Visibly by a class rather than by colour alone, and to assistive
+    technology by `aria-current` (`web-dashboard`)."""
+    with _client(_app(stub_state())) as client:
+        body = client.get("/contacts").text
+
+    nav = body[body.index('<nav class="nav">') : body.index("</nav>")]
+    marked = [tag for tag in re.findall(r"<a\b[^>]*>", nav) if 'aria-current="page"' in tag]
+    assert len(marked) == 1
+    assert 'href="/contacts"' in marked[0]
+    assert 'class="current"' in marked[0]
+
+
 def test_a_former_page_is_not_found_and_nothing_links_to_it() -> None:
     from pathlib import Path
 
@@ -408,3 +481,30 @@ def test_a_former_page_is_not_found_and_nothing_links_to_it() -> None:
             assert not re.search(rf'href="{re.escape(path)}(\?[^"]*)?"', text), (
                 f"{template.name} links to {path}"
             )
+
+
+def test_the_contact_list_reads_nothing_durable_to_resolve_the_default() -> None:
+    """The account's choice travels on the session, so this page keeps reading
+    only what the running platform holds in memory."""
+
+    class _Counting:
+        state = "ready"
+        degraded = False
+        reads = 0
+
+        def __getattr__(self, name: str) -> object:
+            _Counting.reads += 1
+            raise AssertionError(f"the contacts page read persistence.{name}")
+
+        def as_json(self) -> dict[str, object]:
+            return {}
+
+    state = stub_state(stub_names=("first", "second"), persistence=_Counting())  # type: ignore[arg-type]
+    state.contacts.restore([_contact("peer")])
+
+    with _client(_app(state)) as client:
+        session_of(client).default_entity_id = state.adverts.stubs[0].entity_id
+        response = client.get("/contacts")
+
+    assert response.status_code == 200
+    assert _Counting.reads == 0

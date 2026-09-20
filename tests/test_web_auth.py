@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import uuid
 
 import pytest
 
@@ -212,6 +213,51 @@ async def test_revalidation_reads_the_account_at_most_once_a_minute() -> None:
     for _ in range(30):
         assert await auth.resolve(token) is not None
     assert accounts.reads == reads + 1
+
+
+async def test_a_default_set_elsewhere_reaches_the_session_at_revalidation() -> None:
+    """The preference travels with the account, so the window is the one an
+    account change already accepts (`web-chat` design D2)."""
+    accounts = MemoryAccounts()
+    accounts.add(OPERATOR, OPERATOR_PASSWORD)
+    clock = ManualClock()
+    auth, token = await _signed_in(accounts, clock, RecordingLogger())
+    session = await auth.resolve(token)
+    assert session is not None and session.default_entity_id is None
+
+    chosen = uuid.uuid4()
+    accounts.update(OPERATOR, default_entity_id=chosen)
+
+    session = await auth.resolve(token)
+    assert session is not None
+    assert session.default_entity_id is None, "not yet due: within the minute"
+
+    clock.advance(REVALIDATE_SECONDS)
+    session = await auth.resolve(token)
+    assert session is not None
+    assert session.default_entity_id == str(chosen)
+
+    accounts.update(OPERATOR, default_entity_id=None)
+    clock.advance(REVALIDATE_SECONDS)
+    session = await auth.resolve(token)
+    assert session is not None and session.default_entity_id is None
+
+
+async def test_a_revalidation_the_database_cannot_answer_leaves_the_default_alone() -> None:
+    """An outage costs guarded actions, never which identity a post is composed as."""
+    accounts = MemoryAccounts()
+    chosen = uuid.uuid4()
+    accounts.add(OPERATOR, OPERATOR_PASSWORD)
+    accounts.update(OPERATOR, default_entity_id=chosen)
+    clock = ManualClock()
+    auth, token = await _signed_in(accounts, clock, RecordingLogger())
+
+    accounts.degraded = True
+    clock.advance(REVALIDATE_SECONDS)
+    session = await auth.resolve(token)
+    assert session is not None
+    assert not session.verified
+    assert session.default_entity_id == str(chosen), "the default in force is left as it was"
 
 
 async def test_a_degraded_store_keeps_the_session_but_marks_it_unverified() -> None:

@@ -110,8 +110,11 @@ async def test_the_page_shows_scheme_and_host_and_outcomes_but_no_path(database:
 
     assert "https://discord.com" in body
     assert "new_repeater" in body and "discord" in body
-    assert "2026-09-13T10:00:00+00:00" in body
-    assert "2026-09-13T11:00:00+00:00 (HTTP 404)" in body
+    # Each time is relative in the browser and carries its exact UTC value; the
+    # failure's reason sits beside the time rather than inside it.
+    assert 'datetime="2026-09-13T10:00:00+00:00"' in body
+    assert 'datetime="2026-09-13T11:00:00+00:00"' in body
+    assert "(HTTP 404)" in body
     assert 'type="password"' in body and 'autocomplete="off"' in body
     _no_secret(body)
 

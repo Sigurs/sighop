@@ -1718,7 +1718,7 @@ async def test_clearing_a_bots_whole_state_states_and_counts(
     async with _live(app) as client:
         confirmation = (await client.get(f"/admin/bots/{bot.id}/state/clear")).text
         assert "forget everything it recorded, the seed included" in " ".join(confirmation.split())
-        assert "<strong>3</strong> key(s)" in confirmation
+        assert "<strong>3 keys</strong>" in confirmation
 
         # Still there: opening the confirmation changes nothing.
         still = await persistence.bot_state.list(bot.id)
@@ -1727,7 +1727,7 @@ async def test_clearing_a_bots_whole_state_states_and_counts(
         response = await _apost(client, app, f"/admin/bots/{bot.id}/state/clear", confirm="yes")
 
     assert response.status_code == 200
-    assert "Cleared 3 key(s)" in response.text
+    assert "Cleared 3 keys" in response.text
     emptied = await persistence.bot_state.list(bot.id)
     assert isinstance(emptied, Succeeded)
     assert emptied.value == {}

@@ -3,44 +3,47 @@
 {% import "_claimed.html" as claims %}
 {% import "_display.html" as display %}
 <div id="channel" hx-get="/chat/channel/{{ channel.id }}/messages"
-     hx-trigger="every 3s" hx-swap="outerHTML">
+     hx-trigger="every 3s" hx-ext="morph" hx-swap="morph:outerHTML">
 {% if not history_readable %}
 <p class="unavailable">{{ history_unreadable }}</p>
 {% elif not recorded %}
 <p class="unavailable">{{ not_recorded }}</p>
 {% endif %}
 {% if messages %}
-<table class="conversation">
-  <thead>
-    <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
-  </thead>
-  <tbody>
-    {% for message in messages %}
-    <tr class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
-      <td class="mono">
-        {{ display.when(message.handled_at) }}
-        {% if message.wire_time %}<br><span class="note">sender's clock: {{ display.when(message.wire_time) }}</span>{% endif %}
-      </td>
-      <td>
-        {%- if message.inbound -%}
-          {{ claims.claimed(message.claimed) }}
-        {%- else -%}
-          <span class="mono">{{ message.entity_name }}</span> <span class="note">(this station)</span>
-        {%- endif -%}
-      </td>
-      <td class="message-text">
-        {% if message.displayable %}
-          {{ message.text }}
-        {% else %}
-          <span class="undisplayable">not valid text</span>
-          <span class="mono">{{ message.raw }}</span>
-        {% endif %}
-      </td>
-      <td class="message-state">{{ display.statuses(message.state) }}</td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table class="conversation">
+    <thead>
+      <tr><th>when</th><th>from</th><th>message</th><th>state</th></tr>
+    </thead>
+    <tbody>
+      {% for message in messages %}
+      {# Matched by `ref` across a refresh, as in a direct conversation. #}
+      <tr id="p-{{ message.ref }}" class="message dir-{{ 'rx' if message.inbound else 'tx' }}">
+        <td class="mono">
+          {{ display.when(message.handled_at) }}
+          {% if message.wire_time %}<br><span class="note">sender's clock: {{ display.when(message.wire_time) }}</span>{% endif %}
+        </td>
+        <td>
+          {%- if message.inbound -%}
+            {{ claims.claimed(message.claimed) }}
+          {%- else -%}
+            <span class="mono">{{ message.entity_name }}</span> <span class="note">(this station)</span>
+          {%- endif -%}
+        </td>
+        <td class="message-text">
+          {% if message.displayable %}
+            {{ message.text }}
+          {% else %}
+            <span class="undisplayable">not valid text</span>
+            <span class="mono">{{ message.raw }}</span>
+          {% endif %}
+        </td>
+        <td class="message-state">{{ display.statuses(message.state) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 {% else %}
 <p class="empty"><strong>No messages yet.</strong> Nothing has been received or posted here in what this page can see.</p>
 {% endif %}

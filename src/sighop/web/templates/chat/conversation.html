@@ -16,8 +16,22 @@
 <form method="post" action="/chat/{{ entity_key }}/{{ peer_key }}" class="composer">
   <input type="hidden" name="_token" value="{{ token }}">
   <p>
-    <textarea name="text" rows="3" cols="72"
+    <label>send as
+      <select name="identity">
+        {% for candidate in identities %}
+        <option value="{{ candidate.identity.public_key.hex() }}"
+                {% if chosen == candidate.identity.public_key.hex() %}selected{% endif %}>{{ candidate.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </p>
+  <p>
+    {# `data-limit` is the same 160 bytes the refusal counts. `display.js`
+       counts against it as the operator types; the refusal at submission stays
+       the authority, and the control is never disabled by a count. #}
+    <textarea name="text" rows="3" cols="72" data-limit="{{ max_text_len }}"
               placeholder="up to {{ max_text_len }} bytes">{{ draft }}</textarea>
+    <span class="count" aria-live="polite"></span>
   </p>
   <p class="note">
     {% if route.known %}

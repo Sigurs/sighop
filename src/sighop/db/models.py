@@ -530,6 +530,18 @@ class WebUser(Base):
     created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
     password_set_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
 
+    default_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entity.id", ondelete="SET NULL", name="fk_web_user_default_entity_id_entity"),
+        nullable=True,
+    )
+    """The identity this account composes channel posts and direct messages as
+    unless another is chosen. A preference, not a privilege: it grants nothing,
+    holds no key material and is read only by the interface this account signs
+    into. `ON DELETE SET NULL` is what clears it when the identity is removed,
+    so a default cannot outlive the identity it names and quietly become
+    someone else's."""
+
     __table_args__ = (UniqueConstraint("username", name="uq_web_user_username"),)
 
 

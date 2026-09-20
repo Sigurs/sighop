@@ -10,15 +10,17 @@
 {% else %}
 <div class="guarded">
   <p><strong>This action {{ description }}</strong></p>
-  <table class="counters">
-    <tbody>
-      <tr><td>bot</td><td>{{ bot.entity_name }}</td></tr>
-      <tr><td>driver</td><td class="mono">{{ bot.driver }}</td></tr>
-      <tr><td>mode</td><td class="mono">{{ bot.mode }}</td></tr>
-      <tr><td>stored keys that will be deleted</td>
-          <td class="mono">{{ 'unknown — the count could not be read' if keys is none else keys }}</td></tr>
-    </tbody>
-  </table>
+  <div class="table-wrap">
+    <table class="counters">
+      <tbody>
+        <tr><td>bot</td><td>{{ bot.entity_name }}</td></tr>
+        <tr><td>driver</td><td class="mono">{{ bot.driver }}</td></tr>
+        <tr><td>mode</td><td class="mono">{{ bot.mode }}</td></tr>
+        <tr><td>stored keys that will be deleted</td>
+            <td class="mono">{{ 'unknown — the count could not be read' if keys is none else keys }}</td></tr>
+      </tbody>
+    </table>
+  </div>
   <p><strong>This cannot be undone.</strong></p>
   <p class="note">
     The identity{% if identity %} <span class="mono">{{ identity.name }}</span>{% endif %}

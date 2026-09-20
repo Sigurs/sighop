@@ -11,38 +11,40 @@
 
 {{ collection.state(members, "members") }}
 {% if members.readable and members.items %}
-<table>
-  <thead>
-    <tr>
-      <th>member</th>
-      <th class="mono">public key</th>
-      <th class="mono">hash</th>
-      <th>permission</th>
-      <th class="num">sync cursor</th>
-      <th class="num">unsynced</th>
-      <th>first login</th>
-      <th>last activity</th>
-      <th></th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for member in members %}
-    <tr>
-      <td>{{ identity.identity(member.identity, key=false) }}</td>
-      <td>{{ display.key(member.public_key) }}</td>
-      <td class="mono">{{ '0x%02x'|format(member.node_hash) }}</td>
-      <td class="mono">{{ member.permission }}</td>
-      <td class="num mono">{{ member.sync_since }}</td>
-      <td class="num mono">{{ member.unsynced }}</td>
-      <td class="mono">{{ display.when(member.first_login) }}</td>
-      <td class="mono">{{ display.when(member.last_activity) }}</td>
-      <td>
-        <a href="/rooms/{{ room.id }}/members/{{ member.public_key }}/revoke">revoke…</a>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>member</th>
+        <th class="mono">public key</th>
+        <th class="mono">hash</th>
+        <th>permission</th>
+        <th class="num">sync cursor</th>
+        <th class="num">unsynced</th>
+        <th>first login</th>
+        <th>last activity</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for member in members %}
+      <tr>
+        <td>{{ identity.identity(member.identity, key=false) }}</td>
+        <td>{{ display.key(member.public_key) }}</td>
+        <td class="mono">{{ '0x%02x'|format(member.node_hash) }}</td>
+        <td class="mono">{{ member.permission }}</td>
+        <td class="num mono">{{ member.sync_since }}</td>
+        <td class="num mono">{{ member.unsynced }}</td>
+        <td class="mono">{{ display.when(member.first_login) }}</td>
+        <td class="mono">{{ display.when(member.last_activity) }}</td>
+        <td>
+          <a href="/rooms/{{ room.id }}/members/{{ member.public_key }}/revoke">revoke…</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 <p class="note">
   Two members may share a node hash — it is one byte, and §3 puts a collision at
   1 in 256. They are two members: the public key is what makes a member a member,
