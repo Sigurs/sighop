@@ -20,7 +20,7 @@
 
 ## 4. Deployment and docs
 
-- [ ] 4.1 `compose.yaml`: add `SIGHOP_PATH_HASH_SIZE: "${SIGHOP_PATH_HASH_SIZE:-}"` to the service environment. `.env.example`: document the variable, its values, the default of 3 and `=1` for the old behaviour. Verify that `docker compose config` renders with the variable unset and with it set.
+- [x] 4.1 `compose.yaml`: add `SIGHOP_PATH_HASH_SIZE: "${SIGHOP_PATH_HASH_SIZE:-}"` to the service environment. `.env.example`: document the variable, its values, the default of 3 and `=1` for the old behaviour. Verify that `docker compose config` renders with the variable unset and with it set.
 
 ## 5. Verification
 
