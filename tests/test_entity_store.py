@@ -56,6 +56,7 @@ from sighop.keystore import (
     NodeHashCollisionError,
     create_keyfile,
 )
+from sighop.net.adverts import FLOOD_INTERVAL_FLOOR_SECONDS, HOUR
 from sighop.protocol.identity import LocalIdentity, generate_identity
 from sighop.protocol.payloads import (
     GROUP_NAME_SEPARATOR,
@@ -63,6 +64,8 @@ from sighop.protocol.payloads import (
     NodeType,
     build_appdata,
 )
+from sighop.runtime import RuntimeConfig
+from tests.test_runtime import _events, runtime
 
 SECRET = base64.b64decode(generate_secret_key())
 OTHER_SECRET = base64.b64decode(generate_secret_key())
@@ -227,6 +230,60 @@ async def test_an_identity_round_trips_with_the_same_public_key_and_node_hash(
     assert entity.identity.private_key == identity.private_key
     assert entity.record.advert_config == advert_config_for(NodeType.ROOM_SERVER)
     assert entity.record.enabled is True
+
+
+@pytest.mark.database
+async def test_a_stored_identity_with_no_interval_adverts_at_the_floor(
+    database: Database,
+) -> None:
+    """The migration-free claim (design.md — Risks): no surface has ever
+    written a non-default interval, so a row with none set must advert
+    exactly as it did before `_adopt_entity` read `advert_config` at all."""
+    store = EntityRepository(database=database)
+    stored = await store.store(name="roomy", identity=generate_identity(), secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    assert stored.value.advert_config["flood_interval_seconds"] is None
+
+    loaded = await store.load_all(SECRET)
+    assert isinstance(loaded, Succeeded)
+
+    run = runtime(
+        _events(),
+        config=RuntimeConfig(
+            stored_entities=tuple(loaded.value), status_interval=3600, advert_tick=3600
+        ),
+    )
+
+    (stub,) = run.adverts.stubs
+    assert stub.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS
+
+
+@pytest.mark.database
+async def test_a_stored_identitys_configured_interval_is_honoured(database: Database) -> None:
+    store = EntityRepository(database=database)
+    stored = await store.store(
+        name="roomy",
+        identity=generate_identity(),
+        secret=SECRET,
+        advert_config=advert_config_for(
+            NodeType.CHAT, flood_interval_seconds=48 * HOUR, zero_hop_interval_seconds=600.0
+        ),
+    )
+    assert isinstance(stored, Succeeded)
+
+    loaded = await store.load_all(SECRET)
+    assert isinstance(loaded, Succeeded)
+
+    run = runtime(
+        _events(),
+        config=RuntimeConfig(
+            stored_entities=tuple(loaded.value), status_interval=3600, advert_tick=3600
+        ),
+    )
+
+    (stub,) = run.adverts.stubs
+    assert stub.flood_interval_seconds == 48 * HOUR
+    assert stub.zero_hop_interval_seconds == 600.0
 
 
 @pytest.mark.database

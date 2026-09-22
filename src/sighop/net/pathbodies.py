@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 from sighop.logging import Logger, get_logger
 from sighop.net.acks import AckRegistry, AckUnowned
@@ -176,14 +176,38 @@ class PathBodyReader:
     learned: int = field(default=0, init=False)
     undecryptable: int = field(default=0, init=False)
     bundled_acks: int = field(default=0, init=False)
+    _room_entity_ids: set[str] = field(default_factory=set, init=False)
+    """Entities a room server has claimed, excluded from matching here — the
+    same problem `DirectMessenger._room_entity_ids` solves and the same way
+    (design D10): a room server decrypts and acknowledges its own PATH
+    returns, and a second subscriber doing that for one packet is a second
+    decryption and a second acknowledgement on the air. A set kept beside
+    `entities` rather than entries removed *from* it, on purpose — `entities`
+    is the same list object as `adverts.stubs` (see `__post_init__`), and
+    removing from it would desync the two the moment a room claims anything."""
 
     def __post_init__(self) -> None:
         self.secrets = self.secrets or SharedSecretCache()
         self.logger = self.logger or get_logger(component="path-bodies")
-        self.entities = list(self.entities)
+        # Normalise to a list, but only when the caller did not already hand
+        # one over — `runtime.py` hands this the *same* list object as
+        # `adverts.stubs` and relies on mutating it in place from then on
+        # (design D5); copying it here, as this used to, would silently
+        # detach the two the moment a reader is constructed.
+        if not isinstance(self.entities, list):
+            self.entities = list(self.entities)
 
     def add_entity(self, entity: _PathEntity) -> None:
-        self.entities = [*self.entities, entity]
+        cast(list[_PathEntity], self.entities).append(entity)
+
+    def claim_for_room(self, entity_id: str) -> None:
+        """Mark an entity as a room server's, so this reader leaves it alone."""
+        self._room_entity_ids.add(entity_id)
+
+    def release_from_room(self, entity_id: str) -> None:
+        """Undo `claim_for_room` — the room has stopped being served, and the
+        identity outlives it and goes back to being an ordinary one."""
+        self._room_entity_ids.discard(entity_id)
 
     def subscribe(self, bus: NetworkBus, *, name: str = "path-bodies") -> Subscription:
         return bus.subscribe(name, handler=self.handle)
@@ -198,7 +222,12 @@ class PathBodyReader:
                 return
 
     def _handle_path(self, record: RxRecord, envelope: DirectEnvelope) -> None:
-        entities = [entity for entity in self.entities if entity.node_hash == envelope.dest_hash]
+        entities = [
+            entity
+            for entity in self.entities
+            if entity.node_hash == envelope.dest_hash
+            and entity.entity_id not in self._room_entity_ids
+        ]
         if not entities:
             return  # addressed to a hash none of our entities carries
         contacts = tuple(self.contacts.by_node_hash(envelope.src_hash)) or tuple(

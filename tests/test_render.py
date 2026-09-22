@@ -885,3 +885,13 @@ def test_a_changed_channel_set_names_what_was_added_and_removed():
         "channels changed: +#dev-sighop, -old  "
         "(2 loaded; group text is trialled against all of them)"
     )
+
+
+def test_a_changed_entity_set_names_what_was_adopted_and_withdrawn():
+    from sighop.monitor.render import render_entity_set_changed
+    from sighop.net.adverts import EntitySetChanged
+
+    line = render_entity_set_changed(
+        EntitySetChanged(adopted=("skogen (0x11)",), withdrawn=("old (0x22)",), loaded=2)
+    )
+    assert line == "identities changed: +skogen (0x11), -old (0x22)  (2 loaded)"

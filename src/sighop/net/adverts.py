@@ -152,6 +152,22 @@ class EntityStub:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class EntitySetChanged:
+    """An identity adopted or withdrawn while a run is active (design D9).
+
+    The counterpart of `net/channels.py`'s `ChannelSetChanged` — same reason:
+    the CLI's "within 60 s" promise has to be visible in the run that keeps
+    it, and a reconcile that changes nothing stays silent. Entries name the
+    identity and its node hash, on the terms `entity-store` sets: never key
+    material.
+    """
+
+    adopted: tuple[str, ...]
+    withdrawn: tuple[str, ...]
+    loaded: int
+
+
 def build_advert_packet(
     stub: EntityStub, timestamp: int, *, path_hash_size: int, zero_hop: bool = False
 ) -> bytes:
@@ -328,6 +344,85 @@ class AdvertScheduler:
             stub.entity_id = name
         stub.name = name
         return True
+
+    def admission_refusal(self, identity: LocalIdentity, name: str) -> str | None:
+        """The reason a live adoption of `identity`/`name` would be refused, or
+        `None` when it would be admitted cleanly.
+
+        The non-fatal counterpart to `add_identity`'s checks (design D4):
+        reconcile asks first, so a collision or a name clash discovered mid-run
+        is refused and reported rather than raised — a run on the air must not
+        be ended by a write another process made to the store. `add_identity`
+        keeps its raising form, which startup still needs.
+        """
+        colliding = next(
+            (stub for stub in self.stubs if stub.node_hash == identity.node_hash), None
+        )
+        if colliding is not None:
+            return (
+                f"an entity with node hash 0x{identity.node_hash:02x} is already "
+                f"registered as {colliding.name!r}; two local entities may not "
+                "share one (DESIGN.md §3)"
+            )
+        clash = self.name_clash(identity.public_key, name)
+        if clash is not None:
+            return f"the name {name!r} is already used by a loaded identity"
+        return None
+
+    def remove(self, public_key: bytes) -> EntityStub | None:
+        """Withdraw a loaded identity, reporting the stub that was removed.
+
+        **In place**, for the reason `rename` states above: `stubs` is shared
+        by reference with the direct messenger, the channel messenger, the room
+        servers and the bot host, and reassigning it here would silently detach
+        all of them from every identity that remains.
+
+        No other identity is disturbed: nobody else's `next_flood_at`,
+        `adverts_sent` or override changes, and `last_global_flood_at` is left
+        exactly as it was — a flood this identity already sent still counts
+        toward the inter-entity gap after it is gone (advert-policy).
+        """
+        stub = next((stub for stub in self.stubs if stub.identity.public_key == public_key), None)
+        if stub is None:
+            return None
+        self.stubs.remove(stub)
+        return stub
+
+    def reconfigure(
+        self,
+        public_key: bytes,
+        *,
+        flood_interval_seconds: float,
+        zero_hop_interval_seconds: float,
+    ) -> str | None:
+        """Apply a loaded identity's advert configuration in place.
+
+        Returns the refusal reason, or `None` on success (advert-policy: a live
+        configuration change applies without resetting the schedule). The floor
+        is enforced on the same terms `add_identity` enforces it at startup.
+
+        `next_flood_at`, `adverts_sent` and any override are left untouched,
+        **except** that the next flood is re-derived from the new interval when
+        that makes it due sooner than the schedule already in force — never
+        unconditionally from the moment of the change, which would let a
+        configuration edit become a way to advert.
+        """
+        if flood_interval_seconds < FLOOD_INTERVAL_FLOOR_SECONDS:
+            return (
+                f"flood interval {flood_interval_seconds:.0f}s is below the "
+                f"{FLOOD_INTERVAL_FLOOR_SECONDS:.0f}s floor; use an override, "
+                "which must carry an expiry"
+            )
+        stub = next((stub for stub in self.stubs if stub.identity.public_key == public_key), None)
+        if stub is None:
+            return "this run does not hold that identity"
+        stub.flood_interval_seconds = flood_interval_seconds
+        stub.zero_hop_interval_seconds = zero_hop_interval_seconds
+        now = self.clock.now()
+        candidate = now + dt.timedelta(seconds=self._jittered(stub.effective_interval(now)))
+        if stub.next_flood_at is None or candidate < stub.next_flood_at:
+            stub.next_flood_at = candidate
+        return None
 
     def _register(self, stub: EntityStub) -> EntityStub:
         self.stubs.append(stub)

@@ -33,6 +33,7 @@ from sighop.net.paths import PathStore
 from sighop.net.room import RoomServer
 from sighop.net.tx import AirtimeBudget, TxScheduler
 from sighop.passwords import PasswordHasher
+from sighop.protocol.payloads import NodeType
 from sighop.radio.modem import RadioParams
 from sighop.radio.probe import ProbeResult
 from sighop.web.auth import (
@@ -91,6 +92,16 @@ class StubState:
     refuse_live_stop: bool = False
     """Drives the branch where the store took the change and the run did not."""
 
+    entity_reconciles: int = 0
+    room_reconciles: int = 0
+    bot_reconciles: int = 0
+    """What the panel asked the run to reconcile, so a test can assert it
+    reached the seam without waiting for the periodic refresh."""
+
+    refuse_live_adoption: bool = False
+    """Drives the branch where the store took an identity, room or bot write
+    and this run did not take it up — not enabled, or a live collision."""
+
     async def reload_channels(self) -> bool:
         self.channel_reloads += 1
         if self.persistence is not None:
@@ -135,6 +146,59 @@ class StubState:
             return False
         self.bots.remove(worker)
         return True
+
+    async def reconcile_entities(self) -> bool:
+        """What `Runtime.reconcile_entities` does, simplified: no
+        re-configuration and no collision handling — this stub only has to
+        let a route test assert the seam was reached, that an identity the
+        store now holds or no longer holds is picked up without a restart,
+        and the "stored but not taken up" branch when `refuse_live_adoption`
+        is set.
+
+        Reads through `self.persistence` under `self.channel_secret`, the same
+        variable a real run's `webhook_secret` seals both channel keys and
+        entities under, when both are set; otherwise this is a pure counter.
+        A stub is treated as store-sourced, and so eligible for withdrawal,
+        when its `entity_id` is a row id — the shape `_adopt_entity` gives a
+        stored identity and never a keyfile's, which keeps a keyfile-sourced
+        `stub_names` fixture untouched, on the real rule's terms.
+        """
+        self.entity_reconciles += 1
+        if self.refuse_live_adoption:
+            return False
+        if self.persistence is None or self.channel_secret is None:
+            return True
+        loaded = await self.persistence.entities.load_openable(
+            self.channel_secret, enabled_only=True
+        )
+        if not isinstance(loaded, Succeeded):
+            return False
+        openable = {stored.public_key: stored for stored in loaded.value.opened}
+        for stub in list(self.adverts.stubs):
+            try:
+                uuid.UUID(stub.entity_id)
+            except ValueError:
+                continue
+            if stub.identity.public_key not in openable:
+                self.adverts.remove(stub.identity.public_key)
+        held = {stub.identity.public_key for stub in self.adverts.stubs}
+        for stored in openable.values():
+            if stored.public_key in held:
+                continue
+            node_type = stored.record.node_type
+            self.adverts.add_identity(
+                stored.name,
+                stored.identity,
+                node_type=node_type if isinstance(node_type, NodeType) else NodeType.CHAT,
+                entity_id=str(stored.record.id),
+            )
+        return True
+
+    async def reconcile_rooms(self) -> None:
+        self.room_reconciles += 1
+
+    async def reconcile_bots(self) -> None:
+        self.bot_reconciles += 1
 
 
 def _no_scheduler(submission: Submission) -> TxHandle:

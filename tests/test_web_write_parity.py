@@ -2604,3 +2604,225 @@ async def test_an_identity_carries_a_new_room_after_the_old_one_is_deleted(
 
     assert again.status_code in (303, 200), again.text
     assert [room.name for room in (await persistence.rooms.list_all()).value] == ["second"]
+
+
+# --- 6.2-6.3 Writes reach the running process without a restart (web-admin) -
+
+
+def _built_with_announce(
+    state: StubState,
+) -> tuple[FastAPI, StubState, list[str]]:
+    said: list[str] = []
+    app = create_app(
+        state,
+        auth=authenticator(),
+        hosts=HOSTS,
+        logger=RecordingLogger(),
+        announce=said.append,
+        sealing_secret=SECRET,
+    )
+    return app, state, said
+
+
+@pytest.mark.database
+async def test_creating_an_identity_reaches_the_run_without_a_restart(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/admin/identities/create", name="lives-here", node_type="CHAT"
+        )
+    assert response.status_code == 303
+
+    assert state.entity_reconciles == 1
+    listed = await persistence.entities.list_all()
+    assert isinstance(listed, Succeeded)
+    (made,) = [r for r in listed.value if r.name == "lives-here"]
+    assert any(stub.identity.public_key == made.public_key for stub in state.adverts.stubs), (
+        "the created identity must be held by this run without a restart"
+    )
+    assert any("now held by this run" in line for line in said)
+
+
+@pytest.mark.database
+async def test_importing_an_identity_reaches_the_run_without_a_restart(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    app, _state, said = _built_with_announce(state)
+    document = json.dumps(keyfile_document(generate_identity(), "imported-here", NodeType.CHAT))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/admin/identities/import", document=document)
+    assert response.status_code == 303
+
+    assert state.entity_reconciles == 1
+    listed = await persistence.entities.list_all()
+    assert isinstance(listed, Succeeded)
+    (made,) = [r for r in listed.value if r.name == "imported-here"]
+    assert any(stub.identity.public_key == made.public_key for stub in state.adverts.stubs)
+    assert any("now held by this run" in line for line in said)
+
+
+@pytest.mark.database
+async def test_a_colliding_identity_states_the_store_took_it_and_the_run_did_not(
+    database: Database,
+) -> None:
+    """6.3: the "stored but not taken up" scenario, and the distinct wording
+    an operator needs to tell it apart from success."""
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    state.refuse_live_adoption = True
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/admin/identities/create", name="refused-here", node_type="CHAT"
+        )
+    assert response.status_code == 303
+
+    listed = await persistence.entities.list_all()
+    assert isinstance(listed, Succeeded)
+    assert any(r.name == "refused-here" for r in listed.value), "the store must still take it"
+    assert state.adverts.stubs == [], "a refused adoption must not be applied"
+    assert any("stored, but this run did not take it up" in line for line in said), (
+        "the two outcomes must read differently"
+    )
+
+
+@pytest.mark.database
+async def test_disabling_an_identity_reaches_the_run_without_a_restart(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    identity = generate_identity()
+    stored = await persistence.entities.store(name="toggle-me", identity=identity, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    state.adverts.add_identity(
+        "toggle-me", identity, entity_id=str(stored.value.id), keyfile="the entity store"
+    )
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await client.post(
+            f"/admin/identities/{stored.value.id}/enabled",
+            data={TOKEN_FIELD: csrf(client), "enabled": "false"},
+        )
+    assert response.status_code == 303
+
+    assert state.entity_reconciles == 1
+    assert any("no longer holds it" in line for line in said)
+
+
+@pytest.mark.database
+async def test_removing_an_identity_reaches_the_run_without_a_restart(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    identity = generate_identity()
+    stored = await persistence.entities.store(name="gone-soon", identity=identity, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    state.adverts.add_identity(
+        "gone-soon", identity, entity_id=str(stored.value.id), keyfile="the entity store"
+    )
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        form = (await client.get(f"/admin/identities/{stored.value.id}/remove")).text
+        nonce = _nonce(form)
+        response = await client.post(
+            f"/admin/identities/{stored.value.id}/remove",
+            data={
+                TOKEN_FIELD: csrf(client),
+                "nonce": nonce,
+                "password": OPERATOR_PASSWORD,
+                "confirm_name": "gone-soon",
+            },
+        )
+    assert response.status_code == 303
+
+    assert state.entity_reconciles == 1
+    assert any("no longer holds it or advertises" in line for line in said)
+
+
+@pytest.mark.database
+async def test_creating_a_room_reaches_the_run_without_a_restart(database: Database) -> None:
+    persistence = Persistence(database=database)
+    identity = generate_identity()
+    stored = await persistence.entities.store(
+        name="room-host", identity=identity, secret=SECRET, node_type=NodeType.ROOM_SERVER
+    )
+    assert isinstance(stored, Succeeded)
+    state = stub_state(persistence=persistence)
+    state.adverts.add_identity(
+        "room-host", identity, entity_id=str(stored.value.id), keyfile="the entity store"
+    )
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/admin/rooms/create",
+            name="new-room",
+            entity_id=str(stored.value.id),
+            admin_password="an-admin-password",
+        )
+    assert response.status_code == 303
+
+    assert state.room_reconciles == 1
+    assert said, "the write must state its effect on the running process"
+
+
+@pytest.mark.database
+async def test_creating_a_bot_reaches_the_run_without_a_restart(database: Database) -> None:
+    persistence = Persistence(database=database)
+    host = await _bot_identity(persistence, name="bot-host")
+    state = stub_state(persistence=persistence)
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/admin/bots/create", entity_id=str(host.id), driver="greeter"
+        )
+    assert response.status_code == 303
+
+    assert state.bot_reconciles == 1
+    assert said, "the write must state its effect on the running process"
+
+
+@pytest.mark.database
+async def test_enabling_a_bot_reaches_the_run_without_a_restart(database: Database) -> None:
+    persistence = Persistence(database=database)
+    host = await _bot_identity(persistence, name="bot-host")
+    created = await persistence.bots.create(
+        entity_id=host.id,
+        driver="greeter",
+        config=bot_drivers.default_config("greeter"),
+        entity_name=host.name,
+    )
+    assert isinstance(created, Succeeded)
+    state = stub_state(persistence=persistence)
+    app, _state, said = _built_with_announce(state)
+
+    async with _live(app) as client:
+        response = await client.post(
+            f"/admin/bots/{created.value.id}/enabled",
+            data={TOKEN_FIELD: csrf(client), "enabled": "true"},
+        )
+    assert response.status_code == 303
+
+    assert state.bot_reconciles == 1
+    assert said, "the write must state its effect on the running process"

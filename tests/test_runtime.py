@@ -13,13 +13,19 @@ import asyncio
 import datetime as dt
 import io
 import json
+import uuid
 from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
 
+from sighop.config import DatabaseConfig
+from sighop.db.engine import Database
+from sighop.db.persistence import Persistence
+from sighop.db.repositories import EntityRecord, LoadedEntity, OpenedEntities, advert_config_for
 from sighop.net.bus import PriorityClass, Submission, TxResult
 from sighop.protocol.identity import generate_identity
+from sighop.protocol.payloads import NodeType
 from sighop.radio.modem import EU868_NARROW, ModemEvent, TransmitDone
 from sighop.radio.replay import CaptureReplay
 from sighop.runtime import Runtime, RuntimeConfig
@@ -62,6 +68,8 @@ def runtime(
     clock: ManualClock | None = None,
     out: io.StringIO | None = None,
     persistence=None,
+    entity_loader=None,
+    webhook_secret: bytes | None = None,
 ) -> Runtime:
     return Runtime(
         source=source,
@@ -76,7 +84,48 @@ def runtime(
         # test here runs with no database, which is the property the proposal
         # asked for.
         persistence=persistence,
+        entity_loader=entity_loader,
+        webhook_secret=webhook_secret,
     )
+
+
+def _loaded_entity(
+    name: str = "skogen",
+    *,
+    identity=None,
+    node_type: NodeType = NodeType.CHAT,
+    enabled: bool = True,
+    flood_interval_seconds: float | None = None,
+    zero_hop_interval_seconds: float = 0.0,
+):
+    """A `LoadedEntity` with no database behind it, for a stub `entity_loader`."""
+    identity = identity or generate_identity()
+    record = EntityRecord(
+        id=uuid.uuid4(),
+        type="entity",
+        name=name,
+        public_key=identity.public_key,
+        node_hash=identity.node_hash,
+        advert_config=advert_config_for(
+            node_type,
+            flood_interval_seconds=flood_interval_seconds,
+            zero_hop_interval_seconds=zero_hop_interval_seconds,
+        ),
+        enabled=enabled,
+        created_at=dt.datetime.now(dt.UTC),
+    )
+    return LoadedEntity(record=record, identity=identity)
+
+
+def _stub_loader(entities=(), *, stranded=(), error: Exception | None = None):
+    """An `entity_loader` that answers from a fixed list rather than a database."""
+
+    async def load() -> OpenedEntities:
+        if error is not None:
+            raise error
+        return OpenedEntities(opened=tuple(entities), stranded=tuple(stranded))
+
+    return load
 
 
 # --- End to end ------------------------------------------------------------
@@ -481,3 +530,367 @@ async def test_renaming_an_identity_this_run_does_not_hold_reports_so() -> None:
 
     assert run.rename_entity(generate_identity().public_key, "nobody") is False
     assert run.adverts.stubs[0].name == "skogen"
+
+
+# --- 3.1 `entity_loader`, mirroring `channel_loader` (design D2) -----------
+
+
+async def test_a_run_with_no_database_gets_no_entity_loader() -> None:
+    run = runtime(_events(CAPTURE))
+
+    assert run.entity_loader is None
+
+
+async def test_a_run_with_a_database_but_no_secret_gets_no_entity_loader() -> None:
+    """A missing `SIGHOP_SECRET_KEY` means there is nothing to open; defaulting
+    anyway would give reconcile a loader that only ever fails. Never opened —
+    only `__post_init__`'s wiring is under test, no connection is made."""
+    run = Runtime(
+        source=_events(CAPTURE),
+        startup=_startup,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600),
+        clock=ManualClock(),
+        out=io.StringIO(),
+        logger=RecordingLogger(),
+        persistence=Persistence(
+            database=Database(config=DatabaseConfig(url="postgresql+asyncpg://unused/unused"))
+        ),
+    )
+
+    assert run.entity_loader is None
+
+
+@pytest.mark.database
+async def test_a_run_with_a_database_and_a_secret_gets_an_entity_loader(
+    database: Database,
+) -> None:
+    run = Runtime(
+        source=_events(CAPTURE),
+        startup=_startup,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600),
+        clock=ManualClock(),
+        out=io.StringIO(),
+        logger=RecordingLogger(),
+        persistence=Persistence(database=database),
+        webhook_secret=b"0" * 32,
+    )
+
+    assert run.entity_loader is not None
+    opened = await run.entity_loader()
+    assert opened.opened == ()
+    assert opened.stranded == ()
+
+
+def _identity_with_node_hash(node_hash: int):
+    while True:
+        candidate = generate_identity()
+        if candidate.node_hash == node_hash:
+            return candidate
+
+
+# --- 3.2 `reconcile_entities` diffs by public key (design D1, D3, D6) ------
+
+
+async def test_reconcile_adopts_a_newly_openable_identity() -> None:
+    stored = _loaded_entity("newcomer")
+    run = runtime(_events(CAPTURE), entity_loader=_stub_loader([stored]))
+
+    assert await run.reconcile_entities() is True
+
+    (stub,) = run.adverts.stubs
+    assert stub.identity.public_key == stored.public_key
+    assert stub.name == "newcomer"
+    assert stub.persistent is True
+
+
+async def test_adopting_an_identity_leaves_the_others_schedules_untouched() -> None:
+    """advert-policy: "The other identities' schedules are untouched" — the
+    adoption side. An identity adopted mid-run must not itself advert
+    (`_stagger` only sets fields on the new stub) and must not touch any
+    already-loaded identity's schedule, count or override."""
+    stub_names = ("skogen",)
+    run = runtime(
+        _events(CAPTURE),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stub_names=stub_names),
+    )
+    existing = run.adverts.stubs[0]
+    run.adverts.set_override(existing, interval_seconds=3600)
+    run.adverts.request_flood(existing)
+    before = (
+        existing.next_flood_at,
+        existing.last_flood_at,
+        existing.adverts_sent,
+        existing.override,
+    )
+
+    stored = _loaded_entity("newcomer")
+    run.entity_loader = _stub_loader([stored])
+    assert await run.reconcile_entities() is True
+
+    assert (
+        existing.next_flood_at,
+        existing.last_flood_at,
+        existing.adverts_sent,
+        existing.override,
+    ) == before
+    (newcomer,) = [stub for stub in run.adverts.stubs if stub.name == "newcomer"]
+    assert newcomer.adverts_sent == 0, "an adopted identity must not itself advert on adoption"
+
+
+async def test_reconcile_withdraws_an_identity_no_longer_openable() -> None:
+    stored = _loaded_entity("leaving")
+    run = runtime(_events(CAPTURE), entity_loader=_stub_loader([stored]))
+    await run.reconcile_entities()
+    assert len(run.adverts.stubs) == 1
+
+    run.entity_loader = _stub_loader([])
+    await run.reconcile_entities()
+
+    assert run.adverts.stubs == []
+    assert run.entities.entities == ()
+
+
+async def test_reconcile_never_withdraws_a_keyfile_identity(tmp_path) -> None:
+    from sighop.keystore import create_keyfile
+
+    keyfile = create_keyfile(tmp_path / "one.json", "keyfile-one")
+    run = runtime(
+        _events(CAPTURE),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, entity_keyfiles=(keyfile.path,)
+        ),
+        entity_loader=_stub_loader([]),
+    )
+    await run._restore()
+    assert len(run.adverts.stubs) == 1
+
+    await run.reconcile_entities()
+
+    assert len(run.adverts.stubs) == 1, "a keyfile-sourced stub must never be withdrawn"
+    assert run.adverts.stubs[0].name == "keyfile-one"
+
+
+async def test_a_read_failure_keeps_the_loaded_set_and_reports_it() -> None:
+    stored = _loaded_entity("steady")
+    run = runtime(_events(CAPTURE), out=io.StringIO(), entity_loader=_stub_loader([stored]))
+    run._started = True
+    await run.reconcile_entities()
+
+    run.entity_loader = _stub_loader(error=RuntimeError("database is degraded"))
+    assert await run.reconcile_entities() is False
+
+    assert len(run.adverts.stubs) == 1
+    assert run.adverts.stubs[0].name == "steady"
+    assert "database is degraded" in run.out.getvalue()
+    assert "keeping" in run.out.getvalue()
+
+
+# --- 3.3 Withdrawal leaves the schedule and refuses further adverts --------
+
+
+async def test_a_withdrawn_identity_originates_no_further_advert() -> None:
+    stored = _loaded_entity("leaving")
+    run = runtime(_events(CAPTURE), entity_loader=_stub_loader([stored]))
+    await run.reconcile_entities()
+
+    run.entity_loader = _stub_loader([])
+    await run.reconcile_entities()
+
+    assert run.adverts.stubs == []
+    assert run.adverts.tick() == [], "nothing is due for an identity that no longer exists"
+
+
+async def test_a_zero_hop_request_for_a_withdrawn_identity_is_refused() -> None:
+    stored = _loaded_entity("leaving")
+    sender = RecordingSender()
+    run = runtime(
+        _events(CAPTURE), out=io.StringIO(), sender=sender, entity_loader=_stub_loader([stored])
+    )
+    run._started = True
+    await run.reconcile_entities()
+
+    run.entity_loader = _stub_loader([])
+    await run.reconcile_entities()
+
+    await run._request_zero_hop("leaving")
+
+    assert "no entity named 'leaving'" in run.out.getvalue()
+    assert sender.sent == [], "nothing must be transmitted for a withdrawn identity"
+
+
+# --- 3.4 A refused adoption is remembered, not re-reported (design D4) -----
+
+
+async def test_a_collision_with_a_keyfile_is_refused_naming_both(tmp_path) -> None:
+    from sighop.keystore import create_keyfile
+
+    keyfile_identity = generate_identity()
+    keyfile = create_keyfile(tmp_path / "one.json", "keyfile-one", identity=keyfile_identity)
+    colliding_stored = _loaded_entity(
+        "newcomer", identity=_identity_with_node_hash(keyfile_identity.node_hash)
+    )
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, entity_keyfiles=(keyfile.path,)
+        ),
+        entity_loader=_stub_loader([colliding_stored]),
+    )
+    await run._restore()
+    run._started = True
+
+    assert await run.reconcile_entities() is True
+
+    assert len(run.adverts.stubs) == 1, "the run must keep the identities it had"
+    assert run.adverts.stubs[0].name == "keyfile-one"
+    text = run.out.getvalue()
+    assert "keyfile-one" in text
+    assert "newcomer" in text
+
+
+async def test_the_refusal_is_not_repeated_on_a_later_reread(tmp_path) -> None:
+    from sighop.keystore import create_keyfile
+
+    keyfile_identity = generate_identity()
+    keyfile = create_keyfile(tmp_path / "one.json", "keyfile-one", identity=keyfile_identity)
+    colliding_stored = _loaded_entity(
+        "newcomer", identity=_identity_with_node_hash(keyfile_identity.node_hash)
+    )
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, entity_keyfiles=(keyfile.path,)
+        ),
+        entity_loader=_stub_loader([colliding_stored]),
+    )
+    await run._restore()
+    run._started = True
+    await run.reconcile_entities()
+    before = run.out.getvalue()
+
+    await run.reconcile_entities()
+
+    assert run.out.getvalue() == before, "a standing collision must not be reported again"
+
+
+async def test_a_collision_resolved_by_withdrawal_is_then_adopted_and_reported() -> None:
+    first_identity = generate_identity()
+    colliding_identity = _identity_with_node_hash(first_identity.node_hash)
+    first = _loaded_entity("first", identity=first_identity)
+    colliding = _loaded_entity("second", identity=colliding_identity)
+    run = runtime(_events(CAPTURE), out=io.StringIO(), entity_loader=_stub_loader([first]))
+    run._started = True
+    await run.reconcile_entities()
+    assert len(run.adverts.stubs) == 1
+
+    run.entity_loader = _stub_loader([first, colliding])
+    await run.reconcile_entities()
+    assert len(run.adverts.stubs) == 1, "the collision must still be refused"
+
+    run.entity_loader = _stub_loader([colliding])
+    await run.reconcile_entities()
+
+    assert [stub.name for stub in run.adverts.stubs] == ["second"]
+    assert "+second" in run.out.getvalue()
+
+
+# --- 3.5 Adoption/withdrawal is reported, silence otherwise (design D9) ----
+
+
+async def test_a_reread_that_changes_nothing_is_silent() -> None:
+    stored = _loaded_entity("steady")
+    run = runtime(_events(CAPTURE), out=io.StringIO(), entity_loader=_stub_loader([stored]))
+    run._started = True
+    await run.reconcile_entities()
+    before = run.out.getvalue()
+
+    await run.reconcile_entities()
+
+    assert run.out.getvalue() == before
+
+
+async def test_an_adoption_and_a_withdrawal_are_named_with_no_key_material() -> None:
+    staying = _loaded_entity("staying")
+    leaving = _loaded_entity("leaving")
+    run = runtime(
+        _events(CAPTURE), out=io.StringIO(), entity_loader=_stub_loader([staying, leaving])
+    )
+    run._started = True
+    await run.reconcile_entities()
+
+    arriving = _loaded_entity("arriving")
+    run.entity_loader = _stub_loader([staying, arriving])
+    await run.reconcile_entities()
+
+    text = run.out.getvalue()
+    assert "identities changed" in text
+    assert "+arriving" in text
+    assert "-leaving" in text
+    assert arriving.identity.private_key.hex() not in text
+    assert staying.identity.private_key.hex() not in text
+    assert leaving.identity.private_key.hex() not in text
+
+
+# --- 3.6 The periodic refresh loop (design D8) ------------------------------
+
+
+async def test_entity_refresh_seconds_defaults_to_sixty() -> None:
+    assert RuntimeConfig().entity_refresh_seconds == 60.0
+
+
+async def test_the_refresh_loop_reads_nothing_before_the_interval_elapses() -> None:
+    clock = ManualClock()
+    calls = 0
+
+    async def _load() -> OpenedEntities:
+        nonlocal calls
+        calls += 1
+        return OpenedEntities()
+
+    run = runtime(
+        _events(CAPTURE),
+        clock=clock,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, entity_refresh_seconds=60),
+        entity_loader=_load,
+    )
+    task = asyncio.create_task(run._entity_refresh_loop())
+    try:
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert calls == 0, "a manual clock that never advances must never turn this into a read"
+
+        clock.advance(60)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert calls == 1
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+async def test_a_change_behind_the_loader_is_adopted_within_the_refresh_interval() -> None:
+    clock = ManualClock()
+    stored = _loaded_entity("late-arrival")
+    run = runtime(
+        _events(CAPTURE),
+        clock=clock,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, entity_refresh_seconds=60),
+        entity_loader=_stub_loader([stored]),
+    )
+    task = asyncio.create_task(run._entity_refresh_loop())
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert run.adverts.stubs == []
+
+        clock.advance(60)
+        for _ in range(50):
+            await asyncio.sleep(0)
+        assert [stub.name for stub in run.adverts.stubs] == ["late-arrival"]
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task

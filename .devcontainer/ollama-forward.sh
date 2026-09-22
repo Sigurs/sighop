@@ -15,18 +15,32 @@
 # step. Forwarding the port makes every code path right at once, whichever URL
 # it resolves.
 #
-# Run from devcontainer.json's postStartCommand, once per container start.
+# Run from devcontainer.json's postStartCommand, once per container start, and
+# from its postAttachCommand, once per editor attach — a container outlives the
+# editor window, and the forward can die inside one.
 
 set -u
 
 listener=127.0.0.1:11434
 upstream=host.docker.internal:11434
 
-# Anchored, so it matches the forward itself and not any shell whose command
-# line merely mentions it.
-if pgrep -f "^socat TCP-LISTEN:11434" >/dev/null 2>&1; then
+# Whether the listener answers, rather than whether a socat process exists. The
+# two differ in the case this runs for on an attach: a socat that is alive but
+# no longer bound passes a process check and still leaves `cce serve` unable to
+# start. socat accepts before it dials upstream, so this succeeds whenever the
+# listener is usable — which stays true while the host's Ollama is down, and is
+# deliberate: see the note below on forwarding to an upstream that is not up.
+if nc -z -w 2 127.0.0.1 11434 2>/dev/null; then
     exit 0
 fi
+
+# Nothing is listening, so any socat still around is wedged rather than working.
+# Reaped before the new one binds: `reuseaddr` rebinds a socket in TIME_WAIT, it
+# does not take one off a live listener, so a second socat started alongside a
+# first would lose the race and die with its output on /dev/null. Anchored, so
+# it matches the forward itself and not any shell whose command line merely
+# mentions it.
+pkill -f "^socat TCP-LISTEN:11434" 2>/dev/null || true
 
 # Forward whether or not the host's Ollama is up yet. socat dials upstream per
 # connection, so a forward started before Ollama (the host still booting, say)

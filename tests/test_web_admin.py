@@ -49,6 +49,7 @@ from tests.webfixtures import (
     StubState,
     authenticator,
     csrf,
+    session_of,
     signed_async_client,
     signed_client,
     stub_state,
@@ -192,6 +193,29 @@ async def test_disabling_an_identity_a_room_is_bound_to_names_the_room(
 
     assert "[redacted]" in body
     assert "Disabling this identity stops" in body
+    assert "immediately" in body and "does not wait for a restart" in body
+    assert "stored messages" in body and "durable state" in body and "survive" in body
+
+
+@pytest.mark.database
+async def test_disabling_an_identity_held_as_a_default_states_that_too(
+    database: Database,
+) -> None:
+    """`web-admin`: an operator holding this identity as their default is told
+    it will have nothing preselected, before disabling it."""
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name="my-default", identity=generate_identity(), secret=SECRET
+    )
+    assert isinstance(stored, Succeeded)
+
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    async with _live(app) as client:
+        session_of(client).default_entity_id = str(stored.value.id)
+        body = (await client.get("/admin/identities")).text
+
+    assert "your default chat identity" in body
+    assert "nothing" in body and "preselected" in body
 
 
 @pytest.mark.database
@@ -1688,3 +1712,29 @@ async def test_the_identities_page_no_longer_says_removal_is_not_offered(
     assert "not offered here" not in body
     assert "Removing a stored identity is offered here" in body
     assert "Disabling is the reversible action offered alongside it" in body
+
+
+@pytest.mark.database
+async def test_the_identities_page_reflects_a_write_at_once(database: Database) -> None:
+    """6.5: after a write, the "loaded by this run" table shows what the run
+    is actually doing — the identity it now holds, with its advert schedule —
+    matching `reconcile_entities` rather than a snapshot from before it ran."""
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    state.channel_secret = SECRET
+    app = create_app(
+        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), sealing_secret=SECRET
+    )
+
+    async with _live(app) as client:
+        created = await client.post(
+            "/admin/identities/create",
+            data={TOKEN_FIELD: csrf(client), "name": "shows-up", "node_type": "CHAT"},
+        )
+        assert created.status_code == 303
+        body = (await client.get("/admin/identities")).text
+
+    loaded_section = body[body.index("loaded by this run") : body.index("<h2>stored")]
+    assert "shows-up" in loaded_section, (
+        "the newly held identity must appear in the live, not the stored, section"
+    )

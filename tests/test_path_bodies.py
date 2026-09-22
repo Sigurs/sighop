@@ -326,3 +326,44 @@ async def test_a_bundled_type_we_do_not_act_on_is_reported_and_not_interpreted()
     assert event.bundled_type is PayloadType.RESPONSE
     assert event.bundled_matched is False
     assert subscriber.bundled_acks == 0
+
+
+# --- Room-claimed entities (design D10, and the fix to design D5) ----------
+
+
+async def test_a_room_claimed_entity_is_left_to_the_room_server() -> None:
+    """`claim_for_room` is `DirectMessenger._room_entity_ids`'s counterpart:
+    an exclusion set, not a removal from `entities` — removing from `entities`
+    would desync it from `adverts.stubs`, the same list object, the moment
+    any room claims anything."""
+    us, them = Entity("us"), Entity("them")
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(them.identity.public_key)
+    events: list = []
+    subscriber = reader(us, contacts=contacts, events=events)
+    subscriber.claim_for_room(us.entity_id)
+
+    body = ReturnedPathBody(hop_count=0, hash_size=1, path=b"", extra_type=None, extra_raw=b"")
+    await subscriber.handle(_packet_for(path_packet(sender=them, recipient=us, body=body)))
+
+    assert events == [], "a claimed entity's PATH returns must not be decrypted here"
+    assert any(entity.entity_id == us.entity_id for entity in subscriber.entities), (
+        "claiming an entity for a room must not remove it from `entities`"
+    )
+
+
+async def test_releasing_a_claimed_entity_restores_it() -> None:
+    us, them = Entity("us"), Entity("them")
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(them.identity.public_key)
+    events: list = []
+    subscriber = reader(us, contacts=contacts, events=events)
+    subscriber.claim_for_room(us.entity_id)
+    subscriber.release_from_room(us.entity_id)
+
+    body = ReturnedPathBody(hop_count=0, hash_size=1, path=b"", extra_type=None, extra_raw=b"")
+    await subscriber.handle(_packet_for(path_packet(sender=them, recipient=us, body=body)))
+
+    assert any(isinstance(e, PathBodyLearned) for e in events), (
+        "a released entity's PATH returns must be decrypted again"
+    )

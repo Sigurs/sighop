@@ -93,9 +93,10 @@
     // rest of the session. It already exits when Claude Code closes its stdin,
     // so the timeout has no orphans to reap here.
     "CCE_IDLE_TIMEOUT_MINUTES": "0"
-    // Note: no CCE_OLLAMA_URL. postStartCommand forwards the host's Ollama onto
-    // this container's own localhost:11434 instead, because the engine's search
-    // path reads `config.ollama_url` directly and never sees that variable.
+    // Note: no CCE_OLLAMA_URL. postStart/postAttach forward the host's Ollama
+    // onto this container's own localhost:11434 instead, because the engine's
+    // search path reads `config.ollama_url` directly and never sees that
+    // variable.
   },
 
   // The web panel's default port, and nothing else. The context engine and its
@@ -116,6 +117,15 @@
 
   // Every start, not just the first: the forwarder is a process, not a file.
   "postStartCommand": "./.devcontainer/ollama-forward.sh",
+
+  // And every attach, because a container outlives the editor window. The
+  // forward dies on its own — a host Ollama restart, an OOM kill, a socat that
+  // was never started because the host was still booting — and nothing brings
+  // it back until the container restarts, which is rare. Without a forward
+  // `cce serve` refuses to start at all and context-engine is gone for the
+  // whole session. The script is idempotent and exits in milliseconds when the
+  // forward is already up, so paying it per attach costs nothing.
+  "postAttachCommand": "./.devcontainer/ollama-forward.sh",
 
   "customizations": {
     "vscode": {

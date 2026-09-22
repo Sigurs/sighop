@@ -761,3 +761,30 @@ async def test_an_identity_this_run_does_not_hold_is_offered_no_advert(
     assert recorder.submissions == []
     listed = await persistence.entities.list_all()
     assert [row.name for row in listed.value] == ["elsewhere-2"]
+
+
+@pytest.mark.database
+async def test_a_created_identitys_advert_schedule_shows_on_the_identities_page(
+    database: Database,
+) -> None:
+    """6.5: the identities page shows the schedule of what this run actually
+    holds, not just that a row was created — `next_flood_at` is set the
+    moment adoption stages it (design D15), and the page reads it live."""
+    persistence = Persistence(database=database)
+    state = _state(persistence=persistence)
+    state.channel_secret = SECRET
+    app = create_app(
+        state, auth=authenticator(), hosts=HOSTS, logger=RecordingLogger(), sealing_secret=SECRET
+    )
+
+    async with _live(app) as client:
+        created = await _apost(
+            client, app, "/admin/identities/create", name="scheduled-now", node_type="CHAT"
+        )
+        assert created.status_code == 303
+        body = (await client.get("/admin/identities")).text
+
+    (stub,) = [s for s in state.adverts.stubs if s.name == "scheduled-now"]
+    assert stub.next_flood_at is not None, "adoption must stage a flood, not leave it unscheduled"
+    loaded_section = body[body.index("loaded by this run") : body.index("<h2>stored")]
+    assert "scheduled-now" in loaded_section

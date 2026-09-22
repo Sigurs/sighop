@@ -30,7 +30,7 @@ from sighop.bots.runtime import BotHost, BotWorker
 from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.db.engine import Succeeded
 from sighop.db.persistence import Persistence
-from sighop.db.repositories import BotRecord, LoadedEntity, RoomRecord
+from sighop.db.repositories import BotRecord, LoadedEntity, OpenedEntities, RoomRecord
 from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
@@ -49,6 +49,7 @@ from sighop.monitor.render import (
     render_channel_status,
     render_detail_line,
     render_dm_event,
+    render_entity_set_changed,
     render_frame_line,
     render_persistence,
     render_room_event,
@@ -60,7 +61,12 @@ from sighop.monitor.render import (
     render_webhook_startup,
 )
 from sighop.net.acks import AckDispatcher, AckRegistry
-from sighop.net.adverts import AdvertScheduler, EntityStub
+from sighop.net.adverts import (
+    FLOOD_INTERVAL_FLOOR_SECONDS,
+    AdvertScheduler,
+    EntitySetChanged,
+    EntityStub,
+)
 from sighop.net.airtime import time_on_air_ms
 from sighop.net.bus import IngressPipeline, NetworkBus, Submission, Subscription, TxOutcome
 from sighop.net.channels import (
@@ -109,6 +115,11 @@ DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
 DEFAULT_CHANNEL_REFRESH_SECONDS = 60.0
 """How soon a channel added or removed from another process reaches this run
 (channel-messaging D4). A change made in this run's own panel applies at once."""
+DEFAULT_ENTITY_REFRESH_SECONDS = 60.0
+"""How soon an identity added, changed or removed by another process reaches
+this run (design D8) — the same number as `DEFAULT_CHANNEL_REFRESH_SECONDS`,
+deliberately: one interval for an operator to remember. A change made through
+this run's own panel applies at once, the same as a channel's does."""
 DEFAULT_ADVERT_TICK_SECONDS = 5.0
 
 DEFAULT_PEER_WAIT_SECONDS = 60.0
@@ -124,6 +135,10 @@ PEER_POLL_SECONDS = 0.25
 
 class ChannelLoadError(RuntimeError):
     """The stored channels could not be read."""
+
+
+class EntityLoadError(RuntimeError):
+    """The stored identities could not be re-read."""
 
 
 @dataclass(slots=True)
@@ -171,6 +186,7 @@ class RuntimeConfig:
 
     peer_wait_seconds: float = DEFAULT_PEER_WAIT_SECONDS
     channel_refresh_seconds: float = DEFAULT_CHANNEL_REFRESH_SECONDS
+    entity_refresh_seconds: float = DEFAULT_ENTITY_REFRESH_SECONDS
 
     path_hash_size: int = DEFAULT_PATH_HASH_SIZE
     """Width of every packet this node originates with an empty path; learned
@@ -238,6 +254,14 @@ class Runtime:
     from the database when one is present; a test may hand one in. `None` with
     no database is the whole of "this run has no channels"."""
 
+    entity_loader: Callable[[], Awaitable[OpenedEntities]] | None = None
+    """Reads the stored identities that can be opened, raising when it cannot
+    — `channel_loader`'s counterpart (design D2). Built from the database and
+    `webhook_secret` when both are present; a test may hand one in. `None`
+    means this run's stored identities are fixed at what `stored_entities`
+    handed to `__post_init__`, whether because there is no database or
+    because no secret is configured to open anything with."""
+
     webhooks: WebhookDispatcher | None = None
     """The webhook dispatcher. Built here when a database and the secret are
     present and the run is not a replay; a test may hand one in. Always `None`
@@ -272,6 +296,21 @@ class Runtime:
     _radio_ready: asyncio.Event = field(init=False)
     _started: bool = field(init=False, default=False)
     _held: list[str] = field(init=False, default_factory=list)
+    _entity_lock: asyncio.Lock = field(init=False)
+    """Guards `reconcile_entities` against the panel and the refresh loop
+    racing each other (design, Risks): the second caller waits and then sees
+    a set that already includes the first's write."""
+    _refused_entities: dict[bytes, bytes | None] = field(init=False, default_factory=dict)
+    """A live adoption refused on a node-hash collision or a name clash, keyed
+    by the refused public key, valued by the public key it collided with (or
+    `None` for a name clash) — design D4. Presence means "already reported";
+    a public key is dropped when the identity it collided with is withdrawn,
+    which is what lets it be adopted and reported on the next re-read."""
+    _held_entities: dict[uuid.UUID, LoadedEntity] = field(init=False, default_factory=dict)
+    """Every stored (not keyfile) identity this run currently holds, keyed by
+    its row id — what `_load_rooms` and `_load_bots` read `config.stored_entities`
+    for at startup, kept live so `reconcile_rooms` and `reconcile_bots` have the
+    same lookup for an identity adopted or withdrawn mid-run."""
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="runtime")
@@ -322,7 +361,12 @@ class Runtime:
                     stored.name, stored.identity, node_type=stored.record.node_type
                 ),
                 entity_id=str(stored.record.id),
+                flood_interval_seconds=stored.record.advert_config.get("flood_interval_seconds"),
+                zero_hop_interval_seconds=(
+                    stored.record.advert_config.get("zero_hop_interval_seconds") or 0.0
+                ),
             )
+            self._held_entities[stored.record.id] = stored
         for path in self.config.entity_keyfiles:
             self._adopt_entity(self.entities.load(path))
         for name in self.config.stub_names:
@@ -370,6 +414,16 @@ class Runtime:
         )
         if self.channel_loader is None and self.persistence is not None:
             self.channel_loader = self._load_stored_channels
+        # Design D2: unlike `channel_loader`, guarded on the secret too — a
+        # missing `SIGHOP_SECRET_KEY` means there is nothing this run could
+        # open, and defaulting anyway would give reconcile a loader that only
+        # ever fails.
+        if (
+            self.entity_loader is None
+            and self.persistence is not None
+            and self.webhook_secret is not None
+        ):
+            self.entity_loader = self._load_stored_entities
         self.path_bodies = PathBodyReader(
             paths=self.pipeline.paths,
             contacts=self.contacts,
@@ -405,6 +459,7 @@ class Runtime:
                 )
         self._stop = asyncio.Event()
         self._ready = asyncio.Event()
+        self._entity_lock = asyncio.Lock()
 
     def _build_webhooks(self) -> WebhookDispatcher | None:
         if self.config.replay:
@@ -432,6 +487,22 @@ class Runtime:
         outcome = await self.persistence.channels.load_keys(self.webhook_secret)
         if not isinstance(outcome, Succeeded):
             raise ChannelLoadError(str(outcome.error))
+        return outcome.value
+
+    async def _load_stored_entities(self) -> OpenedEntities:
+        """`entity_loader`'s default: every enabled identity this secret opens.
+
+        `enabled_only=True`, so a disabled row never reaches reconcile as
+        something to adopt — the same rule startup already applies through
+        `cli.py`'s own call to `load_openable`.
+        """
+        assert self.persistence is not None
+        assert self.webhook_secret is not None
+        outcome = await self.persistence.entities.load_openable(
+            self.webhook_secret, enabled_only=True
+        )
+        if not isinstance(outcome, Succeeded):
+            raise EntityLoadError(str(outcome.error))
         return outcome.value
 
     async def _initial_channels(self) -> None:
@@ -504,8 +575,7 @@ class Runtime:
         self.rooms.remove(server)
         self._room_messages.pop(server.room.name, None)
         self.messenger.release_from_room(server.entity.entity_id)
-        if all(stub is not server.entity for stub in self.path_bodies.entities):
-            self.path_bodies.entities = [*self.path_bodies.entities, server.entity]
+        self.path_bodies.release_from_room(server.entity.entity_id)
         return True
 
     async def stop_bot(self, bot_id: uuid.UUID) -> bool:
@@ -532,6 +602,206 @@ class Runtime:
                 await self.clock.sleep(remaining)
             await self.reload_channels()
 
+    # --- Identities (entity-store, advert-policy) ---------------------------
+
+    async def reconcile_entities(self) -> bool:
+        """Diff the store's openable identities against what this run holds
+        and apply the difference — adopt, withdraw, re-configure (design D1,
+        D3). Then rooms and bots, in the same pass (design D7).
+
+        Called by the panel right after it takes a write, for the immediacy
+        `entity-store` and `web-admin` promise, and by `_entity_refresh_loop`
+        on the clock, for a change made by another process. Both callers
+        share this one method and this one lock (design D1), so the two paths
+        cannot drift the way channels and identities already had.
+
+        A read that fails leaves every loaded identity exactly as it was and
+        reports the failure — memory is the authority while the store is
+        unreachable, the rule `reload_channels` already follows.
+        """
+        if self.entity_loader is None:
+            return False
+        async with self._entity_lock:
+            try:
+                opened = await self.entity_loader()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                assert self.logger is not None
+                self.logger.error("entity_reconcile_failed", outcome="error", error=str(exc))
+                self._print(f"!! identities could not be re-read: {exc}; keeping what is loaded")
+                return False
+            await self._apply_entity_diff(opened)
+        await self.reconcile_rooms()
+        await self.reconcile_bots()
+        return True
+
+    async def _apply_entity_diff(self, opened: OpenedEntities) -> None:
+        held = {
+            entity.identity.public_key: entity
+            for entity in self.entities.entities
+            if entity.from_store
+        }
+        openable = {stored.public_key: stored for stored in opened.opened}
+
+        adopted: list[str] = []
+        withdrawn: list[str] = []
+
+        for public_key, entity in list(held.items()):
+            if public_key in openable:
+                continue
+            await self._withdraw_entity(public_key)
+            withdrawn.append(f"{entity.name} (0x{entity.node_hash:02x})")
+
+        for public_key, stored in openable.items():
+            if public_key in held:
+                self._reconfigure_held_entity(stored)
+                continue
+            name = self._admit_stored_entity(stored)
+            if name is not None:
+                adopted.append(name)
+
+        if adopted or withdrawn:
+            self._print(
+                render_entity_set_changed(
+                    EntitySetChanged(
+                        adopted=tuple(adopted),
+                        withdrawn=tuple(withdrawn),
+                        loaded=len(self.adverts.stubs),
+                    )
+                )
+            )
+
+    async def _withdraw_entity(self, public_key: bytes) -> None:
+        """Withdraw one stored identity, in design D6's order.
+
+        Bot, then room, then the stub, then the registry entry — so each
+        attachment still has something to release when its turn comes, and
+        the identity is gone from every registry it entered by the end.
+        """
+        bot = next(
+            (
+                worker
+                for worker in self.bots
+                if worker.entity is not None and worker.entity.identity.public_key == public_key
+            ),
+            None,
+        )
+        if bot is not None:
+            await self.stop_bot(bot.record.id)
+        room = next(
+            (room for room in self.rooms if room.entity.identity.public_key == public_key), None
+        )
+        if room is not None:
+            await self.stop_serving_room(room.room.id)
+        self.adverts.remove(public_key)
+        self.entities.remove(public_key)
+        self._held_entities = {
+            row_id: entity
+            for row_id, entity in self._held_entities.items()
+            if entity.public_key != public_key
+        }
+        # Design D4: a refusal is cleared for a public key when the identity
+        # it collided with is withdrawn — the only way a refused adoption can
+        # be admitted, and reported, on a later re-read.
+        self._refused_entities = {
+            refused: collided_with
+            for refused, collided_with in self._refused_entities.items()
+            if collided_with != public_key
+        }
+
+    def _reconfigure_held_entity(self, stored: LoadedEntity) -> None:
+        """Apply a name, node-type or advert-interval change to an identity
+        already held, in place, through the seams `rename_entity` already
+        uses (design D3). A rename made by another process has no path to
+        this run but this one — there is no cross-process rename channel
+        beyond a periodic re-read."""
+        stub = next(
+            (s for s in self.adverts.stubs if s.identity.public_key == stored.public_key), None
+        )
+        if stub is None:  # pragma: no cover - held implies a stub was adopted
+            return
+        if stub.name != stored.name:
+            self.adverts.rename(stored.public_key, stored.name)
+            self.entities.rename(stored.public_key, stored.name)
+        node_type = stored.record.node_type
+        if isinstance(node_type, NodeType) and stub.node_type != node_type:
+            stub.node_type = node_type
+        wanted_flood = stored.record.advert_config.get("flood_interval_seconds")
+        wanted_flood = FLOOD_INTERVAL_FLOOR_SECONDS if wanted_flood is None else wanted_flood
+        wanted_zero_hop = stored.record.advert_config.get("zero_hop_interval_seconds") or 0.0
+        if (
+            stub.flood_interval_seconds != wanted_flood
+            or stub.zero_hop_interval_seconds != wanted_zero_hop
+        ):
+            self.adverts.reconfigure(
+                stored.public_key,
+                flood_interval_seconds=wanted_flood,
+                zero_hop_interval_seconds=wanted_zero_hop,
+            )
+        self._held_entities[stored.record.id] = stored
+
+    def _admit_stored_entity(self, stored: LoadedEntity) -> str | None:
+        """Adopt `stored`, or record and report why it was refused (design D4).
+
+        Returns the display name for the adoption report, or `None` when it
+        was refused — including when it was already refused and this is not
+        new, which is what keeps a standing collision from being reported on
+        every re-read.
+        """
+        colliding = self.entities.collision(stored.identity)
+        if colliding is not None:
+            collision_reason = (
+                f"an entity with node hash 0x{stored.node_hash:02x} is already "
+                f"registered as {colliding.name!r}; two local entities may not "
+                "share one (DESIGN.md §3)"
+            )
+            self._report_refusal(stored, collision_reason, colliding_with=colliding.public_key)
+            return None
+        refusal = self.adverts.admission_refusal(stored.identity, stored.name)
+        if refusal is not None:
+            self._report_refusal(stored, refusal, colliding_with=None)
+            return None
+        self._refused_entities.pop(stored.public_key, None)
+        self._adopt_entity(
+            self.entities.add_stored(
+                stored.name, stored.identity, node_type=stored.record.node_type
+            ),
+            entity_id=str(stored.record.id),
+            flood_interval_seconds=stored.record.advert_config.get("flood_interval_seconds"),
+            zero_hop_interval_seconds=(
+                stored.record.advert_config.get("zero_hop_interval_seconds") or 0.0
+            ),
+        )
+        self._held_entities[stored.record.id] = stored
+        return f"{stored.name} (0x{stored.node_hash:02x})"
+
+    def _report_refusal(
+        self, stored: LoadedEntity, reason: str, *, colliding_with: bytes | None
+    ) -> None:
+        already_reported = stored.public_key in self._refused_entities
+        self._refused_entities[stored.public_key] = colliding_with
+        if already_reported:
+            return
+        assert self.logger is not None
+        self.logger.error(
+            "entity_admission_refused",
+            outcome="error",
+            entity_name=stored.name,
+            node_hash=stored.node_hash,
+            reason=reason,
+        )
+        self._print(f"!! identity {stored.name!r} not adopted: {reason}")
+
+    async def _entity_refresh_loop(self) -> None:
+        """Reconcile on the clock's own time — `_channel_refresh_loop`'s twin."""
+        interval = dt.timedelta(seconds=self.config.entity_refresh_seconds)
+        while True:
+            due = self.clock.now() + interval
+            while (remaining := (due - self.clock.now()).total_seconds()) > 0:
+                await self.clock.sleep(remaining)
+            await self.reconcile_entities()
+
     def _on_channel_event(self, event: ChannelEvent) -> None:
         # A reception on a channel this run cannot open is counted in the status
         # line and logged as its event; a line per frame would bury the messages
@@ -540,7 +810,14 @@ class Runtime:
             return
         self._print(render_channel_event(event))
 
-    def _adopt_entity(self, entity: LocalEntity, *, entity_id: str | None = None) -> None:
+    def _adopt_entity(
+        self,
+        entity: LocalEntity,
+        *,
+        entity_id: str | None = None,
+        flood_interval_seconds: float | None = None,
+        zero_hop_interval_seconds: float = 0.0,
+    ) -> None:
         """Give a local identity to the advert scheduler, whatever it came from.
 
         A stored identity is adopted under its `entity` row id rather than its
@@ -549,6 +826,13 @@ class Runtime:
         row, and a name is neither unique across sources nor stable across a
         rename. An identity with no row — a keyfile's, a generated stub's —
         keeps its name, as it always has.
+
+        `flood_interval_seconds` is the stored identity's own advert
+        configuration (`advert_config_for`), read here for the first time:
+        `None` — every row before this change, since nothing wrote anything
+        else — is the 24 hour floor, exactly what an identity with no
+        configuration has always adverted at (proposal.md — the drift found
+        while planning).
         """
         self.adverts.add_identity(
             entity.name,
@@ -558,6 +842,12 @@ class Runtime:
             ),
             keyfile=entity.source,
             entity_id=entity_id,
+            flood_interval_seconds=(
+                FLOOD_INTERVAL_FLOOR_SECONDS
+                if flood_interval_seconds is None
+                else flood_interval_seconds
+            ),
+            zero_hop_interval_seconds=zero_hop_interval_seconds,
         )
 
     # --- Lifecycle ---------------------------------------------------------
@@ -655,6 +945,8 @@ class Runtime:
             tasks.append(asyncio.create_task(self.webhooks.run(), name="webhooks"))
         if self.channel_loader is not None:
             tasks.append(asyncio.create_task(self._channel_refresh_loop(), name="channels"))
+        if self.entity_loader is not None:
+            tasks.append(asyncio.create_task(self._entity_refresh_loop(), name="entities"))
         tasks.extend(
             asyncio.create_task(self._run_service(index, service), name=f"service-{index}")
             for index, service in enumerate(self.services)
@@ -765,9 +1057,8 @@ class Runtime:
             self._unserved_rooms.append(f"rooms could not be read: {rooms.error}; none is served")
             return
 
-        by_id = {stored.record.id: stored for stored in self.config.stored_entities}
         for record in rooms.value:
-            stored = by_id.get(record.entity_id)
+            stored = self._held_entities.get(record.entity_id)
             if stored is None or not stored.record.enabled:
                 reason = (
                     "its identity is not enabled"
@@ -809,10 +1100,9 @@ class Runtime:
             self._unrun_bots.append(f"bots could not be read: {bots.error}; none is run")
             return
 
-        by_id = {stored.record.id: stored for stored in self.config.stored_entities}
         room_entities = {room.entity.identity.public_key for room in self.rooms}
         for record in bots.value:
-            stored = by_id.get(record.entity_id)
+            stored = self._held_entities.get(record.entity_id)
             reason = ""
             if stored is None:
                 reason = "its identity was not loaded"
@@ -826,6 +1116,94 @@ class Runtime:
                 self._not_run(record, stored, reason)
                 continue
             assert stored is not None
+            await self._run_bot(record, stored)
+
+    async def reconcile_rooms(self) -> None:
+        """Take up a room whose identity this run now holds, and stop one
+        whose identity it no longer holds (design D7, room-server).
+
+        Reuses `_serve_room` and `stop_serving_room` unchanged — the same
+        wiring `_load_rooms` and a panel deletion already do. Runs after
+        `reconcile_entities`'s own diff, in the same pass: withdrawing an
+        identity already stopped any room bound to it through design D6's
+        order, so the "stop" half here is the fallback that makes the
+        property hold unconditionally rather than only along that path.
+        """
+        if self.persistence is None:
+            return
+        listed = await self.persistence.rooms.list_all()
+        if not isinstance(listed, Succeeded):
+            return
+        by_id = {record.id: record for record in listed.value}
+
+        for server in list(self.rooms):
+            record = by_id.get(server.room.id)
+            stored = None if record is None else self._held_entities.get(record.entity_id)
+            if stored is None or stored.public_key != server.entity.identity.public_key:
+                await self.stop_serving_room(server.room.id)
+
+        served_ids = {server.room.id for server in self.rooms}
+        for record in listed.value:
+            if record.id in served_ids:
+                continue
+            stored = self._held_entities.get(record.entity_id)
+            if stored is None or not stored.record.enabled:
+                continue
+            await self._serve_room(record, stored)
+
+        # Design D7: a first room taken up mid-run needs its own pruner,
+        # exactly as `_load_rooms` builds one when startup finds any; a last
+        # one withdrawn needs it stopped, since an empty run has nothing left
+        # to prune. `RoomRetentionPruner` holds `self.rooms` by reference, so
+        # the same pruner keeps tracking every room adopted after it exists.
+        if self.rooms and self.retention is None:
+            self.retention = RoomRetentionPruner(rooms=self.rooms, logger=self.logger)
+            self.retention.start()
+        elif not self.rooms and self.retention is not None:
+            await self.retention.stop()
+            self.retention = None
+
+    async def reconcile_bots(self) -> None:
+        """Start a bot that now qualifies to run, and stop one that no longer
+        does (design D7, bot-runtime).
+
+        Reuses `_run_bot` and `stop_bot` unchanged. Runs after
+        `reconcile_rooms`, in the same pass, so a bot on an entity a room now
+        holds is refused for exactly the reason `_load_bots` already refuses
+        it at startup — that is where a room's claim on an entity is known.
+        """
+        if self.persistence is None:
+            return
+        listed = await self.persistence.bots.list_all()
+        if not isinstance(listed, Succeeded):
+            return
+        by_id = {record.id: record for record in listed.value}
+        room_entities = {room.entity.identity.public_key for room in self.rooms}
+
+        for worker in list(self.bots):
+            record = by_id.get(worker.record.id)
+            stored = None if record is None else self._held_entities.get(record.entity_id)
+            disqualified = (
+                record is None
+                or not record.enabled
+                or stored is None
+                or not stored.record.enabled
+                or (
+                    worker.entity is not None and worker.entity.identity.public_key in room_entities
+                )
+            )
+            if disqualified:
+                await self.stop_bot(worker.record.id)
+
+        running_ids = {worker.record.id for worker in self.bots}
+        for record in listed.value:
+            if record.id in running_ids or not record.enabled:
+                continue
+            stored = self._held_entities.get(record.entity_id)
+            if stored is None or not stored.record.enabled:
+                continue
+            if stored.public_key in room_entities:
+                continue
             await self._run_bot(record, stored)
 
     def _not_run(self, record: BotRecord, stored: LoadedEntity | None, reason: str) -> None:
@@ -974,9 +1352,7 @@ class Runtime:
         # messenger and the shared path-body reader both leave it alone. Applied
         # here, at wiring time, which is when the ambiguity is resolvable.
         self.messenger.claim_for_room(entity.entity_id)
-        self.path_bodies.entities = [
-            stub for stub in self.path_bodies.entities if stub is not entity
-        ]
+        self.path_bodies.claim_for_room(entity.entity_id)
         self.rooms.append(server)
 
     # --- Loops -------------------------------------------------------------

@@ -56,6 +56,7 @@ from sighop.keystore import (
 )
 from sighop.protocol.identity import (
     IdentityGenerationError,
+    LocalIdentity,
     PrivateKeyError,
     generate_identity,
     private_key_from_hex,
@@ -162,6 +163,9 @@ async def identities(
         stored=collection_for(stored, degraded="identities cannot be read"),
         bindings=_bindings(rooms, bots),
         loaded=list(page.state.adverts.stubs),
+        # `web-admin`: disabling an identity held as this viewer's default
+        # states that consequence too, before it is applied.
+        default_entity_id=page.session(request).default_entity_id,
         # Joined to the loaded rows by public key, the key the advert links use
         # (design D5); the node hash would join two identities that collide.
         traffic={row["public_key"]: row for row in entity_rows(page.state, page.feed)},
@@ -197,16 +201,35 @@ def _bindings(
 
 @router.post("/{entity_id}/enabled")
 async def set_identity_enabled(
+    request: Request,
     entity_id: str,
     enabled: Annotated[str, Form()],
     page: PanelDep,
 ) -> RedirectResponse:
-    """Enable or disable one identity, through `sighop keys`' own repository."""
+    """Enable or disable one identity, through `sighop keys`' own repository.
+
+    Reaches the run right after the store takes it (`web-admin`): the running
+    process starts or stops holding the identity without a restart, and
+    `identity.html`'s "loaded by this run" row reads that live on the next
+    visit. Narrated through `page.say` the moment it happens, the channel
+    `remove_identity` and `delete_room` already use for their own outcomes.
+    """
     if page.persistence is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     record = await _entity(page, entity_id)
     if record is not None:
-        await page.persistence.entities.set_enabled(record.public_key, enabled == "true")
+        turning_on = enabled == "true"
+        await page.persistence.entities.set_enabled(record.public_key, turning_on)
+        await page.state.reconcile_entities()
+        held = any(
+            stub.identity.public_key == record.public_key for stub in page.state.adverts.stubs
+        )
+        page.say(
+            f"identity {record.name!r} ({record.public_key.hex()[:16]}) "
+            f"{'enabled' if turning_on else 'disabled'} through the web interface by account "
+            f"{page.actor(request)!r}: this run "
+            f"{'now holds it and advertises for it' if held else 'no longer holds it'}"
+        )
     return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
 
 
@@ -282,6 +305,7 @@ async def create_identity(
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
+    await _reconcile_and_report_entity(page, identity, name, actor=page.actor(request))
     return RedirectResponse(f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER)
 
 
@@ -340,6 +364,9 @@ async def import_identity(
         return await _refuse(request, page, str(exc), **submitted)
     if isinstance(outcome, Failed):
         return await _refuse(request, page, str(outcome.error), **submitted)
+    await _reconcile_and_report_entity(
+        page, keyfile.identity, keyfile.name, actor=page.actor(request)
+    )
     return RedirectResponse(f"/admin/identities/{outcome.value.id}", status_code=SEE_OTHER)
 
 
@@ -353,6 +380,35 @@ async def _refuse(
         refusal=refused(reason, field=field, **submitted),
         status_code=400,
     )
+
+
+async def _reconcile_and_report_entity(
+    page: Panel, identity: LocalIdentity, name: str, *, actor: str
+) -> bool:
+    """Call the live seam after a create or import, and say what happened.
+
+    `web-admin`: the interface states the effect on the running process in
+    the result of the write — held and advertising, or stored but not taken
+    up, and why. `identity.html` already reads `adverts.stubs` live on every
+    visit (`_is_loaded`), so the page an operator lands on next reflects this
+    at once regardless; `page.say` is what narrates it to the run's own
+    output the moment it happens, the same channel `remove_identity` and
+    `delete_room` already use for their own outcomes.
+    """
+    await page.state.reconcile_entities()
+    held = any(stub.identity.public_key == identity.public_key for stub in page.state.adverts.stubs)
+    if held:
+        page.say(
+            f"identity {name!r} ({identity.public_key.hex()[:16]}) created through the web "
+            f"interface by account {actor!r}: now held by this run and advertising"
+        )
+        return True
+    reason = page.state.adverts.admission_refusal(identity, name) or ("not taken up by this run")
+    page.say(
+        f"identity {name!r} ({identity.public_key.hex()[:16]}) created through the web "
+        f"interface by account {actor!r}: stored, but this run did not take it up ({reason})"
+    )
+    return False
 
 
 # --- 2.2 One identity ---------------------------------------------------------
@@ -777,9 +833,11 @@ async def remove_identity(
         entity_name=record.name,
         public_key=record.public_key.hex(),
     )
+    await page.state.reconcile_entities()
     page.say(
         f"identity {record.name!r} ({record.public_key.hex()[:16]}) removed from "
-        f"the web interface by account {actor!r}"
+        f"the web interface by account {actor!r}: this run no longer holds it or advertises "
+        "for it"
     )
     return RedirectResponse(
         f"/admin/identities?removed={quote(record.name)}", status_code=SEE_OTHER

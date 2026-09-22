@@ -272,6 +272,73 @@ def test_generation_avoids_a_loaded_entity_node_hash(tmp_path) -> None:
     assert len(hashes) == len(set(hashes)), "the registry admitted a collision"
 
 
+# --- Non-fatal admission and removal (design D4) ----------------------------
+
+
+def test_a_clean_admission_has_no_collision(tmp_path) -> None:
+    registry = EntityRegistry()
+    registry.load(create_keyfile(tmp_path / "one.json", "one").path)
+
+    assert registry.collision(generate_identity()) is None
+
+
+def test_a_colliding_node_hash_is_reported_without_raising(tmp_path) -> None:
+    first_identity = generate_identity()
+    second_identity = _identity_with_node_hash(first_identity.node_hash)
+    registry = EntityRegistry()
+    loaded = registry.load(
+        create_keyfile(tmp_path / "one.json", "one", identity=first_identity).path
+    )
+
+    colliding = registry.collision(second_identity)
+
+    assert colliding is loaded
+    assert len(registry) == 1, "a checked collision must not be admitted"
+
+
+def test_startup_still_fails_naming_both_on_a_colliding_keyfile(tmp_path) -> None:
+    """§3 rule 3's raising form is unchanged: `collision` is additive."""
+    first_identity = generate_identity()
+    second_identity = _identity_with_node_hash(first_identity.node_hash)
+    first = tmp_path / "one.json"
+    second = tmp_path / "two.json"
+    create_keyfile(first, "one", identity=first_identity)
+    create_keyfile(second, "two", identity=second_identity)
+
+    registry = EntityRegistry()
+    registry.load(first)
+    with pytest.raises(NodeHashCollisionError) as excinfo:
+        registry.load(second)
+
+    message = str(excinfo.value)
+    assert "one" in message
+    assert "two" in message
+
+
+def test_removing_a_loaded_entity_reports_it_was_here(tmp_path) -> None:
+    registry = EntityRegistry()
+    loaded = registry.load(create_keyfile(tmp_path / "one.json", "one").path)
+
+    assert registry.remove(loaded.public_key) is True
+    assert registry.entities == ()
+
+
+def test_removing_an_unheld_entity_reports_so() -> None:
+    registry = EntityRegistry()
+
+    assert registry.remove(generate_identity().public_key) is False
+
+
+def test_removing_one_entity_leaves_the_others(tmp_path) -> None:
+    registry = EntityRegistry()
+    first = registry.load(create_keyfile(tmp_path / "one.json", "one").path)
+    second = registry.load(create_keyfile(tmp_path / "two.json", "two").path)
+
+    assert registry.remove(first.public_key) is True
+
+    assert registry.entities == (second,)
+
+
 # --- The burned test identity (design D11) ---------------------------------
 
 

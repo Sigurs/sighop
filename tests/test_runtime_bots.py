@@ -34,9 +34,11 @@ from sighop.db.repositories import EntityRepository
 from sighop.monitor.render import BOTS_OFF
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType
-from sighop.runtime import RuntimeConfig
+from sighop.runtime import Runtime, RuntimeConfig
 from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
-from tests.test_runtime import _events, run_briefly, runtime
+from tests.test_runtime import _events, _startup, run_briefly, runtime
+from tests.test_tx import ManualClock
+from tests.test_tx import RecordingLogger as _RuntimeRecordingLogger
 
 SECRET = base64.b64decode(generate_secret_key())
 CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
@@ -94,6 +96,22 @@ async def _stored_bot(
     loaded = await entities.load_all(SECRET, enabled_only=entity_enabled)
     assert isinstance(loaded, Succeeded)
     return persistence, created.value, loaded.value
+
+
+def _live_runtime(persistence: Persistence, *, config: RuntimeConfig | None = None) -> Runtime:
+    """A run with a real `entity_loader`, reconciling against the database
+    directly rather than a stub — `stored_entities` stays empty on purpose,
+    the way a run that started before an identity existed does."""
+    return Runtime(
+        source=_events(CAPTURE),
+        startup=_startup,
+        config=config or RuntimeConfig(status_interval=3600, advert_tick=3600),
+        clock=ManualClock(),
+        out=io.StringIO(),
+        logger=_RuntimeRecordingLogger(),
+        persistence=persistence,
+        webhook_secret=SECRET,
+    )
 
 
 # --- 9.2 No database, no bots -----------------------------------------------
@@ -709,3 +727,155 @@ async def test_stopping_one_bot_leaves_the_others_running(database: Database) ->
 
     assert [worker.name for worker in run.bots] == ["greeter-two"]
     await run.bots.stop()
+
+
+# --- 5.1-5.3 `reconcile_bots` (design D7, bot-runtime) ----------------------
+
+
+@pytest.mark.database
+async def test_a_disabled_bot_is_not_started_and_states_the_reason(database: Database) -> None:
+    """5.2: the same reason startup states, unchanged by reconcile."""
+    persistence, _record, _loaded = await _stored_bot(database, enabled=False)
+    run = _live_runtime(persistence)
+    await run._restore()
+
+    assert run.bots.workers == []
+
+    await run.reconcile_entities()
+
+    assert run.bots.workers == []
+
+
+@pytest.mark.database
+async def test_a_bot_created_from_the_command_line_is_run_within_the_reread(
+    database: Database,
+) -> None:
+    """5.1: a bot on an entity this run now holds is run — `reconcile_bots`
+    reusing `_run_bot` unchanged, driven from `reconcile_entities` in one pass."""
+    persistence, record, _loaded = await _stored_bot(database)
+    run = _live_runtime(persistence)
+    await run._restore()
+    assert run.bots.workers == []
+
+    assert await run.reconcile_entities() is True
+
+    assert [worker.record.id for worker in run.bots] == [record.id]
+
+
+@pytest.mark.database
+async def test_the_entity_arriving_after_the_bot_is_then_run(database: Database) -> None:
+    """5.1: a bot created on an entity this run does not yet hold is run once
+    that entity is adopted — order does not matter, only the end state."""
+    persistence, record, _loaded = await _stored_bot(database)
+    run = _live_runtime(persistence)
+    await run._restore()
+    (line,) = run._bot_lines()
+    assert "identity was not loaded" in line
+
+    await run.reconcile_entities()
+
+    assert [worker.record.id for worker in run.bots] == [record.id]
+
+
+@pytest.mark.database
+async def test_an_observing_bot_started_mid_run_touches_no_radio(database: Database) -> None:
+    """5.2: dispatches to its driver and touches no radio, exactly as one
+    started at startup does — `_run_bot` is reused unchanged, so the
+    transmit-enabled property already covered at startup carries over."""
+    persistence, record, _loaded = await _stored_bot(database, mode="observe")
+    run = _live_runtime(persistence)
+    await run._restore()
+
+    await run.reconcile_entities()
+
+    (worker,) = list(run.bots)
+    assert worker.record.id == record.id
+    assert worker.mode is not None
+    assert str(worker.mode) == "observe"
+
+
+@pytest.mark.database
+async def test_starting_a_bot_mid_run_leaves_the_others_running_state_untouched(
+    database: Database,
+) -> None:
+    """5.2: every bot already running keeps its durable state, rate-limit
+    position and counters when a second one is started mid-run."""
+    persistence, first_record, first_loaded = await _stored_bot(database, name="first")
+    entities = EntityRepository(database=database)
+    second_stored = await entities.store(
+        name="second", identity=generate_identity(), secret=SECRET, entity_type="bot"
+    )
+    assert isinstance(second_stored, Succeeded)
+    second_created = await persistence.bots.create(
+        entity_id=second_stored.value.id,
+        driver="greeter",
+        config=bot_drivers.default_config("greeter"),
+        entity_name="second",
+    )
+    assert isinstance(second_created, Succeeded)
+
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(
+            status_interval=3600, advert_tick=3600, stored_entities=tuple(first_loaded)
+        ),
+        persistence=persistence,
+        webhook_secret=SECRET,
+    )
+    await run._restore()
+    (first_worker,) = list(run.bots)
+    first_worker.counters.observations = 7
+    before_counters = first_worker.counters
+
+    await run.reconcile_entities()
+
+    assert sorted(worker.record.id for worker in run.bots) == sorted(
+        (first_record.id, second_created.value.id)
+    )
+    still_running = next(worker for worker in run.bots if worker.record.id == first_record.id)
+    assert still_running is first_worker, "the running worker was replaced"
+    assert first_worker.counters is before_counters
+    assert first_worker.counters.observations == 7
+
+    await persistence.stop()
+
+
+@pytest.mark.database
+async def test_a_bot_stopped_by_a_disable_keeps_its_durable_state(database: Database) -> None:
+    """5.3: disabled mid-run, its durable state survives, and enabling it
+    again resumes from that state rather than starting over."""
+    persistence, record, loaded = await _stored_bot(database)
+    assert isinstance(
+        await persistence.bot_state.set(record.id, "greeted", True),
+        Succeeded,
+    )
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+        webhook_secret=SECRET,
+    )
+    await run._restore()
+    assert len(run.bots) == 1
+
+    disabled = await persistence.bots.set_enabled(record.id, False)
+    assert isinstance(disabled, Succeeded)
+    await run.reconcile_entities()
+
+    assert run.bots.workers == []
+    state = await persistence.bot_state.get(record.id, "greeted")
+    assert isinstance(state, Succeeded)
+    assert state.value is True, "the durable state must survive being stopped"
+
+    enabled = await persistence.bots.set_enabled(record.id, True)
+    assert isinstance(enabled, Succeeded)
+    await run.reconcile_entities()
+
+    assert len(run.bots) == 1
+    state_after = await persistence.bot_state.get(record.id, "greeted")
+    assert isinstance(state_after, Succeeded)
+    assert state_after.value is True
+
+    await persistence.stop()

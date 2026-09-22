@@ -775,3 +775,201 @@ def test_a_name_another_loaded_identity_holds_is_reported_as_a_clash() -> None:
         "an identity clashes with itself"
     )
     assert sched.name_clash(first.identity.public_key, "unused") is None
+
+
+# --- Non-fatal admission and removal (design D4, D6) ------------------------
+
+
+def test_a_clean_admission_is_not_refused() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    sched.add_stub("skogen")
+
+    assert sched.admission_refusal(generate_identity(), "newcomer") is None
+
+
+def test_a_colliding_node_hash_is_refused_without_raising() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    identity = generate_identity()
+    stub = sched.add_identity("skogen", identity)
+
+    # Same node hash, a different key material path (mirrors `add_identity`'s
+    # own raising check) — reuse the identity itself, which is the simplest
+    # way to guarantee a collision in a test.
+    reason = sched.admission_refusal(identity, "newcomer")
+
+    assert reason is not None
+    assert f"0x{stub.node_hash:02x}" in reason
+    assert "skogen" in reason
+    assert sched.stubs == [stub], "a refused admission must not be applied"
+
+
+def test_a_name_clash_is_refused_without_raising() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    sched.add_stub("skogen")
+
+    reason = sched.admission_refusal(generate_identity(), "skogen")
+
+    assert reason is not None
+    assert "skogen" in reason
+
+
+def test_removing_an_identity_mutates_stubs_in_place() -> None:
+    """Design D4/D6, for the reason `rename` states at `adverts.py:313`: this
+    list is shared by reference and must never be rebound."""
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    stubs = sched.stubs
+
+    removed = sched.remove(stub.identity.public_key)
+
+    assert removed is stub
+    assert sched.stubs is stubs, "remove rebound the list instead of mutating it"
+    assert sched.stubs == []
+
+
+def test_removing_an_unheld_identity_reports_none() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+
+    assert sched.remove(generate_identity().public_key) is None
+
+
+async def test_removing_one_identity_leaves_the_others_schedules_untouched() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    first = sched.add_stub("skogen")
+    second = sched.add_stub("greeter")
+    sched.set_override(second, interval_seconds=HOUR)
+    sched.request_flood(second)
+    before = (second.next_flood_at, second.last_flood_at, second.adverts_sent, second.override)
+    global_flood_at = sched.last_global_flood_at
+
+    sched.remove(first.identity.public_key)
+
+    assert (
+        second.next_flood_at,
+        second.last_flood_at,
+        second.adverts_sent,
+        second.override,
+    ) == before
+    assert sched.last_global_flood_at == global_flood_at, (
+        "the withdrawn identity's last flood must still count toward the gap"
+    )
+
+
+# --- Live advert-configuration change (design D3, advert-policy) -----------
+
+
+def test_reconfiguring_below_the_floor_is_refused_without_raising() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    before = stub.next_flood_at
+
+    reason = sched.reconfigure(
+        stub.identity.public_key, flood_interval_seconds=HOUR, zero_hop_interval_seconds=0.0
+    )
+
+    assert reason is not None
+    assert "floor" in reason
+    assert stub.flood_interval_seconds == FLOOD_INTERVAL_FLOOR_SECONDS, (
+        "a refused change must leave the schedule in force untouched"
+    )
+    assert stub.next_flood_at == before
+
+
+def test_reconfiguring_an_unheld_identity_reports_so() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+
+    reason = sched.reconfigure(
+        generate_identity().public_key,
+        flood_interval_seconds=48 * HOUR,
+        zero_hop_interval_seconds=0.0,
+    )
+
+    assert reason is not None
+    assert "does not hold" in reason
+
+
+def test_reconfiguring_applies_the_new_interval() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+
+    reason = sched.reconfigure(
+        stub.identity.public_key, flood_interval_seconds=48 * HOUR, zero_hop_interval_seconds=3600.0
+    )
+
+    assert reason is None
+    assert stub.flood_interval_seconds == 48 * HOUR
+    assert stub.zero_hop_interval_seconds == 3600.0
+
+
+async def test_reconfiguring_does_not_disturb_adverts_sent_or_override() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    sched.request_flood(stub)
+    sched.set_override(stub, interval_seconds=HOUR)
+    before = (stub.adverts_sent, stub.override)
+
+    sched.reconfigure(
+        stub.identity.public_key, flood_interval_seconds=48 * HOUR, zero_hop_interval_seconds=0.0
+    )
+
+    assert (stub.adverts_sent, stub.override) == before
+
+
+def test_reconfiguring_submits_nothing() -> None:
+    clock = ManualClock()
+    sink = CollectingSink()
+    sched = scheduler(clock, sink=sink)
+    stub = sched.add_stub("skogen")
+
+    sched.reconfigure(
+        stub.identity.public_key, flood_interval_seconds=48 * HOUR, zero_hop_interval_seconds=0.0
+    )
+
+    assert sink.submissions == [], "a configuration change put a packet on the air"
+
+
+def test_a_shorter_interval_moves_the_next_flood_sooner() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen", flood_interval_seconds=30 * DAY)
+    far_future = stub.next_flood_at
+    assert far_future is not None
+
+    sched.reconfigure(
+        stub.identity.public_key,
+        flood_interval_seconds=FLOOD_INTERVAL_FLOOR_SECONDS,
+        zero_hop_interval_seconds=0.0,
+    )
+
+    assert stub.next_flood_at is not None
+    assert stub.next_flood_at < far_future, (
+        "a shorter interval that makes the next advert due sooner must be applied"
+    )
+
+
+def test_a_longer_interval_does_not_delay_a_flood_already_due_sooner() -> None:
+    clock = ManualClock()
+    sched = scheduler(clock)
+    stub = sched.add_stub("skogen")
+    stub.next_flood_at = clock.now() + dt.timedelta(hours=1)
+    before = stub.next_flood_at
+
+    sched.reconfigure(
+        stub.identity.public_key,
+        flood_interval_seconds=30 * DAY,
+        zero_hop_interval_seconds=0.0,
+    )
+
+    assert stub.next_flood_at == before, (
+        "extending the interval must not itself advance or delay the schedule in force"
+    )

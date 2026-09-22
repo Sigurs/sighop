@@ -120,3 +120,6 @@ This section sits outside the block above because `cce init` rewrites what is
 inside it. `cce init` also rewrites `.claude/settings.json`, replacing the
 `.claude/hooks/cce.sh` wrapper the container depends on with absolute host
 paths; point the five hook commands back at the wrapper afterwards.
+
+## Things to do
+Always run lint and tests before completing openspec apply.

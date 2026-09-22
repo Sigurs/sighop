@@ -515,6 +515,27 @@ class EntityRegistry:
                 return True
         return False
 
+    def collision(self, identity: LocalIdentity) -> LocalEntity | None:
+        """The loaded entity `identity` would collide with, without raising.
+
+        The non-fatal counterpart to `_register`'s check (design D4): a live
+        adoption asks first, so a collision a re-read discovers refuses that
+        one identity rather than ending a run that is on the air. `_register`
+        keeps its raising form, which startup still needs.
+        """
+        return next(
+            (entity for entity in self._entities if entity.node_hash == identity.node_hash),
+            None,
+        )
+
+    def remove(self, public_key: bytes) -> bool:
+        """Withdraw a loaded local entity, reporting whether it was here."""
+        for index, entity in enumerate(self._entities):
+            if entity.identity.public_key == public_key:
+                del self._entities[index]
+                return True
+        return False
+
     def _register(self, entity: LocalEntity) -> LocalEntity:
         for existing in self._entities:
             if existing.node_hash == entity.node_hash:

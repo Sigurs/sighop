@@ -105,8 +105,17 @@
             <input type="hidden" name="enabled" value="{{ 'false' if record.enabled else 'true' }}">
             {% if record.enabled and serving %}
             <p class="unavailable">
-              Disabling this identity stops {{ serving|join(' and ') }}. That
-              room or bot has no other identity to run on.
+              Disabling this identity stops {{ serving|join(' and ') }}
+              immediately — it does not wait for a restart. A room's members
+              and stored messages, and a bot's durable state, survive and
+              come back if you enable this identity again.
+            </p>
+            {% endif %}
+            {% if record.enabled and default_entity_id and (record.id|string) == default_entity_id %}
+            <p class="unavailable">
+              This is your default chat identity. Disabling it stops this run
+              holding it, and no identity will be preselected in your
+              composers until you choose one again.
             </p>
             {% endif %}
             <button type="submit">{{ 'disable' if record.enabled else 'enable' }}</button>

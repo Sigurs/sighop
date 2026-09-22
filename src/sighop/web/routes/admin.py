@@ -141,6 +141,15 @@ async def create_room(
         return await _refuse_room(request, page, str(exc), **submitted)
     if isinstance(created, Failed):
         return await _refuse_room(request, page, str(created.error), **submitted)
+    # After the store has taken it, so it reaches the run without a restart
+    # and without waiting for the periodic re-read (`room-server`, `web-admin`).
+    await page.state.reconcile_rooms()
+    served = any(server.room.id == created.value.id for server in page.state.rooms)
+    page.say(
+        f"room {name!r} created through the web interface by account "
+        f"{page.actor(request)!r}: "
+        f"{'now served' if served else 'stored, but its identity was not loaded; not served'}"
+    )
     return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
@@ -492,6 +501,16 @@ async def create_bot(
                 "node knows; seed it before making it active"
             ),
         )
+    # After the row (and its seed) exist, so it reaches the run without a
+    # restart and without waiting for the periodic re-read (`bot-runtime`,
+    # `web-admin`).
+    await page.state.reconcile_bots()
+    running = any(worker.record.id == created.value.id for worker in page.state.bots)
+    page.say(
+        f"bot on identity {name!r} created through the web interface by account "
+        f"{page.actor(request)!r}: "
+        f"{'now running' if running else 'stored, but this run did not start it'}"
+    )
     return RedirectResponse(home, status_code=SEE_OTHER)
 
 
@@ -525,12 +544,22 @@ def _now_iso() -> str:
 
 @router.post("/bots/{bot_id}/enabled")
 async def set_bot_enabled(
-    bot_id: str, enabled: Annotated[str, Form()], page: PanelDep
+    request: Request, bot_id: str, enabled: Annotated[str, Form()], page: PanelDep
 ) -> RedirectResponse:
+    """Enable or disable one bot, reaching the run right after the store
+    takes it — the same immediacy `web-admin` already gives a room delete."""
     bot = await _bot(page, bot_id)
     if bot is None or page.persistence is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
-    await page.persistence.bots.set_enabled(bot.id, enabled == "true")
+    turning_on = enabled == "true"
+    await page.persistence.bots.set_enabled(bot.id, turning_on)
+    await page.state.reconcile_bots()
+    running = any(worker.record.id == bot.id for worker in page.state.bots)
+    page.say(
+        f"bot {bot.entity_name!r} {'enabled' if turning_on else 'disabled'} through the web "
+        f"interface by account {page.actor(request)!r}: "
+        f"{'now running' if running else 'stopped; its durable state survives'}"
+    )
     return RedirectResponse(_identity_page(bot.entity_id), status_code=SEE_OTHER)
 
 

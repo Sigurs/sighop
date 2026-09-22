@@ -26,7 +26,7 @@ from sighop.bots.base import (
     BotWouldAct,
 )
 from sighop.config import DEFAULT_PATH_HASH_SIZE, PATH_HASH_SIZE_VARIABLE
-from sighop.net.adverts import EntityStub
+from sighop.net.adverts import EntitySetChanged, EntityStub
 from sighop.net.channels import (
     ChannelConfigReadFailed,
     ChannelEvent,
@@ -717,6 +717,13 @@ def render_channel_set_changed(event: ChannelSetChanged) -> str:
         f"channels changed: {', '.join(parts)}  "
         f"({event.loaded} loaded; group text is trialled against all of them)"
     )
+
+
+def render_entity_set_changed(event: EntitySetChanged) -> str:
+    """An identity adopted or withdrawn mid-run, named in the run that changed
+    it (design D9) — `render_channel_set_changed`'s counterpart."""
+    parts = [f"+{name}" for name in event.adopted] + [f"-{name}" for name in event.withdrawn]
+    return f"identities changed: {', '.join(parts)}  ({event.loaded} loaded)"
 
 
 def render_channel_config_read_failed(event: ChannelConfigReadFailed) -> str:

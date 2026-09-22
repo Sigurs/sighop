@@ -111,6 +111,34 @@ class LiveState(Protocol):
         when this run was not running it.
         """
 
+    async def reconcile_entities(self) -> bool:
+        """Re-read the stored identities and apply the difference, without a
+        restart (`entity-store`, design D1).
+
+        The identity counterpart of `reload_channels`: called by the panel
+        right after it takes an identity write — create, import, enable,
+        disable, remove — and by the periodic refresh loop for a change made
+        by another process. Adopts, withdraws and re-configures, and reports
+        what changed; a re-read that changes nothing is silent. `False` when
+        this run has no way to re-read the store at all.
+        """
+
+    async def reconcile_rooms(self) -> None:
+        """Take up a room whose identity this run now holds, and stop one
+        whose identity it no longer holds, without a restart (`room-server`).
+
+        Called by the panel after a room is created, and as part of
+        `reconcile_entities`'s own pass.
+        """
+
+    async def reconcile_bots(self) -> None:
+        """Start a bot that now qualifies to run, and stop one that no longer
+        does, without a restart (`bot-runtime`).
+
+        Called by the panel after a bot is created or its enabled state is
+        changed, and as part of `reconcile_entities`'s own pass.
+        """
+
     @property
     def rooms(self) -> list[RoomServer]:
         """The rooms this run is serving. Empty is not the same as none stored."""
