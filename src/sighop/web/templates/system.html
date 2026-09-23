@@ -47,8 +47,8 @@
   against the readback, which is what the radio is actually doing.
 </p>
 <p class="note">
-  Changing a parameter is <span class="mono">sighop run --radio-preset</span> at
-  startup; this build applies the preset once, at the probe, and shows what the
+  Changing a parameter is <span class="mono">SIGHOP_RADIO_PRESET</span> and a
+  restart; this build applies the preset once, at the probe, and shows what the
   board answered.
 </p>
 
@@ -105,23 +105,17 @@
 <p class="unavailable">
   <strong>The revisions disagree.</strong> The database reports
   <span class="mono">{{ applied or '(none)' }}</span> and this build expects
-  <span class="mono">{{ expected }}</span>. Reconcile them with
-  <span class="mono">{{ upgrade_command }}</span>.
+  <span class="mono">{{ expected }}</span>. If the database is behind,
+  {{ reconcile }}; if it is ahead, run the build that migrated it.
 </p>
 {% endif %}
 {% endif %}
 
 <h2>applying a migration</h2>
 <p class="note">{{ migrations_note }}</p>
-<p class="note">
-  The command is <span class="mono">{{ upgrade_command }}</span>.
-</p>
 
 <h2>accounts</h2>
 <p class="note">{{ accounts_note }}</p>
-<p class="note">
-  The command is <span class="mono">{{ account_command }}</span>.
-</p>
 
 <h2>the sealing secret</h2>
 <p class="note">

@@ -20,16 +20,13 @@ from sighop.bots.base import (
     BotActed,
     BotDispatchDropped,
     BotFailed,
-    BotMode,
     BotSendResult,
     BotSuppressed,
     BotWouldAct,
     SuppressionReason,
 )
 from sighop.monitor.render import (
-    BOTS_OFF,
     render_bot_event,
-    render_bot_mode_change,
     render_bot_startup,
     render_bot_status,
 )
@@ -78,11 +75,6 @@ def test_a_bot_that_is_not_run_says_so_and_says_why() -> None:
         line
         == "bot 'greeter-bot'[2a]  driver=greeter  mode=observe  NOT RUNNING (the bot is disabled)"
     )
-
-
-def test_no_database_says_bots_are_off_rather_than_omitting_the_subject() -> None:
-    assert "bots: none" in BOTS_OFF
-    assert "durable storage" in BOTS_OFF
 
 
 def test_the_status_line_renders_every_counter_including_the_zeros() -> None:
@@ -240,23 +232,6 @@ def test_an_observation_shares_no_shape_with_a_transmission() -> None:
     assert "sent to" in acted and "sent to" not in observed
     assert "attempts=" in acted and "attempts=" not in observed
     assert "transmitted nothing" in observed and "transmitted nothing" not in acted
-
-
-def test_making_a_bot_active_says_the_run_flag_still_applies() -> None:
-    """11.1, design D4: two gates, and the operator who just opened one is
-    exactly the person who needs telling about the other."""
-    line = render_bot_mode_change("greeter-bot", BotMode.ACTIVE)
-
-    assert "may transmit" in line
-    assert "--enable-transmit" in line
-    assert "duty-cycle ceiling" in line
-
-
-def test_making_a_bot_observe_says_it_transmits_nothing() -> None:
-    line = render_bot_mode_change("greeter-bot", BotMode.OBSERVE)
-
-    assert "observe mode" in line
-    assert "transmits nothing" in line
 
 
 # --- The import direction ---------------------------------------------------

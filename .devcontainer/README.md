@@ -62,23 +62,38 @@ USB-serial chip and survives a board reset.
 
 External, always. Nothing in here sets `DATABASE_URL`, and no Postgres runs in
 or beside the container — same as the host workflow. The checkout's gitignored
-`.env.dev` comes along with the workspace:
+`.env.dev` comes along with the workspace. `sighop` takes no arguments; every
+setting is an environment variable (`.env.example` lists them all):
 
 ```bash
-uv run --env-file .env.dev sighop run --device /dev/modem-1 --web \
-    --web-host 0.0.0.0 --web-allowed-host localhost:8080
+SIGHOP_MODEM=/dev/modem-1 SIGHOP_WEB_HOST=0.0.0.0 \
+  SIGHOP_WEB_ALLOWED_HOSTS=localhost:8080 uv run --env-file .env.dev sighop
 ```
 
 Port 8080 is forwarded, so that panel answers at <http://localhost:8080> on the
 host. Bind the panel to `0.0.0.0` inside; `127.0.0.1` would be the container's
 own loopback.
 
-`--web-allowed-host localhost:8080` is what makes that URL work, and it is not
-optional here. The panel's rebinding defence answers only to the name it was
+`SIGHOP_WEB_ALLOWED_HOSTS=localhost:8080` is what makes that URL work, and it is
+not optional here. The panel's rebinding defence answers only to the name it was
 bound to, so a wide bind accepts `Host: 0.0.0.0:8080` and refuses everything
 else — including the `localhost:8080` a host browser sends through the forward,
 which comes back as `421` and *This server does not answer to that host name*.
-The flag extends that set; it never replaces it.
+The variable extends that set; it never replaces it.
+
+### Tests
+
+The suite needs the same database, and refuses to run without one rather than
+skip the half of itself that touches it:
+
+```bash
+uv run --env-file .env.dev pytest
+```
+
+Each run creates a `sighop_test_<random>` schema inside that database, applies
+the real migration chain into it, and drops it when the run ends; a run that was
+killed leaves its schema for the next run to sweep up. The suite never starts a
+database of its own — there is no Docker socket in here to start one with.
 
 A database on the *host's* loopback is `host.docker.internal`, not `localhost`.
 
@@ -89,9 +104,12 @@ available in here — no Docker socket is mounted and no Docker CLI is installed
 because mounting that socket hands anything in the container root on the host:
 
 ```bash
-./build.sh lock lint types test     # in here
-./build.sh                          # on the host: adds image, smoke, replay, scan
+./build.sh lock format lint types test     # in here
+./build.sh                                 # on the host: adds image, smoke, replay, scan
 ```
+
+The `test` gate needs a database like the suite does. With none named in the
+environment it uses the one `.env.dev` names, and says so.
 
 The script says loudly that a partial run verified nothing, which is correct: an
 image that was never built, smoke-tested, replayed on musl or scanned has not

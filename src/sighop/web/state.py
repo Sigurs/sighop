@@ -167,19 +167,18 @@ class LiveState(Protocol):
 
 @runtime_checkable
 class DurableState(Protocol):
-    """The database behind the panel, or its absence.
+    """The database behind the panel.
 
-    Separate from `LiveState` because the two fail differently. Since milestone
-    9 a run serving the interface always has a database — its accounts live
-    there — so `None` is what a `Runtime` without `--web` holds, and what a page
-    test's stub may hold; the served answer to "durable state is unavailable" is
-    a degraded database, which every section states rather than rendering empty
-    (`web-server`).
+    Separate from `LiveState` because the two fail differently. There is always
+    one: a database is required (`database` spec), so a node that is serving
+    the panel has one, and a page test's stub carries a real one too. The only
+    answer to "durable state is unavailable" is a degraded database, which every
+    section states rather than rendering empty (`web-server`).
     """
 
     @property
-    def persistence(self) -> Persistence | None:
-        """Everything durable, or `None` when this run has no database."""
+    def persistence(self) -> Persistence:
+        """Everything durable."""
 
 
 @runtime_checkable

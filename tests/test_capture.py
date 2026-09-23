@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from sighop.radio.capture import CAPTURE_META_KIND, CaptureRun, capture_meta_record
+from sighop.radio.capture import CAPTURE_META_KIND, CaptureWriter, capture_meta_record
 from sighop.radio.kiss import KissTransport, encode_frame
 from sighop.radio.modem import (
     EU868_NARROW,
@@ -64,20 +64,44 @@ def probe_result(**overrides) -> ProbeResult:
     return ProbeResult(**{**fields, **overrides})
 
 
-async def run_until_stopped(run: CaptureRun, delay: float = 0.2) -> None:
-    async def stop_soon():
-        await asyncio.sleep(delay)
-        run.stop()
+async def capture(modem, out_path, *, seconds: float = 0.2, probe=None) -> None:
+    """Drive a `CaptureWriter` from a modem the way the runtime does.
 
-    await asyncio.gather(run.run(), stop_soon())
+    The header waits on the probe (or uses the one given); events are written as
+    they arrive and held by the writer until the header is out. This is the
+    composition `Runtime` performs for `SIGHOP_CAPTURE_FILE`, reduced to what a
+    test of the file format needs.
+    """
+    writer = CaptureWriter(out_path)
+    writer.open()
+
+    async def header() -> None:
+        if probe is not None:
+            writer.start(probe)
+            return
+        await modem.probe_ready.wait()
+        writer.start(modem.probe_result)
+
+    async def consume() -> None:
+        async for event in modem.events():
+            writer.write(event)
+
+    tasks = [asyncio.create_task(header()), asyncio.create_task(consume())]
+    try:
+        await asyncio.sleep(seconds)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        writer.close()
 
 
 def records(path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-async def test_capture_run_writes_jsonl_end_to_end(tmp_path):
-    """Full pipeline: raw KISS bytes -> KissTransport -> Modem -> CaptureRun -> JSONL file."""
+async def test_a_capture_writes_jsonl_end_to_end(tmp_path):
+    """Full pipeline: raw KISS bytes -> KissTransport -> Modem -> CaptureWriter -> JSONL file."""
     ok = encode_frame(TYPE_SET_HARDWARE, bytes((SUB_OK,)))
     data = encode_frame(TYPE_DATA, bytes((0xAB, 0xCD)))
     rx_meta = encode_frame(TYPE_SET_HARDWARE, bytes((SUB_RXMETA, 8 & 0xFF, (-90) & 0xFF)))
@@ -92,9 +116,7 @@ async def test_capture_run_writes_jsonl_end_to_end(tmp_path):
     transport = KissTransport(connect)
     modem = Modem(transport, request_timeout=FAST_TIMEOUT)
     out_path = tmp_path / "capture.jsonl"
-    run = CaptureRun(modem, out_path, heartbeat_interval=1000)
-
-    await run_until_stopped(run)
+    await capture(modem, out_path)
 
     written = records(out_path)
     assert len(written) == 3
@@ -114,7 +136,7 @@ async def test_capture_run_writes_jsonl_end_to_end(tmp_path):
     assert bytes((0xC0, TYPE_SET_HARDWARE, 0x09)) in bytes(writer.written)
 
 
-async def test_capture_run_stops_gracefully_and_flushes(tmp_path):
+async def test_a_capture_that_heard_nothing_holds_only_its_header(tmp_path):
     ok = encode_frame(TYPE_SET_HARDWARE, bytes((SUB_OK,)))
     reader = FakeReader([ok])
     writer = FakeWriter()
@@ -125,9 +147,7 @@ async def test_capture_run_stops_gracefully_and_flushes(tmp_path):
     transport = KissTransport(connect)
     modem = Modem(transport, request_timeout=FAST_TIMEOUT)
     out_path = tmp_path / "capture.jsonl"
-    run = CaptureRun(modem, out_path, heartbeat_interval=1000)
-
-    await run_until_stopped(run)
+    await capture(modem, out_path)
 
     # No frames arrived, but the probe answered, so the file holds its header
     # and nothing else.
@@ -207,9 +227,7 @@ async def test_header_precedes_a_frame_that_arrived_during_probing(tmp_path):
 
     modem = StubModem([RxEvent(packet=b"\x01\x02", rx_meta=RxMeta(snr_db=2.0, rssi_dbm=-90))])
     out_path = tmp_path / "capture.jsonl"
-    run = CaptureRun(modem, out_path, probe_result=probe_result(), heartbeat_interval=1000)
-
-    await run_until_stopped(run, delay=0.05)
+    await capture(modem, out_path, seconds=0.05, probe=probe_result())
 
     kinds = [record["kind"] for record in records(out_path)]
     assert kinds == [CAPTURE_META_KIND, "rx_frame"]
@@ -222,9 +240,7 @@ async def test_appending_to_a_non_empty_capture_file_adds_no_second_header(tmp_p
     out_path.write_text(json.dumps({"ts": "x", "kind": "rx_frame", "raw_hex": "00"}) + "\n")
 
     modem = StubModem([RxEvent(packet=b"\x03", rx_meta=None)])
-    run = CaptureRun(modem, out_path, probe_result=probe_result(), heartbeat_interval=1000)
-
-    await run_until_stopped(run, delay=0.05)
+    await capture(modem, out_path, seconds=0.05, probe=probe_result())
 
     kinds = [record["kind"] for record in records(out_path)]
     assert kinds == ["rx_frame", "rx_frame"]
@@ -240,8 +256,6 @@ async def test_a_new_or_empty_file_gets_a_header(tmp_path, existing):
         out_path.write_text(existing)
 
     modem = StubModem([RxEvent(packet=b"\x03", rx_meta=None)])
-    run = CaptureRun(modem, out_path, probe_result=probe_result(), heartbeat_interval=1000)
-
-    await run_until_stopped(run, delay=0.05)
+    await capture(modem, out_path, seconds=0.05, probe=probe_result())
 
     assert records(out_path)[0]["kind"] == CAPTURE_META_KIND

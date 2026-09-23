@@ -48,6 +48,7 @@ from sighop.web.auth import (
 from sighop.web.guard import TOKEN_HEADER
 from sighop.web.state import PanelState
 from sighop.webhooks.dispatcher import WebhookDispatcher
+from tests.dbfixtures import the_default_persistence
 
 if TYPE_CHECKING:  # pragma: no cover
     import httpx2
@@ -70,10 +71,14 @@ class StubState:
     adverts: AdvertScheduler
     messenger: DirectMessenger
     bots: BotHost
+    persistence: Persistence
+    """Required, as it is on the runtime: every page has a database behind it.
+    A page test takes the `fresh_persistence` fixture, or builds its own over
+    the `database` fixture when it needs rows in place first."""
+
     rooms: list[RoomServer] = dataclasses.field(default_factory=list)
     radio: RadioParams | None = None
     probe_result: ProbeResult | None = None
-    persistence: Persistence | None = None
     webhooks: WebhookDispatcher | None = None
     channels: ChannelMessenger = dataclasses.field(default_factory=lambda: idle_channels())
     channel_reloads: int = 0
@@ -212,19 +217,25 @@ def idle_channels() -> ChannelMessenger:
 
 def stub_state(
     *,
+    persistence: Persistence | None = None,
     transmit_enabled: bool = False,
     ceiling_fraction: float | None = None,
     radio: RadioParams | None = None,
     probe_result: ProbeResult | None = None,
-    persistence: Persistence | None = None,
     stub_names: tuple[str, ...] = (),
 ) -> StubState:
-    """One assembled panel state, with nothing running behind it.
+    """One assembled panel state, with no runtime behind it but a database.
+
+    `persistence` defaults to the one `default_persistence` provides, and there
+    is no default beyond that: a stub with no database would be drawing a page
+    no running node can serve.
 
     `stub_names` adds in-memory identities, each with a generated key. They are
     what makes the "no page reveals key material" assertion non-vacuous: a state
     with no identities in it has no seed for a page to have leaked.
     """
+    if persistence is None:
+        persistence = the_default_persistence()
     budget = (
         AirtimeBudget()
         if ceiling_fraction is None

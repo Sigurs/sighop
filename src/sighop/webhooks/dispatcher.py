@@ -8,7 +8,7 @@ Three properties carry the design:
   counted and logged, because the newest sighting is the likelier to matter.
 * **Configuration is read per event.** The enabled webhooks are read from the
   database when an event is taken off the queue, so a change made by
-  `sighop webhook …` in another process or by the panel applies to the next
+  the panel, or directly in the database by another process, applies to the next
   event without a restart. A failed read falls back to the last good list.
 * **One webhook never waits on another.** Each matching webhook gets its own
   task with its own retry schedule; a semaphore caps concurrent HTTP attempts,

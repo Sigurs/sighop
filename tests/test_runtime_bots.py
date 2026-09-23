@@ -31,7 +31,6 @@ from sighop.config import generate_secret_key
 from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import EntityRepository
-from sighop.monitor.render import BOTS_OFF
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType
 from sighop.runtime import Runtime, RuntimeConfig
@@ -39,6 +38,8 @@ from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
 from tests.test_runtime import _events, _startup, run_briefly, runtime
 from tests.test_tx import ManualClock
 from tests.test_tx import RecordingLogger as _RuntimeRecordingLogger
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 SECRET = base64.b64decode(generate_secret_key())
 CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
@@ -117,27 +118,6 @@ def _live_runtime(persistence: Persistence, *, config: RuntimeConfig | None = No
 # --- 9.2 No database, no bots -----------------------------------------------
 
 
-async def test_a_run_with_no_database_says_bots_require_durable_storage() -> None:
-    """9.2, design D5: §7 rule 1 is a statement about a table that does not
-    exist without one, so a DB-less greeter would greet the whole neighbourhood
-    after every restart. Stated rather than omitted."""
-    run = runtime(_events(CAPTURE), out=io.StringIO())
-
-    assert len(run.bots) == 0
-    assert run._bot_lines() == [BOTS_OFF]
-
-
-async def test_a_replay_run_with_no_database_wires_no_bots_at_all() -> None:
-    """9.2: not merely "runs none" — the host has no workers to offer to."""
-    out = io.StringIO()
-    run = runtime(_events(CAPTURE), out=out)
-    await run_briefly(run)
-
-    assert run.bots.workers == []
-    assert BOTS_OFF in out.getvalue()
-
-
-@pytest.mark.database
 async def test_a_run_with_a_database_and_no_bots_says_none_are_configured(
     database: Database,
 ) -> None:
@@ -151,7 +131,6 @@ async def test_a_run_with_a_database_and_no_bots_says_none_are_configured(
 # --- 9.1 / 9.3 Loading, binding and reporting -------------------------------
 
 
-@pytest.mark.database
 async def test_a_bot_is_run_and_reported_before_any_traffic(database: Database) -> None:
     """9.3: the identity, the driver, the mode and the limits, at startup."""
     persistence, _record, loaded = await _stored_bot(database)
@@ -177,7 +156,6 @@ async def test_a_bot_is_run_and_reported_before_any_traffic(database: Database) 
     assert "rate_per_hour=" in line
 
 
-@pytest.mark.database
 async def test_a_disabled_bot_is_reported_as_not_running_and_receives_nothing(
     database: Database,
 ) -> None:
@@ -197,7 +175,6 @@ async def test_a_disabled_bot_is_reported_as_not_running_and_receives_nothing(
     assert "the bot is disabled" in line
 
 
-@pytest.mark.database
 async def test_a_bot_on_a_disabled_identity_is_reported_with_that_reason(
     database: Database,
 ) -> None:
@@ -216,7 +193,6 @@ async def test_a_bot_on_a_disabled_identity_is_reported_with_that_reason(
     assert "identity was not loaded" in line
 
 
-@pytest.mark.database
 async def test_a_bot_whose_identity_serves_a_room_is_refused_with_that_reason(
     database: Database,
 ) -> None:
@@ -291,7 +267,6 @@ async def test_a_bot_whose_identity_serves_a_room_is_refused_with_that_reason(
     assert "one role" in line
 
 
-@pytest.mark.database
 async def test_a_bot_naming_a_driver_this_build_lacks_is_reported_not_fatal(
     database: Database,
 ) -> None:
@@ -314,7 +289,6 @@ async def test_a_bot_naming_a_driver_this_build_lacks_is_reported_not_fatal(
 # --- 9.4 Lifecycle ----------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_bot_workers_start_and_stop_with_the_run(database: Database) -> None:
     """9.4: no pending task survives a stop, and a shutdown does not raise."""
     persistence, _record, loaded = await _stored_bot(database)
@@ -443,7 +417,6 @@ async def test_an_idle_worker_stops_at_once_and_reports_nothing() -> None:
 # --- 9.5 The periodic status line -------------------------------------------
 
 
-@pytest.mark.database
 async def test_the_status_report_includes_every_per_bot_counter(
     database: Database,
 ) -> None:
@@ -632,7 +605,6 @@ async def test_an_observe_mode_bot_submits_nothing_across_a_whole_replay() -> No
 # --- Stopping a deleted bot, without a restart -------------------------------
 
 
-@pytest.mark.database
 async def test_a_deleted_bot_stops_running_without_a_restart(database: Database) -> None:
     persistence, record, loaded = await _stored_bot(database)
     run = runtime(
@@ -651,7 +623,6 @@ async def test_a_deleted_bot_stops_running_without_a_restart(database: Database)
     assert run._bot_lines() == ["bots: none configured"]
 
 
-@pytest.mark.database
 async def test_stopping_a_bot_waits_for_the_dispatch_in_flight(database: Database) -> None:
     """`bot-runtime` already requires a stopping worker to finish its dispatch;
     deleting one must not become the way round that."""
@@ -674,7 +645,6 @@ async def test_stopping_a_bot_waits_for_the_dispatch_in_flight(database: Databas
     )
 
 
-@pytest.mark.database
 async def test_stopping_a_bot_this_run_does_not_run_reports_so(database: Database) -> None:
     persistence, _record, loaded = await _stored_bot(database)
     run = runtime(
@@ -691,7 +661,6 @@ async def test_stopping_a_bot_this_run_does_not_run_reports_so(database: Databas
     await run.bots.stop()
 
 
-@pytest.mark.database
 async def test_stopping_one_bot_leaves_the_others_running(database: Database) -> None:
     persistence, record, _loaded = await _stored_bot(database)
     entities = EntityRepository(database=database)
@@ -732,7 +701,6 @@ async def test_stopping_one_bot_leaves_the_others_running(database: Database) ->
 # --- 5.1-5.3 `reconcile_bots` (design D7, bot-runtime) ----------------------
 
 
-@pytest.mark.database
 async def test_a_disabled_bot_is_not_started_and_states_the_reason(database: Database) -> None:
     """5.2: the same reason startup states, unchanged by reconcile."""
     persistence, _record, _loaded = await _stored_bot(database, enabled=False)
@@ -746,7 +714,6 @@ async def test_a_disabled_bot_is_not_started_and_states_the_reason(database: Dat
     assert run.bots.workers == []
 
 
-@pytest.mark.database
 async def test_a_bot_created_from_the_command_line_is_run_within_the_reread(
     database: Database,
 ) -> None:
@@ -762,7 +729,6 @@ async def test_a_bot_created_from_the_command_line_is_run_within_the_reread(
     assert [worker.record.id for worker in run.bots] == [record.id]
 
 
-@pytest.mark.database
 async def test_the_entity_arriving_after_the_bot_is_then_run(database: Database) -> None:
     """5.1: a bot created on an entity this run does not yet hold is run once
     that entity is adopted — order does not matter, only the end state."""
@@ -777,7 +743,6 @@ async def test_the_entity_arriving_after_the_bot_is_then_run(database: Database)
     assert [worker.record.id for worker in run.bots] == [record.id]
 
 
-@pytest.mark.database
 async def test_an_observing_bot_started_mid_run_touches_no_radio(database: Database) -> None:
     """5.2: dispatches to its driver and touches no radio, exactly as one
     started at startup does — `_run_bot` is reused unchanged, so the
@@ -794,7 +759,6 @@ async def test_an_observing_bot_started_mid_run_touches_no_radio(database: Datab
     assert str(worker.mode) == "observe"
 
 
-@pytest.mark.database
 async def test_starting_a_bot_mid_run_leaves_the_others_running_state_untouched(
     database: Database,
 ) -> None:
@@ -841,7 +805,6 @@ async def test_starting_a_bot_mid_run_leaves_the_others_running_state_untouched(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_a_bot_stopped_by_a_disable_keeps_its_durable_state(database: Database) -> None:
     """5.3: disabled mid-run, its durable state survives, and enabling it
     again resumes from that state rather than starting over."""

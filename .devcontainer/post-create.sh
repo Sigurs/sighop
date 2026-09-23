@@ -32,9 +32,15 @@ printf '\n  python   %s\n  uv       %s\n  openspec %s\n  claude   %s\n\n' \
 
 cat <<'EOF'
 The database is external: nothing here sets DATABASE_URL. Load the checkout's
-own .env.dev the way the host does, for example
+own .env.dev the way the host does. sighop takes no arguments, so the rest of
+its settings go in the environment too, for example
 
-    uv run --env-file .env.dev sighop run --device /dev/modem-1 --web
+    SIGHOP_MODEM=/dev/modem-1 SIGHOP_WEB_HOST=0.0.0.0 \
+      SIGHOP_WEB_ALLOWED_HOSTS=localhost:8080 uv run --env-file .env.dev sighop
+
+The test suite needs that database as well — it refuses to run without one:
+
+    uv run --env-file .env.dev pytest
 
 The context engine works in here: the host's index and memory are mounted, and
 embedding and summarisation go to the host's Ollama. Indexing stays on the host.

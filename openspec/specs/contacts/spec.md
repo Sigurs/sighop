@@ -70,20 +70,18 @@ one contact.
 - **WHEN** a peer reference matches more than one contact
 - **THEN** selection fails with an error naming every match, and no message is composed
 
-### Requirement: The contact store is durable when a database is configured
-The system SHALL persist contacts when a database is configured, restoring them at startup so a
-peer heard on an earlier run is addressable without hearing its advert again, and SHALL hold
-contacts in memory only when no database is configured. The system SHALL state at startup which
-of the two is in force and how many contacts were restored, so an operator is never left to
-assume durability.
+### Requirement: The contact store is durable
+The system SHALL persist contacts, restoring them at startup so a peer heard on an earlier run is
+addressable without hearing its advert again. The system SHALL state at startup how many contacts
+were restored, so an operator is never left to assume durability.
 
-#### Scenario: Restart with a database configured
+#### Scenario: Restart with stored contacts
 - **WHEN** the runtime is restarted with a database holding contacts
 - **THEN** those contacts are available before any traffic arrives, the startup output reports how many were restored, and a peer among them resolves by name or key prefix immediately
 
-#### Scenario: Restart with no database configured
-- **WHEN** the runtime is restarted with no database configured
-- **THEN** the contact store is empty and the startup output says that contacts do not survive the process
+#### Scenario: Restart with an empty store
+- **WHEN** the runtime is restarted with a database holding no contacts
+- **THEN** the startup output reports that none were restored, distinctly from having heard nothing yet
 
 ### Requirement: A verified advert is persisted as it is observed
 The system SHALL write a created or updated contact to the database at the point the advert is
@@ -200,4 +198,3 @@ same observation, and SHALL NOT prevent later observations from being processed.
 #### Scenario: A slow listener
 - **WHEN** a listener returns without completing work of its own
 - **THEN** the store's own path is unaffected, because the listener is not the place where a subscriber's work is done
-

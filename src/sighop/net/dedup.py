@@ -27,24 +27,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import blake2b
 
+from sighop.config import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS
 from sighop.net.rx import RxRecord
-
-DEFAULT_TTL_SECONDS = 300.0
-"""TTL is the correctness bound (design D11), and the live evidence bounds it
-from both sides. Most repeats arrive within a second, but the 2 h 54 min session
-on 2026-09-04 saw a flood copy arrive **200.7 s** late by a different path, so a
-shorter TTL discards real duplicates. The same session also saw two byte-identical
-DIRECT frames **3158 s** apart — a sender retransmitting an unacked message, not
-a copy of one transmission — so a longer TTL starts swallowing retries the user
-is entitled to see. Five minutes sits between those, at 1.5x margin over the
-worst real duplicate. Do not re-derive it from a capture shorter than the TTL
-itself: the 442-frame corpus put the worst case at 31.1 s and was simply too
-short to sample the tail."""
-
-DEFAULT_MAX_ENTRIES = 4096
-"""The memory bound. Repetition rate is not a property of the mesh (41.6% over
-the milestone 0 nights, 11.0% over milestone 2's), so nothing about observed
-traffic bounds the distinct-packet count and the cap has to."""
 
 KEY_BYTES = 16
 

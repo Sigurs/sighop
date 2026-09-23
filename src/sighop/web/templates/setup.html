@@ -45,10 +45,10 @@
     <p class="note">
       The setup code is printed in this run's output when it starts
       (<span class="mono">docker compose logs sighop</span> under compose), and a
-      restart prints a new one. An account can instead be added from a terminal
-      on the host with <span class="mono">sighop web user add &lt;username&gt;</span>.
-      This interface is served over plain HTTP: off this machine, reach it
-      through a tunnel.
+      restart prints a new one. The account created here is the only one there
+      will be: sighop has no way to add another or change its password at
+      present. This interface is served over plain HTTP: off this machine, reach
+      it through a tunnel.
     </p>
   </main>
 </body>

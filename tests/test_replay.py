@@ -9,28 +9,27 @@ from __future__ import annotations
 import asyncio
 import json
 
-from sighop.radio.capture import CAPTURE_META_KIND, CaptureRun
+import pytest
+
+from sighop.radio.capture import CAPTURE_META_KIND
 from sighop.radio.modem import RxEvent, RxMeta, UnparsedEvent
 from sighop.radio.replay import CaptureReplay
-from tests.test_capture import StubModem, probe_result, run_until_stopped
+from tests.test_capture import StubModem, capture, probe_result
 
 
 def write(path, *records) -> None:
     path.write_text("".join(json.dumps(record) + "\n" for record in records))
 
 
-async def test_a_capture_run_round_trips_through_replay(tmp_path):
-    """Write with `CaptureRun`, read back with `CaptureReplay`, compare."""
+async def test_a_capture_round_trips_through_replay(tmp_path):
+    """Write with `CaptureWriter`, read back with `CaptureReplay`, compare."""
     written = [
         RxEvent(packet=b"\xab\xcd", rx_meta=RxMeta(snr_db=2.0, rssi_dbm=-90)),
         RxEvent(packet=b"\x01", rx_meta=None),
         UnparsedEvent(raw=b"\xde\xad", reason="dangling escape byte at end of frame"),
     ]
     out_path = tmp_path / "capture.jsonl"
-    run = CaptureRun(
-        StubModem(written), out_path, probe_result=probe_result(), heartbeat_interval=1000
-    )
-    await run_until_stopped(run, delay=0.05)
+    await capture(StubModem(written), out_path, seconds=0.05, probe=probe_result())
 
     replay = CaptureReplay.open(out_path)
     replayed = [event async for event in replay.events()]
@@ -201,3 +200,73 @@ async def test_replay_does_not_pace_itself(tmp_path):
 
     assert len(events) == 2
     assert loop.time() - start < 1.0
+
+
+# --- The parity harness: `python -m sighop.replay` (`capture-replay`) ---------
+
+
+def test_the_harness_renders_a_committed_capture_and_exits_zero(capsys) -> None:
+    from sighop.replay import main
+    from tests.protocol.corpus import CAPTURES_DIR
+
+    assert main([str(CAPTURES_DIR / "2026-09-04-03.jsonl")]) == 0
+    printed = capsys.readouterr().out
+    assert printed.startswith("replaying ")
+    assert "\n-- frames=" in printed
+
+
+@pytest.mark.parametrize("argv", [[], ["one.jsonl", "two.jsonl"]])
+def test_the_harness_takes_exactly_one_capture_path(argv: list[str], capsys) -> None:
+    from sighop.replay import main
+
+    assert main(argv) == 2
+    captured = capsys.readouterr()
+    assert "exactly one capture path" in captured.err
+    assert captured.out == ""
+
+
+def test_a_malformed_line_is_reported_and_the_rest_still_renders(tmp_path, capsys) -> None:
+    from sighop.replay import main
+
+    path = tmp_path / "capture.jsonl"
+    write(
+        path,
+        {"ts": "2026-09-04T12:00:00+00:00", "kind": "rx_frame", "raw_hex": "1200", "rx_meta": None},
+    )
+    with path.open("a") as file:
+        file.write("{not json\n")
+
+    assert main([str(path)]) == 1
+    captured = capsys.readouterr()
+    assert "unreadable capture line 2: invalid JSON" in captured.err
+    assert "-- frames=1 " in captured.out
+
+
+def test_the_harness_needs_no_database(monkeypatch, capsys) -> None:
+    """It is not a node: with no database anywhere, it still renders."""
+    from sighop.replay import main
+    from tests.protocol.corpus import CAPTURES_DIR
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("SIGHOP_TEST_DATABASE_URL", raising=False)
+    assert main([str(CAPTURES_DIR / "2026-09-04-03.jsonl")]) == 0
+
+
+def test_the_harness_reads_the_radio_from_the_capture_header() -> None:
+    from sighop.replay import replay_radio
+    from tests.protocol.corpus import CAPTURES_DIR
+
+    replay = CaptureReplay.open(CAPTURES_DIR / "2026-09-04-03.jsonl")
+    radio = replay_radio(replay.provenance)
+
+    assert radio is not None
+    assert radio.sf == 8
+    assert radio.bw_hz == 62_500
+
+
+def test_a_headerless_capture_reports_no_radio_rather_than_a_guess(tmp_path) -> None:
+    from sighop.replay import replay_radio
+
+    path = tmp_path / "capture.jsonl"
+    write(path, {"ts": "2026-09-04T12:00:00+00:00", "kind": "rx_frame", "raw_hex": "1200"})
+    assert replay_radio(CaptureReplay.open(path).provenance) is None

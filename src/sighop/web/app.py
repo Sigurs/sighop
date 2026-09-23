@@ -47,6 +47,13 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from sighop.config import (
+    DEFAULT_WEB_HOST,
+    DEFAULT_WEB_PORT,
+    WEB_ALLOWED_HOSTS_VARIABLE,
+    WEB_HOST_VARIABLE,
+    WEB_PORT_VARIABLE,
+)
 from sighop.db.engine import Succeeded
 from sighop.logging import Logger, get_logger
 from sighop.web.auth import Authenticator
@@ -69,13 +76,6 @@ FEED_SEND_TIMEOUT_SECONDS = 10.0
 closed. A browser that has stopped reading fills its socket buffer and then
 never drains; without a bound here, that connection would hold a task for the
 life of the process (`web-dashboard`: "the connection is eventually closed")."""
-
-DEFAULT_WEB_HOST = "127.0.0.1"
-"""Loopback, and it is the default because the panel is served over plain HTTP:
-off loopback, passwords and session cookies cross the network unencrypted. An
-operator may choose otherwise; the choice is announced (`web-server`)."""
-
-DEFAULT_WEB_PORT = 8080
 
 SHUTDOWN_GRACE_SECONDS = 5.0
 """How long in-flight requests have to finish once the run is stopping. Bounded
@@ -299,13 +299,12 @@ async def _paint_history(
 
     With a database that cannot be read the feed starts empty and says that only
     live records are shown, rather than looking like a mesh that has been quiet
-    (`web-dashboard`). A served panel always has a database (milestone 9), so
-    there is no separate "none configured" wording to keep.
+    (`web-dashboard`). A database is required, so there is no "none configured"
+    wording to keep.
     """
-    persistence = state.persistence
     rows: list[dict[str, object]] = []
     note = ""
-    recent = None if persistence is None else await persistence.packet_log.recent()
+    recent = await state.persistence.packet_log.recent()
     if isinstance(recent, Succeeded):
         rows = [logged_packet(row) for row in recent.value]
     else:
@@ -385,7 +384,7 @@ class WebInterface:
     first-run setup is pending (web-first-run-setup design D1)."""
 
     extra_hosts: tuple[str, ...] = ()
-    """`--web-allowed-host` values, validated. Added to, never replacing, the
+    """`SIGHOP_WEB_ALLOWED_HOSTS` entries, validated. Added to, never replacing, the
     host names the bound address implies (design D10)."""
 
     announce: Callable[[str], None] | None = None
@@ -630,8 +629,7 @@ def _bind_message(host: str, port: int, exc: OSError) -> str:
     }.get(exc.errno or 0, str(exc))
     return (
         f"the web interface could not listen on {host}:{port}: {reason}. "
-        "Choose another address or port with --web-host/--web-port, or run "
-        "without --web"
+        f"Choose another address or port with {WEB_HOST_VARIABLE}/{WEB_PORT_VARIABLE}"
     )
 
 
@@ -640,7 +638,7 @@ def allowed_hosts(host: str, port: int, *, extra: Iterable[str] = ()) -> frozens
 
     Milestone 8's rebinding defence is built on this set; it is computed here,
     beside the bind, because it is a fact about what was bound rather than a
-    policy a request handler gets to decide. `extra` is `--web-allowed-host`,
+    policy a request handler gets to decide. `extra` is `SIGHOP_WEB_ALLOWED_HOSTS`,
     already validated: a bare name is added with and without the bound port,
     and a `name:port` exactly as given. It extends the set and never replaces it.
     """
@@ -657,23 +655,18 @@ def allowed_hosts(host: str, port: int, *, extra: Iterable[str] = ()) -> frozens
     return frozenset(values)
 
 
-NO_DATABASE_FOR_WEB = (
-    "the web interface's accounts are stored in the database, and no database is "
-    "configured: set DATABASE_URL or pass --database-url, "
-    "or run without --web. Nothing was received or transmitted"
-)
-
 NO_ENABLED_ACCOUNT = (
     "the database holds web accounts but none of them is enabled, so nobody could "
-    "sign in to the interface: enable one with `sighop web user enable <username>` "
-    "or add one with `sighop web user add <username>`, or run without --web. "
+    "sign in to the interface. sighop has no account management of its own at "
+    "present, so re-enable one in the database directly: "
+    "UPDATE web_user SET enabled = true WHERE username = '<username>'. "
     "First-run setup is offered only when no account exists at all. No port was "
     "listened on"
 )
 
 
 def validate_allowed_hosts(values: Iterable[str]) -> tuple[str, ...]:
-    """`--web-allowed-host` values, or a startup failure naming the bad one.
+    """`SIGHOP_WEB_ALLOWED_HOSTS` entries, or a startup failure naming the bad one.
 
     A name, or `name:port`, or a bracketed IPv6 literal with an optional port.
     Refused: empty, anything containing `*`, a scheme, a path, a query, userinfo
@@ -703,7 +696,8 @@ def validate_allowed_hosts(values: Iterable[str]) -> tuple[str, ...]:
             problem = "the port must be a number"
         if problem is not None:
             raise WebStartupError(
-                f"--web-allowed-host {raw!r} is refused: {problem}. No port was listened on"
+                f"{WEB_ALLOWED_HOSTS_VARIABLE} entry {raw!r} is refused: {problem}. "
+                "No port was listened on"
             )
         if value not in accepted:
             accepted.append(value)

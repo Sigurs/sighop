@@ -54,7 +54,6 @@ async def _entity(
 # --- 2.1 Creation, and the two refusals -------------------------------------
 
 
-@pytest.mark.database
 async def test_a_bot_is_created_enabled_and_observing_and_names_its_identity(
     database: Database,
 ) -> None:
@@ -77,7 +76,6 @@ async def test_a_bot_is_created_enabled_and_observing_and_names_its_identity(
     assert [record.entity_name for record in listed.value] == ["greeter-bot"]
 
 
-@pytest.mark.database
 async def test_a_second_bot_on_one_identity_is_refused_naming_what_holds_it(
     database: Database,
 ) -> None:
@@ -92,7 +90,6 @@ async def test_a_second_bot_on_one_identity_is_refused_naming_what_holds_it(
     assert "one role" in str(excinfo.value)
 
 
-@pytest.mark.database
 async def test_a_bot_on_a_room_servers_identity_is_refused_naming_the_room(
     database: Database,
 ) -> None:
@@ -112,7 +109,6 @@ async def test_a_bot_on_a_room_servers_identity_is_refused_naming_the_room(
     assert "one role" in str(excinfo.value)
 
 
-@pytest.mark.database
 async def test_enablement_mode_and_configuration_are_each_settable(
     database: Database,
 ) -> None:
@@ -136,7 +132,6 @@ async def test_enablement_mode_and_configuration_are_each_settable(
     assert found.value.config == {"max_hops": 3}
 
 
-@pytest.mark.database
 async def test_an_unknown_name_is_absence_rather_than_an_error(database: Database) -> None:
     found = await BotRepository(database=database).get_by_name("nobody")
     assert isinstance(found, Succeeded)
@@ -146,7 +141,6 @@ async def test_an_unknown_name_is_absence_rather_than_an_error(database: Databas
 # --- 2.2 State, written straight through ------------------------------------
 
 
-@pytest.mark.database
 async def test_state_is_written_read_listed_and_deleted_per_bot(database: Database) -> None:
     bots = BotRepository(database=database)
     state = BotStateRepository(database=database)
@@ -178,7 +172,6 @@ async def test_state_is_written_read_listed_and_deleted_per_bot(database: Databa
     assert isinstance(still, Succeeded) and still.value == {"outcome": "observed"}
 
 
-@pytest.mark.database
 async def test_clearing_state_reports_how_many_keys_went(database: Database) -> None:
     bots = BotRepository(database=database)
     state = BotStateRepository(database=database)
@@ -226,7 +219,6 @@ async def test_a_read_that_failed_is_not_reported_as_absence_in_the_counters() -
 # --- Deleting a bot ----------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_deleting_a_bot_takes_its_durable_state(database: Database) -> None:
     """`bot_state.bot_id` cascades, silently — hence the count before asking."""
     bots = BotRepository(database=database)
@@ -246,7 +238,6 @@ async def test_deleting_a_bot_takes_its_durable_state(database: Database) -> Non
     assert (await state.list(created.value.id)).value == {}
 
 
-@pytest.mark.database
 async def test_deleting_a_bot_leaves_its_identity_stored_and_unbound(
     database: Database,
 ) -> None:
@@ -264,7 +255,6 @@ async def test_deleting_a_bot_leaves_its_identity_stored_and_unbound(
     assert (await entities.bound_to(entity_id)).value == []
 
 
-@pytest.mark.database
 async def test_an_identity_can_carry_a_new_bot_after_the_old_one_is_deleted(
     database: Database,
 ) -> None:
@@ -279,7 +269,6 @@ async def test_an_identity_can_carry_a_new_bot_after_the_old_one_is_deleted(
     assert isinstance(again, Succeeded)
 
 
-@pytest.mark.database
 async def test_deleting_a_bot_that_does_not_exist_reports_so(database: Database) -> None:
     deleted = await BotRepository(database=database).delete(uuid.uuid4())
     assert isinstance(deleted, Succeeded)

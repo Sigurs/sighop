@@ -1442,8 +1442,11 @@ pre-shared key.
 
 **As built in milestone 9** — `Dockerfile`, `.dockerignore`, `compose.yaml`, `build.sh` —
 with the compose file reduced to one service against an external database by change
-`compose-external-database`. The paragraphs after this list are the original intent; where
-the build departs from them it says so here.
+`compose-external-database`, and the command line removed by change
+`require-database-web-drop-cli`: `sighop` is now an entry point that takes no arguments,
+reads every setting from the environment, requires a database and always serves the web
+interface. The paragraphs after this list are the original intent; where the build departs
+from them it says so here.
 
 - **The image.** Two stages on the same digest-pinned `python:3.13-alpine` (musl), `uv`
   copied from a pinned `ghcr.io/astral-sh/uv` image. `uv sync --locked --no-dev
@@ -1454,18 +1457,19 @@ the build departs from them it says so here.
   `/app/.venv`, `alembic/` and `alembic.ini` — one `COPY` of `/app`, byte-compiled and
   `chmod -R a+rX` in the build stage, no `RUN` — sets `SIGHOP_ALEMBIC_DIR`, `PATH`,
   `PYTHONDONTWRITEBYTECODE`, `PYTHONUNBUFFERED`, **no `USER`**,
-  `ENTRYPOINT ["sighop"]`, `CMD ["--help"]`, OCI version/revision labels and
+  `ENTRYPOINT ["sighop"]` with no `CMD` (the node takes no arguments), OCI version/revision labels and
   `SIGHOP_COMMIT_HASH` from build arguments — so every event from a container names its
   build (verified: `"version": "0.1.0", "commit_hash": …`). The image adds no compiler, no
   `uv` and no package installer to its base, and no `tests/`, `captures/`, `keys/`, `.env*` or `.git` — `.dockerignore` is an allowlist
   (`*`, then `!src !alembic !alembic.ini !pyproject.toml !uv.lock`), so nothing arrives by
-  someone forgetting to list it. `sighop db current` works from the image alone.
+  someone forgetting to list it. The migration chain is in the image, so starting it
+  against a database behind the code migrates that database with no checkout mounted.
 - **Alpine, not slim.** Built first on `python:3.13-slim-trixie` (307 MB, 56 HIGH/CRITICAL
   Debian-package findings), then switched by operator decision to `python:3.13-alpine`
   (200 MB, 7 HIGH, all `libuuid`, no CRITICAL). Every native dependency ships a musl wheel,
   so nothing compiles. The test suite runs on glibc, so `build.sh` has a `replay` gate that
-  replays every committed capture on the host and inside the image and requires identical
-  output. **Nothing the base ships is deleted.** An earlier version removed `pip` and `apk`
+  renders every committed capture with `python -m sighop.replay` on the host and inside the
+  image and requires identical output. **Nothing the base ships is deleted.** An earlier version removed `pip` and `apk`
   in the final stage: that saves no bytes, since they stay in the base layers, and it hides
   them from the scan while still shipping them — removing `/lib/apk/db` too made the scan
   report zero OS findings, a blind scan that looked clean. The base's `pip` and `apk` stay,
@@ -1488,25 +1492,28 @@ the build departs from them it says so here.
   `no-new-privileges`, `init: true` (signal forwarding: `docker compose stop` is the same
   graceful stop as Ctrl-C, exit 0), `restart: unless-stopped`, `stop_grace_period: 20s`,
   `json-file` log rotation. The panel is published on
-  `${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}`, with `--web-allowed-host`
-  `localhost` and `127.0.0.1` on the *published* port — the one a browser's `Host` header
-  carries; milestone 9 hardcoded `:8080` there, which broke whenever `SIGHOP_WEB_PORT` was
-  set — plus `${SIGHOP_WEB_ALLOWED_HOST}` for one more name, such as a reverse proxy's.
-  Compose cannot drop an argument whose variable is unset, so that third flag defaults to
-  `localhost:<port>` and `validate_allowed_hosts` discards the duplicate: the defaults answer
-  to exactly the loopback pair, as before. A comma-separated list would have needed `sighop`
-  to parse it, and one name covers a proxy. Inside the container the panel binds `0.0.0.0`,
+  `${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}`, with `SIGHOP_WEB_ALLOWED_HOSTS`
+  naming `localhost` and `127.0.0.1` on the *published* port — the one a browser's `Host`
+  header carries; milestone 9 hardcoded `:8080` there, which broke whenever
+  `SIGHOP_WEB_PORT` was set — plus `${SIGHOP_WEB_ALLOWED_HOST}` for one more name, such as a
+  reverse proxy's. The list is comma-separated, because an environment variable cannot
+  repeat the way the `--web-allowed-host` flag it replaced could. Compose cannot drop an
+  entry whose variable is unset, so the third defaults to `localhost:<port>` and
+  `validate_allowed_hosts` discards the duplicate: the defaults answer to exactly the
+  loopback pair, as before. The service has no `command:`; every setting is in
+  `environment:`. Inside the container the panel binds `0.0.0.0`,
   so the plain-HTTP warning always prints there — correctly, since whether the published
   port is host loopback is compose's decision, not something the process can see.
   `UID`, `GID`, `DIALOUT_GID` and `SIGHOP_MODEM` are `${VAR:?reason}`: compose refuses to
   start and names the missing one.
-- **One service, and migration on start** (operator decisions). `sighop` starts with
-  `run --migrate`, which applies outstanding migrations before the schema-version check and
-  emits `database_migrated` with the revision before and after. Only a database *behind* is
-  moved; one ahead of the image is refused as anywhere else, so restarting an older image
-  after a newer one migrated still fails loudly. A plain `run` outside compose still refuses.
-  This replaced a separate `migrate` service under a profile, judged too complicated for a
-  single-container deployment where starting the new image *is* the deploy.
+- **One service, and migration on start** (operator decisions). Starting `sighop` applies
+  outstanding migrations before the schema-version check and emits `database_migrated` with
+  the revision before and after — unconditionally, in and out of a container, since change
+  `require-database-web-drop-cli` removed the `--migrate` opt-in along with every other flag.
+  Only a database *behind* is moved; one ahead of the image is refused as anywhere else, so
+  restarting an older image after a newer one migrated still fails loudly. This replaced a
+  separate `migrate` service under a profile, judged too complicated for a single-container
+  deployment where starting the new image *is* the deploy.
 - **The database is external, on every host** (change `compose-external-database`,
   operator decision). Milestone 9 shipped a digest-pinned `postgres:17-trixie` beside
   `sighop` on an `internal: true` network with a named volume and a `pg_isready`
@@ -1526,10 +1533,12 @@ the build departs from them it says so here.
   `.env.dev` keeps its role for `uv run --env-file`, so a development host repeats the two
   lines. The values are visible to `docker inspect`, i.e. to the `docker` group, which is
   root-equivalent anyway.
-  The first account is created through first-run setup at `http://localhost:8080/setup`,
-  with the code from `docker compose logs sighop`, or with `docker compose run --rm -it
-  sighop web user add <name>`; further accounts only the latter way. Either way the password
-  never touches the compose file, the environment or shell history.
+  The account is created through first-run setup at `http://localhost:8080/setup`, with the
+  code from `docker compose logs sighop`, and the password never touches the compose file,
+  the environment or shell history. **It is the only account**: the `web user` commands that
+  added more, changed a password or disabled one went with the command line, and nothing
+  replaces them yet (change `require-database-web-drop-cli`, an accepted loss to be closed by
+  a follow-up that adds account management to the panel).
 - **Outbound HTTPS to webhook hosts.** The container needs to reach whatever hosts the
   operator's webhooks name (Discord, an n8n instance, Home Assistant); nothing inbound is
   added. The default bridge already routes there; a host with egress filtering has to allow
@@ -1541,9 +1550,12 @@ the build departs from them it says so here.
   error exits, and `restart` handles that.
 - **`build.sh`** runs `lock` (`uv lock --check`), `lint`, `types`, `test`, `image`,
   `smoke`, `replay` and `scan`, stopping at the first failure and naming it. `smoke` starts the image
-  as UID 52037 on a read-only root with every capability dropped and no network, for
-  `--help` and `run --help` — `cli.py` imports the web application at module level, so that
-  proves the whole application imports as a stranger. `scan` feeds a `docker save` tarball
+  as UID 52037 on a read-only root with every capability dropped and no network, twice: once
+  to import the whole application (`sighop.boot`, `sighop.web.app`, `sighop.runtime`,
+  `sighop.replay`) as a stranger, and once running the real entry point with an empty
+  environment, which must exit non-zero naming how to generate `SIGHOP_SECRET_KEY`. `test`
+  needs a database — the suite refuses to run without one — named by
+  `SIGHOP_TEST_DATABASE_URL` or `DATABASE_URL`, or failing both by the gitignored `.env.dev`. `scan` feeds a `docker save` tarball
   to a digest-pinned `aquasec/trivy` container — never the Docker socket, which would hand a
   third-party image root on the host — and **prints** every HIGH/CRITICAL finding, fixed or
   not, without failing the build; only a scan that cannot run fails the gate. That is an
@@ -1560,7 +1572,10 @@ the build departs from them it says so here.
   `<commit12>-<YYYYMMDD>-<HHMMSS>` (UTC), posts the tag and digest to Discord through the
   `notify-discord` action in `Sigurs/container-rebuilds`, and deletes all but the newest
   three package versions — one push being one version is why attestations are off. Every
-  action is pinned to a commit. One pitfall found while
+  action is pinned to a commit. The job runs a digest-pinned `postgres` service beside the
+  build, on `TZ=Europe/Helsinki`, and names it in `SIGHOP_TEST_DATABASE_URL`: the test gate
+  refuses to run without a database, and one test proves timestamps survive a server whose
+  `TimeZone` is not UTC. One pitfall found while
   building it: `set -e` does not apply inside a function run as an `if` condition, so every
   step in a gate ends in `|| return 1` — without that, the smoke gate passed an image that
   failed to start.
@@ -1603,8 +1618,9 @@ before it stops opening**: the ciphertext holds a 32-byte seed, which is no long
 this system reads (§6, change `create-entity-with-known-key`). Nothing is deleted — the rows
 and any keyfiles stay exactly as they are — but a run will refuse the identities it finds.
 
-**Step 1 happens before the upgrade and cannot be done afterwards.** On the *current* build,
-`sighop keys export` every identity worth keeping. What that writes is a version 1 keyfile
+**Step 1 happens before the upgrade and cannot be done afterwards.** On the *current* build
+— one old enough to still have the command line — `sighop keys export` every identity worth
+keeping. What that writes is a version 1 keyfile
 holding a seed, which the new build will not read; save it anyway, because step 3 needs it.
 
 **Step 2, deploy.** `0008` runs without `SIGHOP_SECRET_KEY` — it reads no key material — and
@@ -1612,9 +1628,10 @@ reports how many rows it strands. Expect that to be every row that existed.
 
 **Step 3, carry each identity forward.** Expand its saved seed into a private key *outside
 sighop*: `sha512(seed)`, then `[0] &= 248; [31] &= 63; [31] |= 64`. Feed the resulting 128
-hex characters to `sighop keys import --private-key`. The public key and node hash come out
-unchanged, so no peer has to be told anything and no contact list needs editing. The
-stranded row holds that public key, so remove it first with `sighop keys delete`.
+hex characters to the panel's create-identity form, in its private key field. The public key
+and node hash come out unchanged, so no peer has to be told anything and no contact list
+needs editing. The stranded row holds that public key, so remove it first from the
+identity's page in the panel, which needs no secret to remove a row it cannot open.
 
 That expansion is deliberately not a command. An operator performing it once, knowingly, on
 material they already hold is a different thing from this system reading seeds — which it
@@ -1640,10 +1657,14 @@ sighop/
 │   │                   contacts.py, dm.py (direct messages, both directions),
 │   │                   room.py (the room server), acks.py, pathbodies.py,
 │   │                   channels.py (channel set, receive, post, repeat registry)
-│   ├── monitor/        render.py (pure formatting), run.py (`sighop monitor`)
-│   ├── keystore.py     entity keyfiles (`sighop keys`) — file I/O, so not
-│   │                   under protocol/
-│   ├── runtime.py      the whole pipeline wired together (`sighop run`)
+│   ├── monitor/        render.py (pure formatting of the node's own output)
+│   ├── keystore.py     entity keyfile documents (the panel's import and export) —
+│   │                   file formats, so not under protocol/
+│   ├── runtime.py      the whole pipeline wired together
+│   ├── boot.py         the entry point: environment check, migrations,
+│   │                   persistence, panel, run — takes no arguments
+│   ├── replay.py       `python -m sighop.replay <capture>`, the build's parity
+│   │                   harness — not a command line, and not a node
 │   ├── bots/           base.py (the Bot protocol and BotContext),
 │   │                   runtime.py (dispatch, limits, mode, state),
 │   │                   drivers.py (the registry), greeter.py
@@ -1673,16 +1694,18 @@ sighop/
 │   │                   routes/ (session.py: sign-in and sign-out), templates/,
 │   │                   static/ (vendored htmx, no bundler)
 │   ├── logging.py      structlog config, wide-event helpers
-│   ├── config.py       DATABASE_URL and SIGHOP_SECRET_KEY from the environment,
-│   │                   validated and password-redacted. No dotenv dependency: `uv run
-│   │                   --env-file` and compose already read the file
-│   └── cli.py
+│   └── config.py       every setting, from the environment and nowhere else —
+│                       validated, password-redacted, every problem reported at
+│                       once. No dotenv dependency: `uv run --env-file` and
+│                       compose already read the file
 ├── alembic/            async env.py (design D1) and one migration per milestone
 ├── alembic.ini         no URL in it — config.py is the single source
 ├── tests/
-├── compose.yaml        sighop (run --migrate), external DATABASE_URL
-├── build.sh            lock, lint, types, test, image, smoke, replay, scan (scan reports only)
-├── .github/workflows/  build.yml: build.sh on PRs; push, Discord, keep-3 on main
+├── compose.yaml        sighop, configured entirely in environment:, external DATABASE_URL
+├── build.sh            lock, lint, types, test (needs a database), image, smoke, replay,
+│                       scan (scan reports only)
+├── .github/workflows/  build.yml: build.sh on PRs, with a Postgres for the test gate;
+│                       push, Discord, keep-3 on main
 ├── Dockerfile          two stages, digest-pinned python:3.13-alpine, no USER
 ├── .dockerignore       an allowlist
 ├── .trivyignore        suppressions, each with its reason (none today)
@@ -1707,9 +1730,9 @@ correctness matters most. Since milestone 5 `db/` actually exists, so
 `sqlalchemy`, `asyncpg` and `alembic` as well as `sighop.db` — rather than relying on the
 package not being there to import. **`db/` is a peer of `net/`, not a layer beneath
 `protocol/`**: it may import from `net/`, and `net/contacts.py` and `net/paths.py` import
-no SQLAlchemy at all. Each takes an optional sink whose `offer` never awaits and never
-raises, which is what keeps the persistent path a thin adapter rather than a rewrite, and
-keeps every existing test running with no database.
+no SQLAlchemy at all. Each takes a sink whose `offer` never awaits and never raises, which
+is what keeps the persistent path a thin adapter rather than a rewrite. The node always
+passes one — a database is required — while a unit test of the store alone may pass none.
 
 `keystore.py` sits at the top level rather than in `protocol/` for the same reason: reading a
 keyfile is I/O, and `protocol/` has none. The document → identity step stays in
@@ -1734,13 +1757,13 @@ exist and now has no expected tenant at all (milestone 8, design D6).
 `web/` is the second renderer and inherits `monitor/`'s rule unchanged: `net/` never imports
 it, and nothing in it is on the reception path. It imports nothing from `runtime.py` and
 `runtime.py` imports nothing from it — the state a page reads is described by `Protocol`s in
-`web/state.py` that `Runtime` satisfies structurally, and `cli.py` is the only module in the
+`web/state.py` that `Runtime` satisfies structurally, and `boot.py` is the only module in the
 project that knows both sides (milestone 8, design D2).
 
 `bots/` never imports `monitor/`, for the same reason `net/` does not: it emits typed events
 and `monitor/render.py` turns one into a line. It imports no SQLAlchemy either — its storage
 seam is read-only-property `Protocol`s the way the room server's is, which is what keeps
-every dispatch, limit, mode and gate test runnable with no database configured.
+every dispatch, limit, mode and gate test a unit test over a stand-in store.
 
 `net/dm.py` handles inbound direct messages as a **bus subscriber**, never inside `net/rx.py`.
 Decryption needs local keys and a contact table; the decode stage stays a pure function of one
@@ -1751,7 +1774,8 @@ does — through record sinks and a loader callable — so it imports nothing fr
 
 `radio/replay.py` is the inverse of `radio/capture.py` and lives beside it deliberately:
 it re-hydrates a capture file into the same event stream the modem produces, so the live
-decode path can be driven offline. `monitor/` is a separate top-level package rather than
+decode path can be driven offline — which is all `sighop/replay.py`, the build's parity
+harness, does with it. `monitor/` is a separate top-level package rather than
 part of `net/` because rendering is not networking — and keeping `render.py` a set of pure
 functions is what makes the output testable by string comparison.
 

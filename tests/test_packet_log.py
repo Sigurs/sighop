@@ -66,7 +66,6 @@ def _submission(entity_id: str = "stub-1") -> Submission:
 # --- 7.1 What a row carries -------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_batch_of_rx_and_tx_rows_is_written_and_read_back(
     database: Database, corpus_records: list[RxRecord]
 ) -> None:
@@ -151,7 +150,6 @@ def test_a_stored_entity_id_reaches_the_row_and_a_stub_id_does_not() -> None:
 # --- 7.2 An undecodable frame reaches the database --------------------------
 
 
-@pytest.mark.database
 async def test_a_malformed_frame_is_recorded_with_its_bytes_and_a_reason(
     database: Database,
 ) -> None:
@@ -207,7 +205,6 @@ async def test_a_slow_sink_leaves_the_reception_rate_alone_and_moves_the_counter
         await writer.stop()
 
 
-@pytest.mark.database
 async def test_a_failing_write_degrades_rather_than_blocks(database: Database) -> None:
     persistence = Persistence(database=database)
 
@@ -230,7 +227,6 @@ async def test_a_failing_write_degrades_rather_than_blocks(database: Database) -
 # --- 7.4 Pruning ------------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_table_already_over_the_cap_is_pruned_at_startup(
     database: Database,
 ) -> None:
@@ -261,7 +257,6 @@ async def test_a_table_already_over_the_cap_is_pruned_at_startup(
     assert remaining == [f"p{index}" for index in range(15, 25)], "the newest were pruned"
 
 
-@pytest.mark.database
 async def test_pruning_repeats_on_the_interval(database: Database) -> None:
     repository = PacketLogRepository(database=database, max_rows=5)
     passes = asyncio.Event()
@@ -283,7 +278,6 @@ async def test_pruning_repeats_on_the_interval(database: Database) -> None:
     assert pruner.passes >= 2
 
 
-@pytest.mark.database
 async def test_a_failed_pass_is_reported_and_the_next_one_still_runs(
     database: Database,
 ) -> None:
@@ -384,7 +378,6 @@ def _row(index: int, *, at: dt.datetime, **overrides: object) -> PacketLogRow:
     return PacketLogRow(**fields)  # type: ignore[arg-type]
 
 
-@pytest.mark.database
 async def test_the_recent_read_is_newest_first_and_capped(database: Database) -> None:
     """5.1: what the feed paints before the browser has heard anything live."""
     repository = PacketLogRepository(database=database)
@@ -398,7 +391,6 @@ async def test_the_recent_read_is_newest_first_and_capped(database: Database) ->
     assert [row.packet_id for row in recent.value] == ["pkt009", "pkt008", "pkt007"]
 
 
-@pytest.mark.database
 async def test_the_cap_is_not_the_callers_to_raise(database: Database) -> None:
     """5.1: a bound on a statement's cost that the caller could lift is not one."""
     repository = PacketLogRepository(database=database)
@@ -413,7 +405,6 @@ async def test_the_cap_is_not_the_callers_to_raise(database: Database) -> None:
     assert MAX_RECENT_PACKETS < 10_000_000
 
 
-@pytest.mark.database
 async def test_an_unparsed_frame_comes_back_with_its_bytes_and_its_reason(
     database: Database,
 ) -> None:

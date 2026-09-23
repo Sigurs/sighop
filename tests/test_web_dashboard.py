@@ -43,6 +43,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
@@ -102,7 +104,7 @@ def test_the_overview_shows_every_counter_against_a_stub_state() -> None:
     assert ">1<" in body, "the learned path count is not rendered"
     assert "duplicates dropped" in body
     assert "contacts" in body
-    assert "persistence off" in body
+    assert "persistence on" in body
 
 
 def test_the_queue_rows_name_the_priority_classes() -> None:

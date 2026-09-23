@@ -11,7 +11,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
 from sqlalchemy import text
 
 import sighop
@@ -91,7 +90,6 @@ def test_the_room_migration_records_what_now_exists_and_what_still_does_not() ->
 # --- 2.2 / 2.4 The migration against a real server --------------------------
 
 
-@pytest.mark.database
 async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
     database: Database, test_schema: str, database_url: str
 ) -> None:
@@ -147,7 +145,6 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
             assert not any("UNIQUE" in definition for definition in indexes)
 
 
-@pytest.mark.database
 async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     database_url: str,
 ) -> None:
@@ -192,7 +189,6 @@ async def _tables_in(url: str, schema: str) -> set[str]:
 # --- 9.1 / 9.2 / 9.4 The harness itself -------------------------------------
 
 
-@pytest.mark.database
 async def test_the_session_schema_is_named_for_the_prefix_and_carries_the_chain(
     test_schema: str, database_url: str
 ) -> None:
@@ -200,7 +196,6 @@ async def test_the_session_schema_is_named_for_the_prefix_and_carries_the_chain(
     assert await _tables_in(database_url, test_schema) >= set(TABLES)
 
 
-@pytest.mark.database
 async def test_a_stale_schema_is_dropped_at_session_start(
     database_url: str, test_schema: str
 ) -> None:
@@ -231,7 +226,6 @@ async def _schemas(url: str) -> set[str]:
         await connection.close()
 
 
-@pytest.mark.database
 def test_the_suite_stays_inside_the_roles_connection_budget(
     database_config: DatabaseConfig,
 ) -> None:
@@ -242,7 +236,6 @@ def test_the_suite_stays_inside_the_roles_connection_budget(
     assert database_config.max_connections * 2 < ROLE_CONNECTION_LIMIT
 
 
-@pytest.mark.database
 async def test_the_fixture_disposes_its_engine(database_config: DatabaseConfig) -> None:
     handle = Database(config=database_config)
     await handle.open()

@@ -1,10 +1,10 @@
-"""`sighop capture`: persist modem RX/unparsed events to a JSONL file.
+"""Persist modem RX/unparsed events to a JSONL capture file.
 
 One JSON object per line, appended and flushed immediately so a process
 interruption loses at most the in-flight record. See design.md's "Capture
 file format" decision for the record shape.
 
-A file this command creates begins with a `capture_meta` provenance record
+A capture file begins with a `capture_meta` provenance record
 built from the startup probe (DESIGN.md §12, design D6): the corpus outlives
 the session that recorded it, and a fixture whose recording conditions live
 only in someone's memory decays into an untrustworthy one. Values are what the
@@ -14,35 +14,14 @@ its reason, never as the configured value.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import datetime as dt
 import json
-import signal
-from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO
 
-from sighop.logging import Logger, commit_hash, get_logger, package_version
+from sighop.logging import commit_hash, package_version
 from sighop.radio.modem import ModemEvent, RxEvent
 from sighop.radio.probe import ProbeResult
-
-DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60.0
-
-
-class ModemSource(Protocol):
-    """The slice of `Modem` a capture needs: events, and what the board is.
-
-    `CaptureRun` never probes anything itself (design 3.4), so this is also
-    the whole of what a test has to stand in for.
-    """
-
-    reconnect_count: int
-    probe_result: ProbeResult | None
-    probe_ready: asyncio.Event
-
-    def events(self) -> AsyncIterator[ModemEvent]: ...
-
 
 CAPTURE_META_KIND = "capture_meta"
 
@@ -97,8 +76,8 @@ class CaptureWriter:
     rather than blocking matters: the frame loop must keep running for the
     probe's own responses to be routed at all.
 
-    `sighop monitor --capture` writes through this same writer, so the two
-    commands cannot drift into producing two dialects of one format.
+    The runtime writes its `SIGHOP_CAPTURE_FILE` through this same writer, so
+    every capture sighop produces is one dialect of one format.
     """
 
     def __init__(self, out_path: Path) -> None:
@@ -188,78 +167,3 @@ class CaptureWriter:
         assert self._file is not None, "call open() before writing"
         self._file.write(json.dumps(record) + "\n")
         self._file.flush()
-
-
-class CaptureRun:
-    """Drives a `Modem` and writes every event it produces to `out_path`,
-    until asked to stop (SIGINT/SIGTERM or `stop()`).
-
-    The probe result is taken from the modem once it is ready, or injected
-    directly — `CaptureRun` never probes anything itself, which is what keeps
-    it testable with no device in sight.
-    """
-
-    def __init__(
-        self,
-        modem: ModemSource,
-        out_path: Path,
-        *,
-        probe_result: ProbeResult | None = None,
-        heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-        logger: Logger | None = None,
-    ) -> None:
-        self._modem = modem
-        self._injected_probe_result = probe_result
-        self._heartbeat_interval = heartbeat_interval
-        self._logger = logger or get_logger(component="capture")
-        self._writer = CaptureWriter(out_path)
-        self._stop_event = asyncio.Event()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def install_signal_handlers(self) -> None:
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, self.stop)
-
-    async def run(self) -> None:
-        self._writer.open()
-        try:
-            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-            header_task = asyncio.create_task(self._start_writer())
-            consume_task = asyncio.create_task(self._consume())
-            stop_task = asyncio.create_task(self._stop_event.wait())
-            try:
-                await asyncio.wait((consume_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                for task in (consume_task, heartbeat_task, header_task, stop_task):
-                    if not task.done():
-                        task.cancel()
-                for task in (consume_task, heartbeat_task, header_task, stop_task):
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
-        finally:
-            self._writer.close()
-
-    async def _start_writer(self) -> None:
-        if self._injected_probe_result is not None:
-            self._writer.start(self._injected_probe_result)
-            return
-        await self._modem.probe_ready.wait()
-        self._writer.start(self._modem.probe_result)
-
-    async def _consume(self) -> None:
-        async for event in self._modem.events():
-            self._writer.write(event)
-
-    async def _heartbeat_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self._heartbeat_interval)
-            self._logger.info(
-                "capture_heartbeat",
-                rx_count=self._writer.rx_count,
-                unparsed_count=self._writer.unparsed_count,
-                reconnect_count=self._modem.reconnect_count,
-            )

@@ -48,6 +48,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 13, 12, 0, tzinfo=dt.UTC)
 SECRET = base64.b64decode(generate_secret_key())
@@ -500,7 +502,6 @@ async def _stored(persistence: Persistence, state: StubState, name: str, node_ty
     return stored.value, identity
 
 
-@pytest.mark.database
 async def test_a_served_room_links_to_its_identitys_adverts(database: Database) -> None:
     persistence = Persistence(database=database)
     state = _state(persistence=persistence, stub_names=())
@@ -527,7 +528,6 @@ async def test_a_served_room_links_to_its_identitys_adverts(database: Database) 
     assert body.count("/admin/advert/") == 2, "the unserved room offers advert links"
 
 
-@pytest.mark.database
 async def test_a_running_bot_links_to_its_identitys_adverts(database: Database) -> None:
     persistence = Persistence(database=database)
     state = _state(persistence=persistence, stub_names=())
@@ -581,7 +581,6 @@ def _kind_nonce(body: str, field: str) -> str:
     return body[start : body.index('"', start)]
 
 
-@pytest.mark.database
 async def test_the_rename_form_states_the_mesh_consequence_and_offers_both_adverts(
     database: Database,
 ) -> None:
@@ -601,7 +600,6 @@ async def test_the_rename_form_states_the_mesh_consequence_and_offers_both_adver
     assert 'type="password"' not in body, "a rename asked for a password"
 
 
-@pytest.mark.database
 async def test_renaming_with_no_advert_transmits_nothing(database: Database) -> None:
     persistence = Persistence(database=database)
     state = _state(persistence=persistence)
@@ -622,7 +620,6 @@ async def test_renaming_with_no_advert_transmits_nothing(database: Database) -> 
     assert [row.name for row in listed.value] == ["dev-room-2"]
 
 
-@pytest.mark.database
 async def test_renaming_with_a_flood_advert_sends_the_new_name(database: Database) -> None:
     persistence = Persistence(database=database)
     state = _state(persistence=persistence)
@@ -651,7 +648,6 @@ async def test_renaming_with_a_flood_advert_sends_the_new_name(database: Databas
     assert said, "a successful advert was not stated in the run's own output"
 
 
-@pytest.mark.database
 async def test_a_refused_advert_leaves_the_rename_applied(database: Database) -> None:
     """The two outcomes are independent, and both are reported."""
     persistence = Persistence(database=database)
@@ -688,7 +684,6 @@ async def test_a_refused_advert_leaves_the_rename_applied(database: Database) ->
     assert refused, "the refused advert was not recorded as its own event"
 
 
-@pytest.mark.database
 async def test_a_refused_rename_submits_no_advert(database: Database) -> None:
     persistence = Persistence(database=database)
     state = _state(persistence=persistence)
@@ -714,7 +709,6 @@ async def test_a_refused_rename_submits_no_advert(database: Database) -> None:
     assert [row.name for row in listed.value] == ["dev-room"]
 
 
-@pytest.mark.database
 async def test_a_rename_colliding_with_another_loaded_identity_is_refused(
     database: Database,
 ) -> None:
@@ -737,7 +731,6 @@ async def test_a_rename_colliding_with_another_loaded_identity_is_refused(
     assert [row.name for row in listed.value] == ["dev-room"]
 
 
-@pytest.mark.database
 async def test_an_identity_this_run_does_not_hold_is_offered_no_advert(
     database: Database,
 ) -> None:
@@ -763,7 +756,6 @@ async def test_an_identity_this_run_does_not_hold_is_offered_no_advert(
     assert [row.name for row in listed.value] == ["elsewhere-2"]
 
 
-@pytest.mark.database
 async def test_a_created_identitys_advert_schedule_shows_on_the_identities_page(
     database: Database,
 ) -> None:

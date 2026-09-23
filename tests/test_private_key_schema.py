@@ -81,7 +81,6 @@ async def _seed_one_entity(database: Database, name: str) -> None:
         await session.commit()
 
 
-@pytest.mark.database
 async def test_the_upgraded_schema_has_the_renamed_column(database: Database) -> None:
     async with database.sessions() as session:
         columns = {
@@ -99,7 +98,6 @@ async def test_the_upgraded_schema_has_the_renamed_column(database: Database) ->
     assert "sealed_seed" not in columns
 
 
-@pytest.mark.database
 async def test_0008_renames_without_the_secret_and_reports_the_rows_it_strands(
     database_url: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -177,7 +175,6 @@ async def test_0008_renames_without_the_secret_and_reports_the_rows_it_strands(
         await _drop_schema(database_url, schema)
 
 
-@pytest.mark.database
 async def test_an_empty_store_is_migrated_silently(
     database_url: str, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -30,7 +30,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from sighop.db.engine import Failed, Outcome, Succeeded
+from sighop.db.engine import Failed, Succeeded
 from sighop.net.channels import (
     MAX_CHANNEL_TEXT_LEN,
     ChannelMessageRecord,
@@ -153,29 +153,30 @@ async def render_index(
 # --- Channels (channel-messaging, `web-admin`) -------------------------------
 #
 # Every write is `ChannelRepository`'s own call (in `routes/admin.py`), so a
-# hashtag or key refused there is one `sighop channel` refuses in the same words.
-# A pasted pre-shared key is never put back into a page, not even into the form
-# re-shown after a refusal, and a stored one is never read back at all.
-
-CHANNELS_NEED_DURABLE_STORAGE = (
-    "Channels are stored configuration and require durable storage. This run has "
-    "no database, so none can be configured, and group text is left undecrypted."
-)
+# hashtag or key refused here is refused in the repository's own words. A pasted
+# pre-shared key is never put back into a page, not even into the form re-shown
+# after a refusal, and a stored one is never read back at all (`channel-store`).
 
 CHANNEL_KEY_NEEDS_THE_SECRET = (
     "SIGHOP_SECRET_KEY is not available to this panel, and pre-shared keys are "
     "sealed under it; nothing was added"
 )
 
-CHANNEL_KEY_COMMAND = "sighop channel key"
-
-CHANNEL_KEYS_ARE_A_TERMINAL_ACT = (
-    "A stored pre-shared key is not shown here. To share one, print it in a "
-    f"terminal on the host with `{CHANNEL_KEY_COMMAND} <name>`. The key is the "
-    "credential for reading and posting in the channel, and a key cannot be taken "
-    "back from whoever has seen it, so a stolen session that could display it "
-    "would hand the channel out for good."
+STORED_KEYS_ARE_NEVER_READ_BACK = (
+    "A stored pre-shared key is never shown — here or anywhere else — and sighop "
+    "cannot give one back. To share a channel, share the key you added, from "
+    "wherever you keep it. The key is the credential for reading and posting in "
+    "the channel, and a key cannot be taken back from whoever has seen it, so a "
+    "stolen session that could display it would hand the channel out for good."
 )
+"""`channel-store`: said where channels are listed, so an operator learns it
+before they need the key rather than when they go looking for it."""
+
+PSK_IS_NOT_SHOWN_AGAIN = (
+    "The key will not be shown again, by this page or by anything else: keep the "
+    "copy you are pasting from."
+)
+"""`channel-store`: said on the form itself, at the moment the key is supplied."""
 
 
 async def channels_context(page: Panel, *, added: str, removed: str) -> dict[str, object]:
@@ -186,16 +187,14 @@ async def channels_context(page: Panel, *, added: str, removed: str) -> dict[str
     rename and remove links). One row per channel either way, so a stored
     channel this run could not load is listed rather than left to a warning.
     """
-    from sighop.db.repositories import GUESSABLE_STATEMENT, ChannelRecord
+    from sighop.db.repositories import GUESSABLE_STATEMENT
 
     loaded = {channel.id: channel for channel in page.state.channels.channels}
-    listed: Outcome[list[ChannelRecord]] | None = None
     counts: dict[int, int] = {}
-    if page.persistence is not None:
-        listed = await page.persistence.channels.list_all()
-        counted = await page.persistence.channels.message_counts()
-        if isinstance(counted, Succeeded):
-            counts = counted.value
+    listed = await page.persistence.channels.list_all()
+    counted = await page.persistence.channels.message_counts()
+    if isinstance(counted, Succeeded):
+        counts = counted.value
     records = listed.value if isinstance(listed, Succeeded) else []
     rows: list[dict[str, object]] = [
         {
@@ -232,22 +231,18 @@ async def channels_context(page: Panel, *, added: str, removed: str) -> dict[str
         "channels_unreadable": isinstance(listed, Failed),
         "channels_skipped": page.state.channels.channels.skipped,
         "public_stored": any(record.kind == "public" for record in records),
-        "no_database": page.persistence is None,
-        "no_database_note": CHANNELS_NEED_DURABLE_STORAGE,
         "guessable_statement": GUESSABLE_STATEMENT,
         "guessable_status": GUESSABLE,
-        "keys_note": CHANNEL_KEYS_ARE_A_TERMINAL_ACT,
-        "key_command": CHANNEL_KEY_COMMAND,
+        "keys_note": STORED_KEYS_ARE_NEVER_READ_BACK,
+        "psk_note": PSK_IS_NOT_SHOWN_AGAIN,
         "just_added": next((record for record in records if record.name == added), None),
         "removed": removed,
     }
 
 
 def _recorded(page: Panel) -> bool:
-    """Whether what happens now reaches the database. False only in an outage
-    on a served panel; a page test's stub with no persistence records nothing
-    either, and says so rather than claiming otherwise."""
-    return page.persistence is not None and not page.degraded
+    """Whether what happens now reaches the database. False only in an outage."""
+    return not page.degraded
 
 
 async def _conversations(page: Panel) -> list[dict[str, object]]:
@@ -257,12 +252,11 @@ async def _conversations(page: Panel) -> list[dict[str, object]]:
     putting one identity's messages under another's name.
     """
     seen: dict[tuple[bytes, bytes], dict[str, object]] = {}
-    if page.persistence is not None:
-        listed = await page.persistence.direct_messages.conversations()
-        if isinstance(listed, Succeeded):
-            for summary in listed.value:
-                key = (summary.entity_public_key, summary.peer_public_key)
-                seen[key] = _row(page, key, summary.messages, summary.latest_at)
+    listed = await page.persistence.direct_messages.conversations()
+    if isinstance(listed, Succeeded):
+        for summary in listed.value:
+            key = (summary.entity_public_key, summary.peer_public_key)
+            seen[key] = _row(page, key, summary.messages, summary.latest_at)
     for key in page.chat.conversation_keys():
         latest = page.chat.latest(key)
         if key not in seen:
@@ -365,14 +359,27 @@ async def set_chatting_as(
                 refusal=refused(DEFAULT_IDENTITY_NOT_STORED, field="identity"),
                 status_code=400,
             )
-    if page.persistence is None or page.degraded:
+    if page.degraded:
         return await render_index(
             request,
             page,
             refusal=refused(DEFAULT_IDENTITY_NEEDS_DURABLE_STORAGE, field="identity"),
             status_code=400,
         )
-    written = await page.persistence.web_users.set_default_identity(page.actor(request), chosen)
+    from sighop.db.repositories import UnknownIdentityError
+
+    try:
+        written = await page.persistence.web_users.set_default_identity(page.actor(request), chosen)
+    except UnknownIdentityError:
+        # The identity was removed — by another process, or between this page
+        # being drawn and submitted. Refused like any other unstored identity,
+        # rather than surfacing as an error page.
+        return await render_index(
+            request,
+            page,
+            refusal=refused(DEFAULT_IDENTITY_NOT_STORED, field="identity"),
+            status_code=400,
+        )
     if isinstance(written, Failed):
         return await render_index(
             request,
@@ -527,11 +534,10 @@ async def _channel_messages(page: Panel, channel_id: int) -> tuple[list[dict[str
     """Durable rows and this session's own, merged on `ref`; the session's copy wins."""
     merged: dict[str, ChannelMessageRecord] = {}
     readable = False
-    if page.persistence is not None:
-        stored = await page.persistence.channel_messages.recent(channel_id)
-        if isinstance(stored, Succeeded):
-            merged = {record.ref: record for record in stored.value}
-            readable = True
+    stored = await page.persistence.channel_messages.recent(channel_id)
+    if isinstance(stored, Succeeded):
+        merged = {record.ref: record for record in stored.value}
+        readable = True
     for record in page.channel_log.messages(channel_id):
         merged[record.ref] = record
     ordered = sorted(merged.values(), key=lambda record: record.handled_at, reverse=True)
@@ -693,11 +699,10 @@ async def _messages(
     """
     merged: dict[str, DirectMessageRecord] = {}
     readable = False
-    if page.persistence is not None:
-        stored = await page.persistence.direct_messages.conversation(entity_key, peer_key)
-        if isinstance(stored, Succeeded):
-            merged = {record.ref: record for record in stored.value}
-            readable = True
+    stored = await page.persistence.direct_messages.conversation(entity_key, peer_key)
+    if isinstance(stored, Succeeded):
+        merged = {record.ref: record for record in stored.value}
+        readable = True
     for record in page.chat.conversation(entity_key, peer_key):
         merged[record.ref] = record
     ordered = sorted(merged.values(), key=lambda record: record.handled_at, reverse=True)

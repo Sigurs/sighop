@@ -54,7 +54,6 @@ def test_the_migration_states_unencrypted_text_and_what_a_downgrade_costs() -> N
     assert "deletes every" in source and "channel history" in source
 
 
-@pytest.mark.database
 async def test_an_upgraded_database_holds_exactly_the_public_channel(database: Database) -> None:
     async with database.sessions() as session:
         rows = (await session.execute(select(Channel))).scalars().all()
@@ -63,7 +62,6 @@ async def test_an_upgraded_database_holds_exactly_the_public_channel(database: D
     ]
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     "fields",
     [
@@ -84,7 +82,6 @@ async def test_the_server_enforces_the_channel_checks(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_removing_a_channel_cascades_to_its_messages(database: Database) -> None:
     async with database.sessions() as session:
         channel = Channel(
@@ -110,7 +107,6 @@ async def test_removing_a_channel_cascades_to_its_messages(database: Database) -
     assert remaining == []
 
 
-@pytest.mark.database
 async def test_0007_upgrade_downgrade_upgrade_leaves_no_leftover_objects(
     database_url: str,
 ) -> None:

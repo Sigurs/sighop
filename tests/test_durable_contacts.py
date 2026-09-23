@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 
-import pytest
 from sqlalchemy import text
 
 from sighop.db.engine import Database, Failed, Succeeded
@@ -63,7 +62,6 @@ class _Sink:
 # --- 5.1 The repository -----------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_contact_round_trips_with_its_flags_timestamps_and_marker(
     database: Database,
 ) -> None:
@@ -95,7 +93,6 @@ async def test_a_contact_round_trips_with_its_flags_timestamps_and_marker(
     assert restored.advert_verified is True
 
 
-@pytest.mark.database
 async def test_an_upsert_advances_last_heard_and_leaves_first_heard_alone(
     database: Database,
 ) -> None:
@@ -252,7 +249,6 @@ def test_the_marker_clears_on_success_and_a_redundant_clear_is_harmless() -> Non
 # --- 5.5 The manual/verified distinction ------------------------------------
 
 
-@pytest.mark.database
 async def test_a_manually_added_contact_stays_unverified_across_the_round_trip(
     database: Database,
 ) -> None:
@@ -269,7 +265,6 @@ async def test_a_manually_added_contact_stays_unverified_across_the_round_trip(
     assert restored.name is None, "a restored manual contact gained a name it never had"
 
 
-@pytest.mark.database
 async def test_a_later_verified_advert_upgrades_a_stored_manual_contact(
     database: Database,
 ) -> None:
@@ -299,7 +294,6 @@ async def test_a_later_verified_advert_upgrades_a_stored_manual_contact(
 # --- 5.6 An unverified advert writes nothing --------------------------------
 
 
-@pytest.mark.database
 async def test_a_badly_signed_advert_writes_no_row(database: Database) -> None:
     """The rule is unchanged under persistence, and it is the type that holds it:
     a verification failure carries no advert content to record at all."""
@@ -318,7 +312,6 @@ async def test_a_badly_signed_advert_writes_no_row(database: Database) -> None:
 # --- 5.7 Durability across an ungraceful stop -------------------------------
 
 
-@pytest.mark.database
 async def test_a_contact_whose_write_landed_survives_a_process_that_never_stopped(
     database: Database, database_config
 ) -> None:
@@ -392,7 +385,6 @@ async def test_an_overflowed_queue_leaves_every_contact_marked_unpersisted() -> 
 # --- 5.10 / 5.11 The backfill -----------------------------------------------
 
 
-@pytest.mark.database
 async def test_several_observations_during_an_outage_backfill_as_one_row(
     database: Database,
 ) -> None:
@@ -420,7 +412,6 @@ async def test_several_observations_during_an_outage_backfill_as_one_row(
     assert store.awaiting_backfill == 0
 
 
-@pytest.mark.database
 async def test_the_backfill_needs_no_restart_and_no_further_advert(
     database: Database,
 ) -> None:
@@ -441,7 +432,6 @@ async def test_the_backfill_needs_no_restart_and_no_further_advert(
     assert [contact.public_key for contact in loaded.value] == [identity.public_key]
 
 
-@pytest.mark.database
 async def test_a_restart_during_the_outage_loses_what_was_never_written(
     database: Database,
 ) -> None:
@@ -474,7 +464,6 @@ async def test_a_restart_during_the_outage_loses_what_was_never_written(
 # --- 5.12 The backfill is not extended to paths or the packet log -----------
 
 
-@pytest.mark.database
 async def test_a_discarded_route_and_log_row_are_not_rewritten_on_recovery(
     database: Database,
 ) -> None:
@@ -513,7 +502,6 @@ async def test_a_discarded_route_and_log_row_are_not_rewritten_on_recovery(
     assert persistence.database.stats.packet_log_discarded == 1
 
 
-@pytest.mark.database
 async def test_a_failed_contact_flush_leaves_the_marker_set(database: Database) -> None:
     persistence = Persistence(database=database)
     store = ContactStore(sink=persistence.contact_sink())
@@ -539,7 +527,6 @@ async def test_a_failed_contact_flush_leaves_the_marker_set(database: Database) 
     assert store.awaiting_backfill == 1
 
 
-@pytest.mark.database
 async def test_one_batch_carrying_a_peer_twice_writes_its_latest_state_once(
     database: Database,
 ) -> None:

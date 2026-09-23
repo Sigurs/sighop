@@ -54,7 +54,6 @@ def test_the_migration_states_what_a_downgrade_costs() -> None:
     assert "deletes every" in source and "webhook" in source
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -71,7 +70,6 @@ async def test_the_server_enforces_the_checks(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_the_server_refuses_a_second_webhook_with_the_same_name(
     database: Database,
 ) -> None:
@@ -84,7 +82,6 @@ async def test_the_server_refuses_a_second_webhook_with_the_same_name(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_0006_upgrade_downgrade_upgrade_leaves_no_leftover_objects(
     database_url: str,
 ) -> None:

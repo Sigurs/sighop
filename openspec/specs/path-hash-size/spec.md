@@ -13,19 +13,19 @@ Any other value SHALL fail startup with a configuration error naming the variabl
 given and the accepted values. The system SHALL NOT clamp or round an invalid value into range.
 
 #### Scenario: Unset
-- **WHEN** `sighop run` starts with `SIGHOP_PATH_HASH_SIZE` unset
+- **WHEN** the node starts with `SIGHOP_PATH_HASH_SIZE` unset
 - **THEN** the path hash size in force is 3
 
 #### Scenario: Set to a supported value
-- **WHEN** `sighop run` starts with `SIGHOP_PATH_HASH_SIZE=2`
-- **THEN** the path hash size in force is 2 for every identity the run loads
+- **WHEN** the node starts with `SIGHOP_PATH_HASH_SIZE=2`
+- **THEN** the path hash size in force is 2 for every identity the node loads
 
 #### Scenario: Out of range
-- **WHEN** `sighop run` starts with `SIGHOP_PATH_HASH_SIZE=4`
+- **WHEN** the node starts with `SIGHOP_PATH_HASH_SIZE=4`
 - **THEN** startup fails with a configuration error naming `SIGHOP_PATH_HASH_SIZE`, the value `4` and the accepted values 1, 2 and 3, and nothing is transmitted
 
 #### Scenario: Not a number
-- **WHEN** `sighop run` starts with `SIGHOP_PATH_HASH_SIZE=three`
+- **WHEN** the node starts with `SIGHOP_PATH_HASH_SIZE=three`
 - **THEN** startup fails with the same configuration error rather than falling back to the default
 
 ### Requirement: Originated packets with an empty path use the configured width

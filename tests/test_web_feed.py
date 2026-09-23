@@ -25,6 +25,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from sighop.db.engine import DatabaseUnavailableError, Failed
 from sighop.db.packetlog import rx_row
 from sighop.db.repositories import PacketLogRow
 from sighop.net.bus import (
@@ -45,6 +46,8 @@ from sighop.web.feed import DEFAULT_CONNECTION_QUEUE, FeedHub
 from sighop.web.serialize import HISTORY, LIVE, logged_packet, rx_record, tx_record
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import authenticator, signed_client, stub_state
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 HOSTS = allowed_hosts("127.0.0.1", 8080)
@@ -417,9 +420,18 @@ def test_the_socket_paints_history_then_marks_the_boundary_then_streams() -> Non
         assert live["records"][0]["source"] == LIVE
 
 
+class _UnreadableLog:
+    """A packet log whose database has gone away between the page and the socket."""
+
+    async def recent(self) -> Failed:
+        return Failed(operation="packet_log.recent", error=DatabaseUnavailableError("gone"))
+
+
 def test_with_no_readable_history_the_feed_starts_empty_and_says_why() -> None:
-    """10.5, `web-dashboard`: not a mesh that has been quiet — no history at all."""
-    app, _hub = _app()
+    """10.5, `web-dashboard`: not a mesh that has been quiet — history it cannot read."""
+    state = stub_state()
+    state.persistence.packet_log = _UnreadableLog()  # type: ignore[assignment]
+    app, _hub = _app(state)
 
     with (
         signed_client(app, base_url="http://127.0.0.1:8080") as client,

@@ -4,7 +4,6 @@
 The station's set of group channels: which channels sighop can read and post in, how each one's key
 is obtained and protected at rest, and how a running process learns that the set has changed.
 ## Requirements
-
 ### Requirement: A channel is stored configuration belonging to the station
 The system SHALL store each channel as one record with a unique name, a kind, its channel hash and
 its creation time, and SHALL NOT associate a channel with any identity: every loaded identity that
@@ -111,15 +110,6 @@ configuration cannot be read, the system SHALL keep the last set it loaded and r
 - **WHEN** a refresh of the channel set fails because the database is degraded
 - **THEN** receptions continue to be decrypted with the channels already loaded, and the failure is reported
 
-### Requirement: Channels require durable storage
-The system SHALL store channels only in the database. A run with no database configured SHALL load
-no channels and SHALL say so at startup; channel commands run with no database SHALL refuse and
-state that channels require durable storage.
-
-#### Scenario: A run without a database
-- **WHEN** a run starts with no database configured
-- **THEN** the startup output states that no channels are loaded because channels require durable storage, and group text is left undecrypted
-
 ### Requirement: A channel can be renamed without changing what it opens
 The system SHALL provide an action that changes a stored channel's name and nothing else. The
 channel's kind, hashtag, stored or derived key, channel hash, recorded messages and creation time
@@ -158,3 +148,18 @@ refused rename.
 #### Scenario: A refused rename discloses nothing
 - **WHEN** a rename of a pre-shared-key channel is refused
 - **THEN** no pre-shared key, in any encoding, is present in what is shown
+
+### Requirement: A stored pre-shared key is never read back
+The system SHALL NOT offer any way to read back a stored pre-shared key — not in the web interface,
+not in output, not in an event. A key is supplied once, when a channel is added, and from then on
+is only ever opened to decrypt and post. An operator who needs to give the key to someone else SHALL
+keep the copy they supplied; the system SHALL say so where a pre-shared channel is added and where
+stored channels are listed, rather than leave an operator to discover it when they need the key.
+
+#### Scenario: Looking for a stored key
+- **WHEN** an operator looks for a way to see a stored pre-shared channel's key
+- **THEN** no surface shows it, and the chat page states that sighop cannot give a stored key back
+
+#### Scenario: Adding a pre-shared channel
+- **WHEN** a pre-shared key is added through the interface
+- **THEN** the form states that the key will not be shown again and must be kept by whoever added it

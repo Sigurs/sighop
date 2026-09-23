@@ -138,9 +138,8 @@
 <p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
 {% else %}
 <p class="note">
-  The key is generated in this process and sealed straight into the store — the
-  two steps <span class="mono">sighop keys new</span> and
-  <span class="mono">sighop keys import</span> take, with no keyfile in between.
+  The key is generated in this process and sealed straight into the store,
+  with no keyfile in between.
   The generated node hash avoids every one this run knows about, because two
   local identities sharing a hash make an inbound packet ambiguous between our
   own identities. Export below if you want the file.
@@ -202,10 +201,9 @@
 <p class="unavailable"><strong>Not available.</strong> {{ no_sealing_secret }}.</p>
 {% else %}
 <p class="note">
-  Paste the contents of a keyfile. It is checked by the same parser
-  <span class="mono">sighop keys import</span> uses — version, private key length, and
-  whether the stored public key is the one the key derives — and a document
-  that fails any of those stores nothing.
+  Paste the contents of a keyfile. It is checked for its version, its private
+  key length, and whether the stored public key is the one the key derives — and
+  a document that fails any of those stores nothing.
 </p>
 <form method="post" action="/admin/identities/import">
   <input type="hidden" name="_token" value="{{ token }}">

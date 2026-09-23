@@ -16,7 +16,6 @@ from sighop.db.repositories import (
     ChannelMessageRepository,
     ChannelRepository,
 )
-from sighop.db.sealing import SealError
 from sighop.net.channels import ChannelKind, ChannelMessageRecord, ChannelOutcome
 from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, ChannelKey, channel_key_from_hashtag
 
@@ -62,7 +61,6 @@ def test_a_hashtag_gains_its_leading_hash() -> None:
 # --- ChannelRepository ------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_hashtag_channel_is_stored_with_its_derived_hash(database: Database) -> None:
     channels = ChannelRepository(database=database)
 
@@ -73,7 +71,6 @@ async def test_a_hashtag_channel_is_stored_with_its_derived_hash(database: Datab
     assert record.guessable
 
 
-@pytest.mark.database
 async def test_a_psk_is_sealed_and_its_column_holds_no_key_bytes(database: Database) -> None:
     channels = ChannelRepository(database=database)
 
@@ -90,7 +87,6 @@ async def test_a_psk_is_sealed_and_its_column_holds_no_key_bytes(database: Datab
     assert "private" in repr(record) and KEY_B64 not in repr(record)
 
 
-@pytest.mark.database
 async def test_the_same_key_under_another_name_is_refused_naming_the_existing(
     database: Database,
 ) -> None:
@@ -111,14 +107,12 @@ async def test_the_same_key_under_another_name_is_refused_naming_the_existing(
     assert names == ["Public", "#dev-sighop", "private"]
 
 
-@pytest.mark.database
 async def test_a_name_in_use_is_refused(database: Database) -> None:
     channels = ChannelRepository(database=database)
     with pytest.raises(ChannelExistsError, match="named 'Public' already exists"):
         await channels.add_hashtag("#other", name="Public")
 
 
-@pytest.mark.database
 async def test_a_different_key_with_the_same_hash_is_accepted(database: Database) -> None:
     channels = ChannelRepository(database=database)
     twin = next(
@@ -134,7 +128,6 @@ async def test_a_different_key_with_the_same_hash_is_accepted(database: Database
     assert record.channel_hash == 0x11
 
 
-@pytest.mark.database
 async def test_load_keys_skips_an_unsealable_row_by_name(database: Database) -> None:
     channels = ChannelRepository(database=database)
     await channels.add_hashtag("#dev-sighop")
@@ -148,18 +141,6 @@ async def test_load_keys_skips_an_unsealable_row_by_name(database: Database) -> 
     assert good.by_id(3) is not None and good.by_id(3).key.key == KEY
     assert [c.name for c in wrong] == ["Public", "#dev-sighop"] and wrong.skipped == ("private",)
     assert none.skipped == ("private",)
-
-
-@pytest.mark.database
-async def test_key_of_prints_derived_and_opened_keys(database: Database) -> None:
-    channels = ChannelRepository(database=database)
-    await channels.add_psk(KEY_B64, name="private", secret=SECRET)
-
-    assert _value(await channels.key_of("private", SECRET)) == KEY
-    assert _value(await channels.key_of("Public", None)) == PUBLIC_CHANNEL_KEY.key
-    assert _value(await channels.key_of("absent", SECRET)) is None
-    with pytest.raises(SealError):
-        await channels.key_of("private", OTHER_SECRET)
 
 
 def _message(channel_id: int, ref: str, **fields: object) -> ChannelMessageRecord:
@@ -177,7 +158,6 @@ def _message(channel_id: int, ref: str, **fields: object) -> ChannelMessageRecor
     return ChannelMessageRecord(**values)  # type: ignore[arg-type]
 
 
-@pytest.mark.database
 async def test_removal_cascades_and_reports_the_count(database: Database) -> None:
     channels = ChannelRepository(database=database)
     history = ChannelMessageRepository(database=database)
@@ -192,7 +172,6 @@ async def test_removal_cascades_and_reports_the_count(database: Database) -> Non
     assert _value(await channels.remove(record.id)) is None
 
 
-@pytest.mark.database
 async def test_removing_public_is_not_undone(database: Database) -> None:
     channels = ChannelRepository(database=database)
     public = _value(await channels.get("Public"))
@@ -206,7 +185,6 @@ async def test_removing_public_is_not_undone(database: Database) -> None:
 # --- ChannelMessageRepository (task 5.3) ------------------------------------
 
 
-@pytest.mark.database
 async def test_a_post_is_updated_in_place(database: Database) -> None:
     history = ChannelMessageRepository(database=database)
     post = _message(
@@ -235,7 +213,6 @@ async def test_a_post_is_updated_in_place(database: Database) -> None:
     assert stored.entity_public_key == b"\x01" * 32
 
 
-@pytest.mark.database
 async def test_history_is_ordered_by_handled_time_not_wire_time(database: Database) -> None:
     history = ChannelMessageRepository(database=database)
     _value(await history.upsert(_message(1, "first", wire_timestamp=1_757_000_000)))
@@ -254,7 +231,6 @@ async def test_history_is_ordered_by_handled_time_not_wire_time(database: Databa
     assert [r.ref for r in _value(await history.recent(1, limit=1))] == ["second"]
 
 
-@pytest.mark.database
 async def test_startup_rewrites_awaiting_posts_as_unknown(database: Database) -> None:
     history = ChannelMessageRepository(database=database)
     _value(
@@ -305,7 +281,6 @@ def test_a_replay_run_has_no_channel_sink() -> None:
     assert writing.channel_sink() is writing.channel_writer
 
 
-@pytest.mark.database
 async def test_restore_rewrites_awaiting_posts_and_counts_history(database: Database) -> None:
     from sighop.db.persistence import Persistence
     from sighop.net.contacts import ContactStore
@@ -334,7 +309,6 @@ async def test_restore_rewrites_awaiting_posts_and_counts_history(database: Data
 # --- Renaming a channel ------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_renaming_a_psk_channel_changes_no_key_material(database: Database) -> None:
     """The name is a label; the key is in its own sealed column."""
     channels = ChannelRepository(database=database)
@@ -363,7 +337,6 @@ async def test_renaming_a_psk_channel_changes_no_key_material(database: Database
     assert row.kind == str(ChannelKind.PSK)
 
 
-@pytest.mark.database
 async def test_renaming_a_hashtag_channel_leaves_its_hashtag_and_hash(
     database: Database,
 ) -> None:
@@ -383,7 +356,6 @@ async def test_renaming_a_hashtag_channel_leaves_its_hashtag_and_hash(
     assert row.channel_hash == channel_key_from_hashtag("#dev-sighop").channel_hash
 
 
-@pytest.mark.database
 async def test_a_renamed_channel_still_opens_under_the_same_key(database: Database) -> None:
     channels = ChannelRepository(database=database)
     created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
@@ -395,7 +367,6 @@ async def test_a_renamed_channel_still_opens_under_the_same_key(database: Databa
     assert [loaded.key.key for loaded in after] == [loaded.key.key for loaded in before]
 
 
-@pytest.mark.database
 async def test_renaming_a_channel_onto_a_name_in_use_is_refused(database: Database) -> None:
     channels = ChannelRepository(database=database)
     created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
@@ -407,7 +378,6 @@ async def test_renaming_a_channel_onto_a_name_in_use_is_refused(database: Databa
     assert names == ["Public", "private"]
 
 
-@pytest.mark.database
 async def test_renaming_a_channel_applies_the_name_rules(database: Database) -> None:
     channels = ChannelRepository(database=database)
     created = _value(await channels.add_psk(KEY_B64, name="private", secret=SECRET))
@@ -420,7 +390,6 @@ async def test_renaming_a_channel_applies_the_name_rules(database: Database) -> 
     assert names == ["Public", "private"]
 
 
-@pytest.mark.database
 async def test_renaming_a_channel_that_does_not_exist_reports_so(database: Database) -> None:
     renamed = await ChannelRepository(database=database).rename(9999, "nobody")
     assert isinstance(renamed, Succeeded)

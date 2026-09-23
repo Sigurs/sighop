@@ -28,6 +28,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
 URL = "https://discord.com/api/webhooks/42/s3cr3t-token?wait=true"
@@ -77,15 +79,6 @@ async def _get(persistence: Persistence, name: str = "dev-hook") -> WebhookRecor
     return found.value
 
 
-def test_with_no_database_the_page_says_storage_is_required_and_offers_no_controls() -> None:
-    app = _built(stub_state())
-    with signed_client(app, base_url="http://127.0.0.1:8080") as client:
-        body = client.get("/admin/webhooks").text
-
-    assert "require durable storage" in body
-    assert 'action="/admin/webhooks' not in body
-
-
 def test_the_navigation_links_the_page() -> None:
     app = _built(stub_state())
     with signed_client(app, base_url="http://127.0.0.1:8080") as client:
@@ -93,7 +86,6 @@ def test_the_navigation_links_the_page() -> None:
     assert 'href="/admin/webhooks"' in body
 
 
-@pytest.mark.database
 async def test_the_page_shows_scheme_and_host_and_outcomes_but_no_path(database: Database) -> None:
     persistence = Persistence(database=database)
     record = await _stored(persistence)
@@ -119,7 +111,6 @@ async def test_the_page_shows_scheme_and_host_and_outcomes_but_no_path(database:
     _no_secret(body)
 
 
-@pytest.mark.database
 async def test_adding_through_the_page_stores_an_enabled_webhook(database: Database) -> None:
     persistence = Persistence(database=database)
     app = _built(stub_state(persistence=persistence))
@@ -145,7 +136,6 @@ async def test_adding_through_the_page_stores_an_enabled_webhook(database: Datab
     _no_secret(body)
 
 
-@pytest.mark.database
 async def test_a_refused_url_gives_the_command_lines_reason_and_is_not_shown_back(
     database: Database,
 ) -> None:
@@ -170,7 +160,6 @@ async def test_a_refused_url_gives_the_command_lines_reason_and_is_not_shown_bac
     assert isinstance(listed, Succeeded) and listed.value == []
 
 
-@pytest.mark.database
 async def test_enable_settings_url_and_remove_with_confirmation(database: Database) -> None:
     persistence = Persistence(database=database)
     record = await _stored(persistence)
@@ -213,7 +202,6 @@ async def test_enable_settings_url_and_remove_with_confirmation(database: Databa
         assert await _get(persistence) is None
 
 
-@pytest.mark.database
 async def test_testing_from_the_page_shows_the_outcome(
     database: Database,
     receiver: Receiver,  # noqa: F811

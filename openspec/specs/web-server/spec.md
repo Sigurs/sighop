@@ -9,7 +9,6 @@ a human sees and drives the platform, and until authentication arrives it is als
 whose exposure has to be deliberate.
 
 ## Requirements
-
 ### Requirement: The web interface runs inside the process that owns the radio
 The system SHALL serve the web interface from within the same process and event loop as the
 running platform, so that it reads live scheduler, budget, bus and messenger state directly rather
@@ -29,34 +28,40 @@ runs on.
 - **WHEN** the web interface is enabled
 - **THEN** the event loop policy, the loop implementation and the process's signal handling are unchanged from a run without it
 
-### Requirement: The web interface is opt-in and off by default
-The system SHALL NOT serve a web interface unless an operator asks for one. A run that is not
-asked SHALL behave in every respect as a run of a build without the interface.
+### Requirement: The web interface is always served
+The system SHALL serve the web interface whenever the node runs. There SHALL be no option, flag or
+setting that starts the node without it, and a failure to serve it SHALL be a startup failure rather
+than a node that runs without an interface.
 
-#### Scenario: A run that does not ask for the interface
-- **WHEN** the platform runs without the web option
-- **THEN** no socket is listened on, no web task is started, and the run's output is unchanged
+#### Scenario: A node that starts
+- **WHEN** the node starts
+- **THEN** the interface is listening before the first frame is handled, and the startup output names the address and port it is served on
+
+#### Scenario: The interface cannot be served
+- **WHEN** the interface cannot be started for any reason
+- **THEN** startup fails, rather than the node continuing to run the radio with no interface
 
 ### Requirement: The listening address defaults to loopback and a wider bind is announced
-The system SHALL default the interface's listening address to a loopback address. It SHALL permit
-an operator to configure any other address, and SHALL, when the configured address is not
-loopback, report at startup — in the run's output and as its own logged event — that the interface
-is reachable beyond this host, that it is served over plain HTTP, and that passwords and session
-cookies therefore cross the network unencrypted unless the operator carries the connection over
-an encrypted tunnel. The system SHALL NOT terminate TLS itself and SHALL NOT trust any
-forwarding header to establish a client's address or scheme.
+The system SHALL read the interface's listening address, port and additional accepted host names
+from the environment, and SHALL default the listening address to a loopback address. It SHALL permit
+any other address to be configured, and SHALL, when the configured address is not loopback, report
+at startup — in the node's output and as its own logged event — that the interface is reachable
+beyond this host, that it is served over plain HTTP, and that passwords and session cookies
+therefore cross the network unencrypted unless the operator carries the connection over an encrypted
+tunnel. The system SHALL NOT terminate TLS itself and SHALL NOT trust any forwarding header to
+establish a client's address or scheme.
 
 #### Scenario: The default
-- **WHEN** the interface is enabled without an address
-- **THEN** it listens on a loopback address only, and the startup output names the address and port
+- **WHEN** the node starts with no listening address configured
+- **THEN** the interface listens on a loopback address only, and the startup output names the address and port
 
 #### Scenario: A non-loopback bind
-- **WHEN** the interface is configured to listen on a non-loopback address
-- **THEN** it does so, and startup states in its output and in a logged event that the interface is reachable from the network over plain HTTP and that credentials and session cookies are unencrypted in transit
+- **WHEN** the listening address is configured to a non-loopback address
+- **THEN** it is bound, and startup states in its output and in a logged event that the interface is reachable from the network over plain HTTP and that credentials and session cookies are unencrypted in transit
 
 #### Scenario: The warning is not suppressible
 - **WHEN** a non-loopback bind is configured
-- **THEN** there is no option that serves that bind without the warning
+- **THEN** there is no setting that serves that bind without the warning
 
 #### Scenario: Forwarding headers are ignored
 - **WHEN** a request carries a header claiming a different client address or scheme

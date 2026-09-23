@@ -6,7 +6,6 @@ Tells systems outside sighop — chat services, automation tools — when someth
 attention happens on the mesh, starting with a new repeater or a new companion being heard.
 
 ## Requirements
-
 ### Requirement: A webhook is stored configuration with a name, a target, a format and triggers
 The system SHALL store each webhook durably with a unique name, a target URL, a payload format of
 either `json` or `discord`, a non-empty set of triggers, an optional maximum hop count, and an
@@ -301,16 +300,12 @@ SHALL deliver using the configuration it last read successfully and SHALL report
 - **WHEN** an event is raised while the database cannot be read
 - **THEN** the event is delivered to the webhooks from the last successful read, and the read failure is logged
 
-### Requirement: Webhooks require durable storage and are never sent from a replay
-The system SHALL send no webhook when no database is configured, and SHALL send no webhook during a
-replay run, whose receptions carry an earlier session's timestamps. Whether transmit is enabled
-SHALL NOT affect webhooks, because they are not radio transmissions.
+### Requirement: Webhooks are never sent from a replay
+The system SHALL send no webhook from a replayed capture, whose receptions carry an earlier
+session's timestamps. Whether transmit is enabled SHALL NOT affect webhooks, because they are not
+radio transmissions.
 
-#### Scenario: A run without a database
-- **WHEN** a run starts with no database configured and a new repeater is heard
-- **THEN** no HTTP request is made
-
-#### Scenario: A replay run
+#### Scenario: A replay
 - **WHEN** a capture containing a first sighting of a repeater is replayed
 - **THEN** no HTTP request is made
 

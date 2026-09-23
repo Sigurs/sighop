@@ -11,14 +11,17 @@ import asyncio
 import io
 from collections.abc import AsyncIterator
 
-from sighop.monitor.render import WEBHOOKS_OFF_NO_DATABASE, WEBHOOKS_OFF_REPLAY
+import pytest
+
+from sighop.monitor.render import WEBHOOKS_OFF_REPLAY
 from sighop.net.contacts import ContactObservation
 from sighop.net.rx import RxRecord
 from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.runtime import Runtime, RuntimeConfig
 from sighop.webhooks.dispatcher import WebhookDispatcher
+from tests.dbfixtures import the_default_persistence
 from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
-from tests.test_runtime import _events, _startup, run_briefly, runtime
+from tests.test_runtime import _events, _startup
 from tests.test_tx import ManualClock
 from tests.test_webhooks_dispatcher import (
     NOW,
@@ -28,6 +31,8 @@ from tests.test_webhooks_dispatcher import (
     RecordingLogger,
     _record,
 )
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
 
@@ -55,6 +60,7 @@ def _run(
     return Runtime(
         source=_capture_then_open() if live else _events(CAPTURE),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600, **config),  # type: ignore[arg-type]
         radio=EU868_NARROW,
         clock=ManualClock(),
@@ -62,16 +68,6 @@ def _run(
         logger=RecordingLogger(),
         webhooks=dispatcher,
     )
-
-
-async def test_a_run_with_no_database_says_webhooks_require_durable_storage() -> None:
-    out = io.StringIO()
-    run = runtime(_events(CAPTURE), out=out)
-    await run_briefly(run)
-
-    assert run.webhooks is None
-    assert WEBHOOKS_OFF_NO_DATABASE in out.getvalue()
-    assert " wh ok=" not in out.getvalue(), "no counters without a dispatcher"
 
 
 async def test_a_replay_sends_nothing_even_with_a_dispatcher_handed_in() -> None:

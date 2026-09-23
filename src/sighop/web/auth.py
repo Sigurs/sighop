@@ -69,7 +69,7 @@ LIFETIME_SECONDS = 24 * 3600
 
 REVALIDATE_SECONDS = 60.0
 """How stale a session's view of its account may become. This is how a
-`sighop web user disable` in another process reaches a running panel, with no
+change to an account made in the database directly reaches a running panel, with no
 IPC: within a minute of the change, at the session's next request."""
 
 THROTTLE_KEYS = 4096

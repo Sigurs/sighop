@@ -366,9 +366,9 @@ class Bot(Base):
     Two columns carry the safety posture rather than mere configuration:
 
     * **`mode`** is `observe` or `active`, and a new row is `observe`. A bot
-      that transmits is an explicit operator act (`sighop bot mode`), stored
+      that transmits is an explicit operator act (the bot's mode page), stored
       rather than passed per run, so a bot cannot become active because an
-      operator forgot which flags the last run had (design D4).
+      operator forgot how the last run was started (design D4).
     * **`enabled`** is the ordinary off switch, and is checked together with the
       entity's own — a bot on a disabled identity does not run either.
 
@@ -507,7 +507,7 @@ class WebUser(Base):
 
     Not one of §6's tables: §6 predates the panel. Accounts are durable state
     because revoking one has to reach a running process without re-reading a
-    file, and `sighop web user disable` in another process reaches it through
+    file, and a change made to this row by another process reaches it through
     the revalidation every session does against this row.
 
     * **`username` is stored normalised** — NFKC, then `casefold()` — by the one

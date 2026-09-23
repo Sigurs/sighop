@@ -38,7 +38,6 @@ async def _create(
     return _value(await hooks.create(**fields))
 
 
-@pytest.mark.database
 async def test_create_stores_an_enabled_webhook_with_no_hop_limit(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     record = await _create(hooks)
@@ -51,7 +50,6 @@ async def test_create_stores_an_enabled_webhook_with_no_hop_limit(database: Data
     assert stored == record
 
 
-@pytest.mark.database
 async def test_the_stored_url_is_sealed_and_the_host_is_clear(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     await _create(hooks)
@@ -64,7 +62,6 @@ async def test_the_stored_url_is_sealed_and_the_host_is_clear(database: Database
     assert row.url_host == "https://discord.com"
 
 
-@pytest.mark.database
 async def test_a_duplicate_name_is_refused_naming_it(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     await _create(hooks)
@@ -73,7 +70,6 @@ async def test_a_duplicate_name_is_refused_naming_it(database: Database) -> None
     assert len(_value(await hooks.list_all())) == 1
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     "overrides",
     [
@@ -92,7 +88,6 @@ async def test_refusals_store_nothing(database: Database, overrides: dict[str, A
     assert _value(await hooks.list_all()) == []
 
 
-@pytest.mark.database
 async def test_update_changes_only_what_was_given(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     record = await _create(hooks, max_hops=2)
@@ -111,7 +106,6 @@ async def test_update_changes_only_what_was_given(database: Database) -> None:
         await hooks.update(record.id, triggers=["nope"], format="json")
 
 
-@pytest.mark.database
 async def test_enable_disable_and_remove(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     record = await _create(hooks)
@@ -126,7 +120,6 @@ async def test_enable_disable_and_remove(database: Database) -> None:
     assert not _value(await hooks.remove(record.id))
 
 
-@pytest.mark.database
 async def test_list_enabled_opens_urls_and_isolates_an_unsealable_row(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     await _create(hooks, name="dev-good")
@@ -140,7 +133,6 @@ async def test_list_enabled_opens_urls_and_isolates_an_unsealable_row(database: 
     assert "s3cr3t" not in repr(opened["dev-good"])
 
 
-@pytest.mark.database
 async def test_set_url_replaces_the_target(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     record = await _create(hooks)
@@ -154,7 +146,6 @@ async def test_set_url_replaces_the_target(database: Database) -> None:
     assert stored is not None and stored.plaintext_http
 
 
-@pytest.mark.database
 async def test_outcome_columns_update(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     record = await _create(hooks)
@@ -171,7 +162,6 @@ async def test_outcome_columns_update(database: Database) -> None:
     assert stored.last_failure == "HTTP 404"
 
 
-@pytest.mark.database
 async def test_persistence_exposes_the_repository(database: Database) -> None:
     persistence = Persistence(database=database)
     assert isinstance(persistence.webhooks, WebhookRepository)
@@ -180,7 +170,6 @@ async def test_persistence_exposes_the_repository(database: Database) -> None:
 # --- Renaming a webhook ------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_renaming_a_webhook_changes_the_name_and_nothing_else(
     database: Database,
 ) -> None:
@@ -212,7 +201,6 @@ async def test_renaming_a_webhook_changes_the_name_and_nothing_else(
     assert bytes(row.sealed_url) == before, "the sealed URL changed across a rename"
 
 
-@pytest.mark.database
 async def test_a_renamed_webhook_still_opens_the_same_url(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     created = await _create(hooks)
@@ -224,7 +212,6 @@ async def test_a_renamed_webhook_still_opens_the_same_url(database: Database) ->
     assert opened.url == URL
 
 
-@pytest.mark.database
 async def test_renaming_a_webhook_onto_a_name_in_use_is_refused(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     created = await _create(hooks, name="dev-hook")
@@ -239,7 +226,6 @@ async def test_renaming_a_webhook_onto_a_name_in_use_is_refused(database: Databa
     ]
 
 
-@pytest.mark.database
 async def test_renaming_a_webhook_applies_the_name_rules(database: Database) -> None:
     hooks = WebhookRepository(database=database)
     created = await _create(hooks)
@@ -251,7 +237,6 @@ async def test_renaming_a_webhook_applies_the_name_rules(database: Database) -> 
     assert [record.name for record in _value(await hooks.list_all())] == ["dev-hook"]
 
 
-@pytest.mark.database
 async def test_renaming_a_webhook_that_does_not_exist_reports_so(database: Database) -> None:
     import uuid as _uuid
 

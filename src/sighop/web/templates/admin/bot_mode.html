@@ -14,6 +14,11 @@
   adverts, applies its gates, keeps its records — and stops at the point of
   transmitting. Active removes that stop.
 </p>
+<p class="note">
+  Active is one of two gates. Transmission still requires this node's transmit
+  gate to be open — see <a href="/system">system</a> — and stays under the
+  duty-cycle ceiling.
+</p>
 
 <form method="post" action="/admin/bots/{{ bot.id }}/mode">
   <input type="hidden" name="_token" value="{{ token }}">

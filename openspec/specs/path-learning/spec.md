@@ -61,24 +61,20 @@ SHALL retain the SNR and hop count of each candidate without applying any furthe
 - **WHEN** a lookup is made for a destination with no learned path
 - **THEN** the store reports no path rather than returning an empty path, so a caller cannot mistake "unknown" for "zero hops"
 
-### Requirement: The path store is shared, authoritative in memory, and durable when a database is configured
+### Requirement: The path store is shared, authoritative in memory, and durable
 The system SHALL maintain one path store for the whole platform rather than one per entity, and
-SHALL answer every lookup from memory so that route selection never waits on a database. The
-store SHALL be bounded by a configurable maximum number of destinations with least-recently-updated
-eviction. When a database is configured the system SHALL additionally persist learned routes and
-restore them at startup; when none is configured the store SHALL be memory-only as before.
+SHALL answer every lookup from memory so that route selection never waits on a database. The store
+SHALL be bounded by a configurable maximum number of destinations with least-recently-updated
+eviction. The system SHALL persist learned routes and restore them at startup, and SHALL report the
+count restored.
 
 #### Scenario: Two subscribers look up the same destination
 - **WHEN** two subscribers query for the same destination
 - **THEN** both receive the same learned path from the one shared store
 
-#### Scenario: Restart with a database configured
+#### Scenario: Restart with stored routes
 - **WHEN** the process restarts with a database holding learned routes
 - **THEN** those routes are restored before traffic arrives, a lookup for a restored destination returns its most recently confirmed path, and the count restored is reported at startup
-
-#### Scenario: Restart with no database configured
-- **WHEN** the process restarts with no database configured
-- **THEN** the path store is empty and is relearned from received traffic
 
 #### Scenario: Lookup while the database is unreachable
 - **WHEN** a route is looked up while the database is unreachable
@@ -142,4 +138,3 @@ same candidate limits. A path body SHALL NOT be treated as evidence of the sende
 #### Scenario: Rendering a route learned this way
 - **WHEN** a route learned from a decrypted path body is reported
 - **THEN** its sender is presented as claimed, in the same visual convention the runtime uses for other unverified content
-

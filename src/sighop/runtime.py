@@ -2,7 +2,7 @@
 
 Source (live modem or capture replay) → decode → dedup → path learning →
 bus fan-out, with the transmit scheduler and its advert stubs on the other
-side. Milestone 3's `sighop run` is this class with a command line attached.
+side. `boot.py` composes one from the environment and runs it.
 
 The gate stays closed unless an operator explicitly opens it, and the runtime
 says so at startup and in every status line. Everything else here is wiring: no
@@ -27,18 +27,20 @@ from typing import IO
 from sighop.bots import drivers as bot_drivers
 from sighop.bots.base import BotRuntimeEvent, UnknownDriverError
 from sighop.bots.runtime import BotHost, BotWorker
-from sighop.config import DEFAULT_PATH_HASH_SIZE
+from sighop.config import (
+    DEFAULT_CEILING_FRACTION,
+    DEFAULT_MAX_ENTRIES,
+    DEFAULT_PATH_HASH_SIZE,
+    DEFAULT_STATUS_INTERVAL_SECONDS,
+    DEFAULT_TTL_SECONDS,
+)
 from sighop.db.engine import Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import BotRecord, LoadedEntity, OpenedEntities, RoomRecord
 from sighop.keystore import EntityRegistry, LocalEntity
 from sighop.logging import Logger, get_logger
 from sighop.monitor.render import (
-    BOTS_OFF,
-    CHANNELS_OFF,
-    PERSISTENCE_OFF,
-    ROOMS_OFF,
-    WEBHOOKS_OFF_NO_DATABASE,
+    CHANNELS_NONE,
     WEBHOOKS_OFF_NO_SECRET,
     WEBHOOKS_OFF_REPLAY,
     render_bot_event,
@@ -77,7 +79,7 @@ from sighop.net.channels import (
     ChannelUnknown,
 )
 from sighop.net.contacts import Contact, ContactError, ContactStore
-from sighop.net.dedup import DEFAULT_MAX_ENTRIES, DEFAULT_TTL_SECONDS, DedupCache
+from sighop.net.dedup import DedupCache
 from sighop.net.dm import (
     DirectMessageError,
     DirectMessageEvent,
@@ -92,7 +94,6 @@ from sighop.net.paths import PathStore
 from sighop.net.room import RoomEvent, RoomRetentionPruner, RoomServer
 from sighop.net.rx import RxRecord, decode_event
 from sighop.net.tx import (
-    DEFAULT_CEILING_FRACTION,
     AirtimeBudget,
     Clock,
     PacketSender,
@@ -111,7 +112,6 @@ from sighop.radio.modem import ModemEvent, RadioParams
 from sighop.radio.probe import Absent, ProbeResult
 from sighop.webhooks.dispatcher import WebhookDispatcher
 
-DEFAULT_STATUS_INTERVAL_SECONDS = 60.0
 DEFAULT_CHANNEL_REFRESH_SECONDS = 60.0
 """How soon a channel added or removed from another process reaches this run
 (channel-messaging D4). A change made in this run's own panel applies at once."""
@@ -201,6 +201,16 @@ class Runtime:
 
     source: AsyncIterable[ModemEvent]
     startup: Callable[[], Awaitable[str]]
+    persistence: Persistence
+    """The durable backing, already opened and version-checked by the caller.
+
+    Not optional, and required rather than defaulted: a database is required
+    (`database` spec), so there is no second path through the stores for a run
+    that stores nothing, and the type is what keeps one from growing back.
+    Opening happens outside the runtime because a configured database that
+    cannot be reached is a *startup* failure — it must be reported before a
+    pipeline exists, and before anything could be transmitted."""
+
     config: RuntimeConfig = field(default_factory=RuntimeConfig)
     sender: PacketSender | None = None
     radio: RadioParams | None = None
@@ -219,16 +229,6 @@ class Runtime:
     """The board's own readback, when one was taken. Also what a room server's
     telemetry answer is built from — a value the board did not give is absent
     there rather than defaulted (§4.1)."""
-
-    persistence: Persistence | None = None
-    """The durable backing, already opened and version-checked by the caller.
-
-    None is the whole of "no database configured": the stores get no sink, every
-    lookup is answered from memory exactly as before, and the startup line says
-    that state will not survive the process. Opening happens outside the runtime
-    because a configured database that cannot be reached is a *startup* failure
-    (`database` spec) — it must be reported before a pipeline exists, and before
-    anything could be transmitted."""
 
     services: tuple[Callable[[], Awaitable[None]], ...] = ()
     """Long-running work this run should carry that is not the radio's.
@@ -287,7 +287,7 @@ class Runtime:
     bots: BotHost = field(init=False)
     _unrun_bots: list[str] = field(init=False, default_factory=list)
     _webhook_line: str = field(init=False, default="")
-    _channel_line: str = field(init=False, default=CHANNELS_OFF)
+    _channel_line: str = field(init=False, default=CHANNELS_NONE)
     _tx_watcher: Callable[[Submission, TxOutcome, dt.datetime], None] | None = field(
         init=False, default=None
     )
@@ -338,9 +338,7 @@ class Runtime:
                 ttl_seconds=self.config.dedup_ttl_seconds,
                 max_entries=self.config.dedup_max_entries,
             ),
-            paths=PathStore(
-                sink=None if self.persistence is None else self.persistence.path_sink()
-            ),
+            paths=PathStore(sink=self.persistence.path_sink()),
             logger=self.logger,
             radio=self.radio,
         )
@@ -373,10 +371,9 @@ class Runtime:
             self.adverts.add_stub(name)
         self.contacts = ContactStore(
             logger=self.logger,
-            sink=None if self.persistence is None else self.persistence.contact_sink(),
+            sink=self.persistence.contact_sink(),
         )
-        if self.persistence is not None:
-            self.persistence.attach_contacts(self.contacts)
+        self.persistence.attach_contacts(self.contacts)
         # Design D11: one expectation table, shared by everything that waits on
         # an acknowledgement, and one subscriber that matches them — so
         # "unmatched" keeps meaning nobody in this process was waiting.
@@ -396,7 +393,7 @@ class Runtime:
             # Where sent and received messages go to be made durable. None with
             # no database and on a replay, which is the whole of "this run is
             # not recording conversations" (design D8, D13).
-            records=None if self.persistence is None else self.persistence.dm_sink(),
+            records=self.persistence.dm_sink(),
             path_hash_size=self.config.path_hash_size,
         )
         # Channels (channel-messaging D3): a bus subscriber for group text and a
@@ -409,20 +406,16 @@ class Runtime:
             clock=self.clock,
             on_event=self._on_channel_event,
             logger=self.logger,
-            records=None if self.persistence is None else self.persistence.channel_sink(),
+            records=self.persistence.channel_sink(),
             path_hash_size=self.config.path_hash_size,
         )
-        if self.channel_loader is None and self.persistence is not None:
+        if self.channel_loader is None:
             self.channel_loader = self._load_stored_channels
         # Design D2: unlike `channel_loader`, guarded on the secret too — a
         # missing `SIGHOP_SECRET_KEY` means there is nothing this run could
         # open, and defaulting anyway would give reconcile a loader that only
         # ever fails.
-        if (
-            self.entity_loader is None
-            and self.persistence is not None
-            and self.webhook_secret is not None
-        ):
+        if self.entity_loader is None and self.webhook_secret is not None:
             self.entity_loader = self._load_stored_entities
         self.path_bodies = PathBodyReader(
             paths=self.pipeline.paths,
@@ -467,9 +460,6 @@ class Runtime:
             return None
         if self.webhooks is not None:
             return self.webhooks
-        if self.persistence is None:
-            self._webhook_line = WEBHOOKS_OFF_NO_DATABASE
-            return None
         if self.webhook_secret is None:
             self._webhook_line = WEBHOOKS_OFF_NO_SECRET
             return None
@@ -483,7 +473,6 @@ class Runtime:
     # --- Channels (channel-messaging D4) --------------------------------------
 
     async def _load_stored_channels(self) -> ChannelSet:
-        assert self.persistence is not None
         outcome = await self.persistence.channels.load_keys(self.webhook_secret)
         if not isinstance(outcome, Succeeded):
             raise ChannelLoadError(str(outcome.error))
@@ -496,7 +485,6 @@ class Runtime:
         something to adopt — the same rule startup already applies through
         `cli.py`'s own call to `load_openable`.
         """
-        assert self.persistence is not None
         assert self.webhook_secret is not None
         outcome = await self.persistence.entities.load_openable(
             self.webhook_secret, enabled_only=True
@@ -987,10 +975,9 @@ class Runtime:
             if self.retention is not None:
                 await self.retention.stop()
             await self.bus.aclose()
-            if self.persistence is not None:
-                # After the bus, so nothing is still producing rows, and before
-                # the last status line, so its counters are final.
-                await self.persistence.stop()
+            # After the bus, so nothing is still producing rows, and before
+            # the last status line, so its counters are final.
+            await self.persistence.stop()
             self._started = True
             self._release()
             self._write(self._status_line())
@@ -1026,8 +1013,6 @@ class Runtime:
         if self.channel_loader is not None:
             # Before any traffic, after nothing else: channels need no contacts.
             await self._initial_channels()
-        if self.persistence is None:
-            return
         await self.persistence.restore(
             self.contacts,
             self.pipeline.paths,
@@ -1051,7 +1036,6 @@ class Runtime:
         both *stated*. A run that silently served no rooms would be
         indistinguishable from one whose rooms failed to load.
         """
-        assert self.persistence is not None
         rooms = await self.persistence.rooms.list_all()
         if not isinstance(rooms, Succeeded):
             self._unserved_rooms.append(f"rooms could not be read: {rooms.error}; none is served")
@@ -1094,7 +1078,6 @@ class Runtime:
         behaviour is usually to stay quiet that distinction is the whole of the
         operator's view.
         """
-        assert self.persistence is not None
         bots = await self.persistence.bots.list_all()
         if not isinstance(bots, Succeeded):
             self._unrun_bots.append(f"bots could not be read: {bots.error}; none is run")
@@ -1129,8 +1112,6 @@ class Runtime:
         order, so the "stop" half here is the fallback that makes the
         property hold unconditionally rather than only along that path.
         """
-        if self.persistence is None:
-            return
         listed = await self.persistence.rooms.list_all()
         if not isinstance(listed, Succeeded):
             return
@@ -1172,8 +1153,6 @@ class Runtime:
         holds is refused for exactly the reason `_load_bots` already refuses
         it at startup — that is where a room's claim on an entity is known.
         """
-        if self.persistence is None:
-            return
         listed = await self.persistence.bots.list_all()
         if not isinstance(listed, Succeeded):
             return
@@ -1236,7 +1215,6 @@ class Runtime:
             self._not_run(record, stored, str(exc))
             return
 
-        assert self.persistence is not None
         worker = BotWorker(
             record=record,
             driver=driver,
@@ -1320,7 +1298,6 @@ class Runtime:
         return True
 
     async def _serve_room(self, record: RoomRecord, stored: LoadedEntity) -> None:
-        assert self.persistence is not None
         entity = next(
             (stub for stub in self.adverts.stubs if stub.identity.public_key == stored.public_key),
             None,
@@ -1363,10 +1340,9 @@ class Runtime:
                 self.capture_writer.write(event)
             record = decode_event(event)
             self.pipeline.ingest(record)
-            if self.persistence is not None:
-                # After ingest and after the decision it describes: the feed
-                # records what happened, and nothing consults it (§6).
-                self.persistence.record_rx(record, airtime_ms=self._airtime_ms(record))
+            # After ingest and after the decision it describes: the feed
+            # records what happened, and nothing consults it (§6).
+            self.persistence.record_rx(record, airtime_ms=self._airtime_ms(record))
             self._print(render_frame_line(record))
             self._print(render_detail_line(record))
 
@@ -1486,8 +1462,6 @@ class Runtime:
                     packet_id=outcome.packet_id,
                     error=repr(exc),
                 )
-        if self.persistence is None:
-            return
         self.persistence.record_tx(submission, outcome, at=at)
 
     def _on_dm_event(self, event: DirectMessageEvent) -> None:
@@ -1546,7 +1520,7 @@ class Runtime:
     # --- Output ------------------------------------------------------------
 
     def _status_line(self) -> str:
-        persistence = PERSISTENCE_OFF if self.persistence is None else self.persistence.state
+        persistence = self.persistence.state
         writers = self.persistence
         return render_status(
             self.scheduler.status(),
@@ -1609,8 +1583,6 @@ class Runtime:
 
     def _room_lines(self) -> list[str]:
         """What rooms this run serves, said before any traffic (11.2, 11.3)."""
-        if self.persistence is None:
-            return [ROOMS_OFF]
         lines = [
             render_room_startup(
                 name=room.room.name,
@@ -1628,8 +1600,6 @@ class Runtime:
 
     def _bot_lines(self) -> list[str]:
         """What bots this run is running, said before any traffic (design D5)."""
-        if self.persistence is None:
-            return [BOTS_OFF]
         lines = [
             render_bot_startup(
                 name=worker.name,
@@ -1678,8 +1648,6 @@ class Runtime:
 
     def _persistence_line(self) -> str:
         """What the run's durability is, said once, before any traffic."""
-        if self.persistence is None:
-            return render_persistence()
         return render_persistence(
             database=self.persistence.database.config.redacted_url,
             schema_version=self.persistence.database.applied_revision,

@@ -55,6 +55,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
@@ -129,18 +131,6 @@ def test_the_page_states_what_an_exported_keyfile_is() -> None:
     assert "SIGHOP_SECRET_KEY" in body, "the store's own protection is not contrasted"
 
 
-def test_with_no_database_the_stored_identities_say_so_rather_than_none() -> None:
-    """12.1 / 9.5: "no identities" and "cannot read identities" are two screens."""
-    app, _state, _log = _built(stub_state())
-
-    with _client(app) as client:
-        body = client.get("/admin/identities").text
-
-    assert "cannot be read" in body
-    assert "no database is configured" in body
-
-
-@pytest.mark.database
 async def test_an_identity_created_in_the_ui_is_indistinguishable_from_the_cli(
     database: Database,
 ) -> None:
@@ -169,7 +159,6 @@ async def test_an_identity_created_in_the_ui_is_indistinguishable_from_the_cli(
     assert record.enabled is True
 
 
-@pytest.mark.database
 async def test_disabling_an_identity_a_room_is_bound_to_names_the_room(
     database: Database,
 ) -> None:
@@ -197,7 +186,6 @@ async def test_disabling_an_identity_a_room_is_bound_to_names_the_room(
     assert "stored messages" in body and "durable state" in body and "survive" in body
 
 
-@pytest.mark.database
 async def test_disabling_an_identity_held_as_a_default_states_that_too(
     database: Database,
 ) -> None:
@@ -218,7 +206,6 @@ async def test_disabling_an_identity_held_as_a_default_states_that_too(
     assert "nothing" in body and "preselected" in body
 
 
-@pytest.mark.database
 async def test_an_identity_can_be_disabled_and_enabled_through_the_page(
     database: Database,
 ) -> None:
@@ -244,7 +231,6 @@ async def test_an_identity_can_be_disabled_and_enabled_through_the_page(
 # --- 12.3 / 12.4 Rooms ------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_the_rooms_page_shows_member_and_message_counts(
     database: Database,
 ) -> None:
@@ -283,7 +269,6 @@ async def test_the_rooms_page_shows_member_and_message_counts(
     assert '<td class="num">1</td>' in row, "the message count is not in the row"
 
 
-@pytest.mark.database
 async def test_a_rotation_states_that_members_must_log_in_again(
     database: Database,
 ) -> None:
@@ -298,7 +283,6 @@ async def test_a_rotation_states_that_members_must_log_in_again(
     assert "refused in silence" in body
 
 
-@pytest.mark.database
 async def test_a_retention_bound_states_how_many_messages_are_stored(
     database: Database,
 ) -> None:
@@ -321,7 +305,6 @@ async def test_a_retention_bound_states_how_many_messages_are_stored(
     assert "retention wins over sync" in body
 
 
-@pytest.mark.database
 async def test_a_submitted_password_appears_in_no_response_and_no_event(
     database: Database,
 ) -> None:
@@ -352,7 +335,6 @@ async def test_a_submitted_password_appears_in_no_response_and_no_event(
     assert listed.value[0].admin_password_hash.startswith("$argon2id$")
 
 
-@pytest.mark.database
 async def test_setting_retention_goes_through_the_rooms_repository(
     database: Database,
 ) -> None:
@@ -396,7 +378,6 @@ async def _room(database: Database):
 # --- 12.5 / 12.6 Bots -------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_bot_identitys_page_shows_the_greeting_records(database: Database) -> None:
     """12.5: the records that decide whether a bot acts on a contact again."""
     persistence, bot = await _bot(database)
@@ -414,7 +395,6 @@ async def test_a_bot_identitys_page_shows_the_greeting_records(database: Databas
     assert "greeted:" in body, "the greeting records are not readable"
 
 
-@pytest.mark.database
 async def test_an_invalid_driver_configuration_leaves_the_stored_one_unchanged(
     database: Database,
 ) -> None:
@@ -447,7 +427,6 @@ async def test_an_invalid_driver_configuration_leaves_the_stored_one_unchanged(
     )
 
 
-@pytest.mark.database
 async def test_a_valid_driver_configuration_is_stored(database: Database) -> None:
     """12.5: the refusal above means something only if acceptance works."""
     persistence, bot = await _bot(database)
@@ -463,7 +442,6 @@ async def test_a_valid_driver_configuration_is_stored(database: Database) -> Non
     assert listed.value[0].config["burst"] == 3
 
 
-@pytest.mark.database
 async def test_a_switch_to_active_is_unchanged_until_it_is_confirmed(
     database: Database,
 ) -> None:
@@ -474,6 +452,10 @@ async def test_a_switch_to_active_is_unchanged_until_it_is_confirmed(
     async with _live(app) as client:
         page = (await client.get(f"/admin/bots/{bot.id}/mode")).text
         assert "transmit unprompted" in page
+        # Design D4: whoever opens one gate is told the other still applies.
+        collapsed = " ".join(page.split())
+        assert "still requires this node's transmit gate to be open" in collapsed
+        assert "duty-cycle ceiling" in collapsed
 
         unconfirmed = await _apost(client, app, f"/admin/bots/{bot.id}/mode", mode="active")
         assert unconfirmed.status_code == 303
@@ -580,7 +562,8 @@ def test_the_system_page_shows_the_readback_once_and_links_the_gate_controls() -
     assert 'href="/admin/ceiling"' in body
     assert body.count("<td>radio readback</td>") == 1
     assert body.count("<td>tx power</td>") == 1
-    assert "expects revision" in body
+    assert "<td>expected</td>" in body
+    assert '<td>agree</td><td class="mono">yes</td>' in body
     assert confirm.status_code == 200
     assert state.scheduler.transmit_enabled is False
     assert state.scheduler.budget.ceiling_fraction == ceiling
@@ -594,7 +577,8 @@ def test_a_run_without_a_probe_still_shows_the_schema_and_the_gate_links() -> No
         body = client.get("/system").text
 
     assert "no board to ask" in body
-    assert "expects revision" in body
+    assert "<td>expected</td>" in body
+    assert '<td>agree</td><td class="mono">yes</td>' in body
     assert 'href="/admin/transmit"' in body
     assert 'href="/admin/ceiling"' in body
 
@@ -928,15 +912,6 @@ def _channel_state(database: Database) -> tuple[FastAPI, StubState, RecordingLog
     return app, state, log
 
 
-def test_with_no_database_the_chat_page_offers_no_channel_controls() -> None:
-    app, _state, _log = _built()
-    with _client(app) as client:
-        body = client.get("/chat").text
-    assert "require durable storage" in body
-    assert 'action="/admin/channels/' not in body
-
-
-@pytest.mark.database
 async def test_the_chat_page_lists_channel_kind_hash_guessable_and_count(
     database: Database,
 ) -> None:
@@ -946,10 +921,11 @@ async def test_the_chat_page_lists_channel_kind_hash_guessable_and_count(
     assert "Public" in body and ">public<" in body and ">11<" in body
     # Guessable is a status glyph with its meaning on hover, not a word per row.
     assert 'class="status status-guessable"' in body
-    assert "sighop channel key" in body and "not shown here" in body
+    assert "never shown" in body and "cannot give one back" in body
+    # `channel-store`: said on the form too, at the moment a key is supplied.
+    assert "will not be shown again" in body
 
 
-@pytest.mark.database
 async def test_a_hashtag_added_in_the_ui_matches_the_cli_and_is_decrypted_at_once(
     database: Database,
 ) -> None:
@@ -973,7 +949,6 @@ async def test_a_hashtag_added_in_the_ui_matches_the_cli_and_is_decrypted_at_onc
     assert [c.name for c in state.channels.channels] == ["Public", "#dev-sighop"]
 
 
-@pytest.mark.database
 async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Database) -> None:
     app, state, _log = _channel_state(database)
     async with _live(app) as client:
@@ -1002,7 +977,6 @@ async def test_a_psk_is_never_in_the_page_after_an_add_or_a_refusal(database: Da
     assert [c.name for c in state.channels.channels] == ["Public", "crew"]
 
 
-@pytest.mark.database
 async def test_channel_administration_is_closed_until_it_is_wanted(database: Database) -> None:
     """The three add-a-channel forms are on the chat page, as `web-chat`
     requires, but folded away on an ordinary visit — and never folded away over
@@ -1031,7 +1005,6 @@ async def test_channel_administration_is_closed_until_it_is_wanted(database: Dat
     assert '<details class="channel-admin" open>' in after_add
 
 
-@pytest.mark.database
 async def test_removing_a_channel_is_confirmed_with_its_count_and_a_nonce(
     database: Database,
 ) -> None:
@@ -1096,7 +1069,6 @@ async def _a_room(persistence: Persistence, *, name: str = "lounge"):
     return stored.value, created.value
 
 
-@pytest.mark.database
 async def test_no_safe_request_deletes_a_room(database: Database) -> None:
     """A GET, a prefetch and a reload all reach the confirmation, never the act."""
     persistence = Persistence(database=database)
@@ -1111,7 +1083,6 @@ async def test_no_safe_request_deletes_a_room(database: Database) -> None:
     assert len((await persistence.rooms.list_all()).value) == 1
 
 
-@pytest.mark.database
 async def test_the_room_confirmation_counts_what_it_will_delete(database: Database) -> None:
     persistence = Persistence(database=database)
     identity, room = await _a_room(persistence)
@@ -1127,7 +1098,6 @@ async def test_the_room_confirmation_counts_what_it_will_delete(database: Databa
     assert "is <strong>not</strong> deleted" in body
 
 
-@pytest.mark.database
 async def test_deleting_a_room_removes_it_and_keeps_its_identity(database: Database) -> None:
     persistence = Persistence(database=database)
     identity, room = await _a_room(persistence)
@@ -1153,7 +1123,6 @@ async def test_deleting_a_room_removes_it_and_keeps_its_identity(database: Datab
     assert audited["actor"] == OPERATOR
 
 
-@pytest.mark.database
 async def test_deleting_a_room_without_a_confirmation_deletes_nothing(
     database: Database,
 ) -> None:
@@ -1172,7 +1141,6 @@ async def test_deleting_a_room_without_a_confirmation_deletes_nothing(
     assert audited["outcome"] == "refused"
 
 
-@pytest.mark.database
 async def test_a_room_confirmation_cannot_be_spent_on_another_room(
     database: Database,
 ) -> None:
@@ -1189,7 +1157,6 @@ async def test_a_room_confirmation_cannot_be_spent_on_another_room(
     assert len((await persistence.rooms.list_all()).value) == 2
 
 
-@pytest.mark.database
 async def test_deleting_a_room_asks_for_no_password(database: Database) -> None:
     """Design D6: stored content, not key material — `REMOVE_CHANNEL`'s tier."""
     persistence = Persistence(database=database)
@@ -1224,7 +1191,6 @@ async def _a_bot(persistence: Persistence, *, name: str = "greeter-bot"):
     return stored.value, created.value
 
 
-@pytest.mark.database
 async def test_no_safe_request_deletes_a_bot(database: Database) -> None:
     persistence = Persistence(database=database)
     _identity, bot = await _a_bot(persistence)
@@ -1237,7 +1203,6 @@ async def test_no_safe_request_deletes_a_bot(database: Database) -> None:
     assert len((await persistence.bots.list_all()).value) == 1
 
 
-@pytest.mark.database
 async def test_the_bot_confirmation_counts_its_state_and_says_what_it_records(
     database: Database,
 ) -> None:
@@ -1257,7 +1222,6 @@ async def test_the_bot_confirmation_counts_its_state_and_says_what_it_records(
     assert "is <strong>not</strong> deleted" in body
 
 
-@pytest.mark.database
 async def test_deleting_a_bot_removes_its_state_and_keeps_its_identity(
     database: Database,
 ) -> None:
@@ -1287,7 +1251,6 @@ async def test_deleting_a_bot_removes_its_state_and_keeps_its_identity(
     assert audited["keys_deleted"] == 1
 
 
-@pytest.mark.database
 async def test_deleting_a_bot_without_a_confirmation_deletes_nothing(
     database: Database,
 ) -> None:
@@ -1304,7 +1267,6 @@ async def test_deleting_a_bot_without_a_confirmation_deletes_nothing(
     assert audited["outcome"] == "refused"
 
 
-@pytest.mark.database
 async def test_a_bot_page_says_a_bot_is_named_by_its_identity(database: Database) -> None:
     """There is no bot rename: the name belongs to the identity (bot-runtime)."""
     persistence = Persistence(database=database)
@@ -1319,7 +1281,6 @@ async def test_a_bot_page_says_a_bot_is_named_by_its_identity(database: Database
     assert f'href="/admin/identities/{identity.id}/rename"' in body
 
 
-@pytest.mark.database
 async def test_only_a_free_bot_identity_offers_the_create_a_bot_form(database: Database) -> None:
     """consolidate-web-pages 4.2: the form is on the identity it would create on."""
     persistence = Persistence(database=database)
@@ -1356,7 +1317,6 @@ async def test_only_a_free_bot_identity_offers_the_create_a_bot_form(database: D
 # --- Removing an identity through the panel ----------------------------------
 
 
-@pytest.mark.database
 async def test_removing_an_identity_needs_the_password_and_the_typed_name(
     database: Database,
 ) -> None:
@@ -1387,7 +1347,6 @@ async def test_removing_an_identity_needs_the_password_and_the_typed_name(
     assert audited["actor"] == OPERATOR
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     ("password", "typed"),
     [
@@ -1427,7 +1386,6 @@ async def test_an_identity_removal_missing_a_gate_removes_nothing(
     assert refused, "a refused removal was not recorded as its own event"
 
 
-@pytest.mark.database
 async def test_removing_an_identity_without_a_confirmation_removes_nothing(
     database: Database,
 ) -> None:
@@ -1453,7 +1411,6 @@ async def test_removing_an_identity_without_a_confirmation_removes_nothing(
     assert audited["outcome"] == "refused"
 
 
-@pytest.mark.database
 async def test_removing_a_bound_identity_is_refused_naming_what_it_serves(
     database: Database,
 ) -> None:
@@ -1480,7 +1437,6 @@ async def test_removing_a_bound_identity_is_refused_naming_what_it_serves(
     assert [e["outcome"] for e in log.named("web_guarded_action")] == ["refused"]
 
 
-@pytest.mark.database
 async def test_no_safe_request_removes_an_identity(database: Database) -> None:
     persistence = Persistence(database=database)
     stored = await persistence.entities.store(
@@ -1498,7 +1454,6 @@ async def test_no_safe_request_removes_an_identity(database: Database) -> None:
     assert len((await persistence.entities.list_all()).value) == 1
 
 
-@pytest.mark.database
 async def test_the_removal_page_offers_disabling_as_the_reversible_action(
     database: Database,
 ) -> None:
@@ -1516,7 +1471,6 @@ async def test_the_removal_page_offers_disabling_as_the_reversible_action(
     assert "Disabling is the reversible action" in body
 
 
-@pytest.mark.database
 async def test_a_deletion_the_run_did_not_take_is_still_recorded_as_such(
     database: Database,
 ) -> None:
@@ -1543,7 +1497,6 @@ async def test_a_deletion_the_run_did_not_take_is_still_recorded_as_such(
     assert audited["stopped_serving"] is False, "the live half was not reported separately"
 
 
-@pytest.mark.database
 async def test_a_bot_deletion_the_run_did_not_take_is_still_recorded_as_such(
     database: Database,
 ) -> None:
@@ -1567,7 +1520,6 @@ async def test_a_bot_deletion_the_run_did_not_take_is_still_recorded_as_such(
 # --- Renaming through the panel ----------------------------------------------
 
 
-@pytest.mark.database
 async def test_renaming_a_room_a_channel_and_a_webhook_asks_for_no_password(
     database: Database,
 ) -> None:
@@ -1587,7 +1539,6 @@ async def test_renaming_a_room_a_channel_and_a_webhook_asks_for_no_password(
             assert 'name="nonce"' not in body, path
 
 
-@pytest.mark.database
 async def test_renaming_a_room_changes_only_the_name(database: Database) -> None:
     persistence = Persistence(database=database)
     _identity, room = await _a_room(persistence)
@@ -1604,7 +1555,6 @@ async def test_renaming_a_room_changes_only_the_name(database: Database) -> None
     assert after.admin_password_hash == room.admin_password_hash
 
 
-@pytest.mark.database
 async def test_a_refused_room_rename_re_renders_with_the_reason(
     database: Database,
 ) -> None:
@@ -1620,7 +1570,6 @@ async def test_a_refused_room_rename_re_renders_with_the_reason(
     assert [r.name for r in (await persistence.rooms.list_all()).value] == ["lounge"]
 
 
-@pytest.mark.database
 async def test_a_refused_channel_rename_renders_no_key(database: Database) -> None:
     persistence = Persistence(database=database)
     added = await persistence.channels.add_psk(
@@ -1641,7 +1590,6 @@ async def test_a_refused_channel_rename_renders_no_key(database: Database) -> No
     assert bytes(range(40, 56)).hex() not in response.text
 
 
-@pytest.mark.database
 async def test_every_rename_is_recorded_with_the_old_and_the_new_name(
     database: Database,
 ) -> None:
@@ -1670,7 +1618,6 @@ async def test_every_rename_is_recorded_with_the_old_and_the_new_name(
 # --- The exclusions this build still states ----------------------------------
 
 
-@pytest.mark.database
 async def test_the_four_remaining_exclusions_are_still_named_where_looked_for(
     database: Database,
 ) -> None:
@@ -1688,18 +1635,18 @@ async def test_the_four_remaining_exclusions_are_still_named_where_looked_for(
         identities = (await client.get("/admin/identities")).text
         channels = (await client.get("/chat")).text
 
-    assert "sighop db upgrade" in schema or "database upgrade" in schema
-    assert "terminal" in schema
+    schema = " ".join(schema.split())
+    channels = " ".join(channels.split())
+    assert "applies outstanding migrations when it starts" in schema
 
     assert "SIGHOP_SECRET_KEY" in identities
-    assert "sighop keys secret" in identities
+    assert "openssl rand -base64 32" in identities
 
-    assert "sighop web user" in schema or "sighop web user" in identities
+    assert "Accounts are not managed from here" in schema
 
-    assert "sighop channel key" in channels
+    assert "cannot give one back" in channels
 
 
-@pytest.mark.database
 async def test_the_identities_page_no_longer_says_removal_is_not_offered(
     database: Database,
 ) -> None:
@@ -1714,7 +1661,6 @@ async def test_the_identities_page_no_longer_says_removal_is_not_offered(
     assert "Disabling is the reversible action offered alongside it" in body
 
 
-@pytest.mark.database
 async def test_the_identities_page_reflects_a_write_at_once(database: Database) -> None:
     """6.5: after a write, the "loaded by this run" table shows what the run
     is actually doing — the identity it now holds, with its advert schedule —

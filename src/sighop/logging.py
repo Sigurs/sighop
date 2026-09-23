@@ -54,9 +54,9 @@ def configure_logging(log_file: IO[str] | None = None, *, stream: IO[str] | None
     additionally to `log_file` when given (e.g. so an unattended run's logs
     survive alongside its capture file).
 
-    `sighop monitor` passes `stream=sys.stderr`: its standard output is
-    rendered lines, and mixing JSON into them would cost the format the one
-    property it was chosen for.
+    The node passes `stream=sys.stderr`: its standard output is rendered
+    lines, and mixing JSON into them would cost the format the one property it
+    was chosen for.
     """
     stream = sys.stdout if stream is None else stream
     output = _Tee(stream, log_file) if log_file is not None else stream

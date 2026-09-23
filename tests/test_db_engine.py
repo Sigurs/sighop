@@ -61,7 +61,6 @@ class RecordingLogger:
 # --- 3.1 Engine and session lifecycle ---------------------------------------
 
 
-@pytest.mark.database
 async def test_opening_and_disposing_leaves_no_connection_open(
     database_config: DatabaseConfig, database_url: str
 ) -> None:
@@ -101,7 +100,6 @@ def test_an_aware_datetime_is_normalised_to_utc() -> None:
     assert normalised == value
 
 
-@pytest.mark.database
 async def test_a_timestamp_round_trips_as_the_same_instant(database: Database) -> None:
     """The server's own TimeZone is Europe/Helsinki, not UTC (design D7)."""
     async with database.sessions() as session:
@@ -189,7 +187,6 @@ def test_no_classified_error_ever_carries_the_password() -> None:
 # --- 3.4 The schema version check (design D5) -------------------------------
 
 
-@pytest.mark.database
 async def test_a_matching_schema_version_starts(database_config: DatabaseConfig) -> None:
     handle = Database(config=database_config)
     try:
@@ -200,7 +197,6 @@ async def test_a_matching_schema_version_starts(database_config: DatabaseConfig)
         await handle.dispose()
 
 
-@pytest.mark.database
 async def test_a_database_behind_the_code_fails_naming_both_and_the_command(
     database_url: str,
 ) -> None:
@@ -214,13 +210,12 @@ async def test_a_database_behind_the_code_fails_naming_both_and_the_command(
         message = str(excinfo.value)
         assert "(no migrations applied)" in message
         assert migrations.expected_revision() in message
-        assert migrations.UPGRADE_COMMAND in message
+        assert migrations.RESTART_TO_MIGRATE in message
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)
 
 
-@pytest.mark.database
 async def test_a_database_one_revision_behind_names_both_revisions_and_the_command(
     database_url: str,
 ) -> None:
@@ -243,13 +238,12 @@ async def test_a_database_one_revision_behind_names_both_revisions_and_the_comma
         message = str(excinfo.value)
         assert "0001" in message, "the message must name where the database is"
         assert migrations.expected_revision() in message, "and where the code expects it to be"
-        assert migrations.UPGRADE_COMMAND in message, "and the command that reconciles them"
+        assert migrations.RESTART_TO_MIGRATE in message, "and the command that reconciles them"
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)
 
 
-@pytest.mark.database
 async def test_a_database_ahead_of_the_code_fails_naming_both(
     database_url: str,
 ) -> None:
@@ -747,8 +741,3 @@ async def test_row_counting_helpers_are_available_for_the_repositories(
         assert (
             await session.execute(select(func.count()).select_from(PacketLog))
         ).scalar_one() == 1
-
-
-test_row_counting_helpers_are_available_for_the_repositories = pytest.mark.database(
-    test_row_counting_helpers_are_available_for_the_repositories
-)

@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-sighop = "sighop.cli:main"
+sighop = "sighop.boot:main"
 
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
@@ -44,12 +44,11 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = [
-    # Tests that need Postgres. They isolate in a throwaway schema (design D11)
-    # and skip when neither SIGHOP_TEST_DATABASE_URL nor DATABASE_URL is set —
-    # no test may require a database to pass.
-    "database: exercises persistence against a real PostgreSQL server",
-]
+# No `database` marker: the database is required, so there is no subset of the
+# suite to select or skip. A run with neither SIGHOP_TEST_DATABASE_URL nor
+# DATABASE_URL set fails, naming both, rather than passing a reduced suite.
+# Every run isolates itself in a schema of its own and drops it afterwards
+# (design D6), so runs never collide and nothing is left behind.
 # The corpus harness imports its loader as `tests.protocol.corpus`, so the repo
 # root must be importable.
 pythonpath = ["."]

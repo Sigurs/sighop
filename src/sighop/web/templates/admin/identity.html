@@ -80,8 +80,8 @@
 </p>
 
 <h3>configuration</h3>
-{# One key at a time, as `sighop bot set` takes it: a refusal names the key it
-   is about, and a valid change is not lost because another key was wrong. #}
+{# One key at a time: a refusal names the key it is about, and a valid change
+   is not lost because another key was wrong. #}
 <div class="table-wrap">
   <table>
     <thead><tr><th class="mono">key</th><th>value</th><th></th></tr></thead>
@@ -109,8 +109,7 @@
 </div>
 <p class="note">
   A value the driver rejects is refused with the driver's own reason, naming
-  that key, and every other key is left exactly as it was — the same validator
-  <span class="mono">sighop bot set</span> uses.
+  that key, and every other key is left exactly as it was.
 </p>
 
 <h3>durable state</h3>

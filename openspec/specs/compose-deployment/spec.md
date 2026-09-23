@@ -9,7 +9,6 @@ applied when the platform starts. The deployment is one service, the platform, a
 file serves every host.
 
 ## Requirements
-
 ### Requirement: The platform reaches the modem by stable path with a supplementary group
 The deployment SHALL run the platform container as a user and group supplied by the operator's
 environment, SHALL grant device access by adding the host's serial-device group as a
@@ -45,9 +44,10 @@ escalation disabled, and an init process that forwards signals and reaps childre
 ### Requirement: The web interface is published on host loopback by default
 The deployment SHALL publish the platform's web interface on the host's loopback address and port
 8080 unless the operator's environment names a different published address or port, and SHALL
-configure the interface to accept the host names that loopback publication on the published port is
-reached by. The operator's environment MAY name one additional host name the interface accepts; when
-none is named, the accepted host names SHALL be exactly the loopback ones.
+configure the interface — through the container's environment rather than its arguments — to accept
+the host names that loopback publication on the published port is reached by. The operator's
+environment MAY name one additional host name the interface accepts; when none is named, the accepted
+host names SHALL be exactly the loopback ones.
 
 #### Scenario: Opening the panel from the host
 - **WHEN** the deployment is running with its defaults and a browser on the host opens the published loopback address
@@ -84,10 +84,9 @@ contains no real secret.
 - **THEN** it refuses to start naming the missing variable
 
 ### Requirement: The platform applies outstanding migrations when it starts
-The deployment SHALL consist of the platform service only, and SHALL start the platform with the
-option that applies outstanding migrations before the schema-version check. A database ahead of the
-platform's migration chain SHALL still be refused, exactly as outside a container. Outside the
-deployment, a run not given that option SHALL keep refusing a database that is behind.
+The deployment SHALL consist of the platform service only. The platform applies outstanding
+migrations as part of starting, so the deployment SHALL pass nothing to ask for it. A database ahead
+of the platform's migration chain SHALL still be refused, exactly as outside a container.
 
 #### Scenario: Starting the deployment on an empty database
 - **WHEN** the deployment is started against a database with no schema
@@ -137,7 +136,9 @@ volume.
 The deployment SHALL be a single compose file used unchanged on development and production hosts,
 with every per-host difference — user and group ids, serial-device group, modem path, database
 location, sealing secret, image reference and web publication settings — supplied by that host's
-environment file. The repository SHALL NOT carry an override file for a particular environment.
+environment file. Every platform setting SHALL be delivered as an environment variable; the
+deployment SHALL NOT give the container a command or arguments. The repository SHALL NOT carry an
+override file for a particular environment.
 
 #### Scenario: Starting on a new host
 - **WHEN** an operator on a host with its own environment file runs the deployment's plain start command
@@ -146,3 +147,7 @@ environment file. The repository SHALL NOT carry an override file for a particul
 #### Scenario: The committed deployment files
 - **WHEN** the repository's deployment files are listed
 - **THEN** there is exactly one compose file
+
+#### Scenario: How the platform is configured
+- **WHEN** the compose file's platform service is read
+- **THEN** it carries no command or argument list, and every setting the platform reads appears as an environment variable

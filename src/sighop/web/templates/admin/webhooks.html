@@ -7,9 +7,6 @@
 {% block content %}
 <h1>webhooks</h1>
 
-{% if no_database %}
-<p class="unavailable"><strong>No webhooks.</strong> {{ no_database_note }}</p>
-{% else %}
 
 {% if refusal %}
 <p class="unavailable">
@@ -178,5 +175,4 @@
   a day; a hop limit narrows it. After it is stored the URL is shown only as its
   scheme and host, here and on the command line.
 </p>
-{% endif %}
 {% endblock %}

@@ -1,6 +1,6 @@
 """The driver registry: a name, a class, and nothing that imports by string.
 
-Design D14. `sighop bot create --driver greeter` looks a name up in this dict
+Design D14. Creating a bot with driver `greeter` looks a name up in this dict
 and refuses an unknown one by listing what exists. There is no entry-point
 discovery and no import by string: loading foreign code into the process that
 holds the entity seeds needs a better reason than convenience, and out-of-process

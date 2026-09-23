@@ -29,6 +29,7 @@ from sighop.web.guarded import (
     RAISE_CEILING,
     REVEAL_KEY,
 )
+from tests.dbfixtures import the_default_persistence
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
     OPERATOR,
@@ -43,6 +44,8 @@ from tests.webfixtures import (
     signed_client,
     stub_state,
 )
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 BASE = "http://127.0.0.1:8080"
@@ -551,7 +554,6 @@ def test_a_missing_password_is_refused_exactly_as_a_wrong_one() -> None:
     assert bodies[0] == bodies[1]
 
 
-@pytest.mark.database
 async def test_an_export_needs_the_acting_users_password(database: object) -> None:
     """8.2 for the fourth action; its success path is in `test_web_write_parity.py`."""
     import base64
@@ -716,7 +718,13 @@ async def test_the_runtime_says_what_it_is_told() -> None:
     from tests.test_web_state import _empty_source, _startup
 
     out = io.StringIO()
-    runtime = Runtime(source=_empty_source(), startup=_startup, config=RuntimeConfig(), out=out)
+    runtime = Runtime(
+        source=_empty_source(),
+        startup=_startup,
+        persistence=the_default_persistence(),
+        config=RuntimeConfig(),
+        out=out,
+    )
     runtime._started = True
     runtime.say("web: transmission ENABLED (by account 'dev-operator' from the web interface)")
     assert "by account 'dev-operator'" in out.getvalue()
@@ -783,12 +791,13 @@ def test_no_auth_bypass_parameter_exists_in_the_web_package() -> None:
 # --- 10.1 Account management is named where it would be looked for ----------
 
 
-def test_the_system_page_names_the_account_command_and_why_it_is_not_here() -> None:
+def test_the_system_page_says_accounts_are_not_managed_anywhere_yet() -> None:
     app = _app()
     with _signed(app) as client:
         body = " ".join(client.get("/system").text.split())
-    assert "sighop web user" in body
+    assert "sighop web user" not in body, "the page points at a command that does not exist"
     assert "Accounts are not managed from here" in body
+    assert "not managed anywhere else either" in body
     assert "stolen session" in body
 
 

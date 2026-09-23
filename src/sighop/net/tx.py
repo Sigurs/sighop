@@ -36,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
+from sighop.config import DEFAULT_CEILING_FRACTION
 from sighop.logging import Logger, get_logger
 from sighop.net.airtime import require_params, time_on_air_ms
 from sighop.net.bus import PriorityClass, Submission, TxHandle, TxOutcome, TxResult
@@ -51,11 +52,6 @@ from sighop.radio.modem import (
 
 WINDOW_SECONDS = 3600.0
 """The regulation's observation window: one hour."""
-
-DEFAULT_CEILING_FRACTION = 0.10
-"""EU 868's 869.4-869.65 MHz sub-band permits 500 mW e.r.p. conditional on a
-10% duty cycle. Enforced here regardless of any modem-side setting — the stock
-firmware ships a 50% default, which does not satisfy it."""
 
 DEFAULT_RESERVE_FRACTION = 0.90
 """Classes 2 and 3 stall here; 0 and 1 continue to the full ceiling (design D7)."""

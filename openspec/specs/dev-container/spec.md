@@ -8,7 +8,6 @@ rebuilds, and the host resources it deliberately does not reach — so that deve
 project needs a container engine and an editor, not a reconstructed host.
 
 ## Requirements
-
 ### Requirement: The checkout carries its own development container definition
 The repository SHALL contain a development container definition that an editor or a container
 engine can build from the checkout alone, with no host-specific value supplied by hand at build
@@ -100,15 +99,16 @@ panel started inside the container is reachable from a browser on the host at th
 The development container SHALL NOT run a database of its own, and SHALL take the database
 connection details from the workspace's gitignored development environment file, as the host
 workflow already does. The container SHALL be able to reach a database that is neither on the
-host nor in the container.
+host nor in the container. The test suite inside the container SHALL run against that database and
+SHALL NOT depend on a container engine being reachable from inside the container, because none is.
 
 #### Scenario: Tests against the configured database
 - **WHEN** the test suite is run inside the container with the development environment file's database URL in the environment
-- **THEN** the database-marked tests run against that external database rather than skipping
+- **THEN** every test runs against that external database, in a namespace of its own that is dropped when the run ends
 
 #### Scenario: No database configured
 - **WHEN** the test suite is run inside the container with no database URL in the environment
-- **THEN** the database-marked tests skip and the rest of the suite passes, as they do on the host
+- **THEN** the run stops before collecting tests and states which variables name a database, exactly as it does on the host
 
 ### Requirement: Command-line state survives a container rebuild
 The development container SHALL preserve, across removing and rebuilding the container, the

@@ -5,14 +5,13 @@ brings an identity into existence, or takes one out of the platform, was a
 terminal command — which made the browser a viewer of a platform administered
 somewhere else.
 
-Four things live here and each is the call the equivalent `sighop keys`
-subcommand makes:
+Four things live here, and each is a repository call:
 
 * **create** — `generate_identity()` then `EntityRepository.store`, which is
-  what `keys import` does with a key that came from a file. The panel has no
+  what importing does with a key that came from a file. The panel has no
   filesystem to put a keyfile on, so creating is generating and sealing in one
   step (design D3), and the *file* is the export below.
-* **show** — `keys show` for a stored identity rather than for a file.
+* **show** — a stored identity's public facts, never its key.
 * **import** — the document a keyfile holds, parsed by the keystore's own
   parser and sealed through the same repository call.
 * **export** — a **guarded action** (design D2). An unencrypted private key leaving
@@ -34,6 +33,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from sighop.config import SECRET_KEY_COMMAND, SECRET_KEY_VARIABLE
 from sighop.db.engine import Failed, Outcome, Succeeded
 from sighop.db.repositories import (
     BOT_ENTITY_TYPE,
@@ -73,7 +73,6 @@ from sighop.web.guarded import (
     audit,
 )
 from sighop.web.render import (
-    NO_DATABASE,
     Refusal,
     advert_id,
     collection_for,
@@ -114,17 +113,18 @@ REMOVAL_IS_OFFERED_HERE = (
     "Disabling is the reversible action offered alongside it: it stops the "
     "identity being loaded and can be undone at any time."
 )
-"""`web-admin`: this used to name `sighop keys delete` and say removal was not
+"""`web-admin`: this used to name a terminal command and say removal was not
 offered in the browser. The change `web-delete-and-rename` withdrew that
 exclusion, so this says what the action is and what it costs instead. The other
 four exclusions — migrations, the sealing secret, accounts and channel
 pre-shared keys — are unchanged and still stated where they are looked for."""
 
-SECRET_IS_A_TERMINAL_COMMAND = (
+SECRET_IS_NOT_GENERATED_HERE = (
     "The secret that seals stored identities is not generated here. It is "
-    "printed once, must be kept, and must never be regenerated — losing it makes "
+    "generated once, must be kept, and must never be regenerated — losing it makes "
     "every stored identity unrecoverable — and a browser is a poor place to hand "
-    "somebody something they must not lose. Generate it with `sighop keys secret`."
+    f"somebody something they must not lose. Generate it with `{SECRET_KEY_COMMAND}` "
+    f"and set it as {SECRET_KEY_VARIABLE}."
 )
 """Task 7.3 / `web-admin`: named where an operator would look for it, rather
 than left as an absence to be discovered."""
@@ -150,13 +150,9 @@ async def identities(
     The identities this run *loaded* are in memory; the ones the database holds
     may be more than that, and the difference is the point of showing both.
     """
-    stored: Outcome[list[EntityRecord]] | None = None
-    rooms: Outcome[list[RoomRecord]] | None = None
-    bots: Outcome[list[BotRecord]] | None = None
-    if page.persistence is not None:
-        stored = await page.persistence.entities.list_all()
-        rooms = await page.persistence.rooms.list_all()
-        bots = await page.persistence.bots.list_all()
+    stored = await page.persistence.entities.list_all()
+    rooms = await page.persistence.rooms.list_all()
+    bots = await page.persistence.bots.list_all()
     return page.page(
         request,
         "admin/identities.html",
@@ -175,7 +171,7 @@ async def identities(
         can_seal=page.sealing_secret is not None,
         no_sealing_secret=NO_SEALING_SECRET,
         download_note=DOWNLOAD_IS_NOT_OWNER_ONLY,
-        secret_note=SECRET_IS_A_TERMINAL_COMMAND,
+        secret_note=SECRET_IS_NOT_GENERATED_HERE,
         removal_note=REMOVAL_IS_OFFERED_HERE,
         status_code=status_code,
     )
@@ -206,7 +202,7 @@ async def set_identity_enabled(
     enabled: Annotated[str, Form()],
     page: PanelDep,
 ) -> RedirectResponse:
-    """Enable or disable one identity, through `sighop keys`' own repository.
+    """Enable or disable one identity, through the entity repository.
 
     Reaches the run right after the store takes it (`web-admin`): the running
     process starts or stops holding the identity without a restart, and
@@ -214,8 +210,6 @@ async def set_identity_enabled(
     visit. Narrated through `page.say` the moment it happens, the channel
     `remove_identity` and `delete_room` already use for their own outcomes.
     """
-    if page.persistence is None:
-        return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     record = await _entity(page, entity_id)
     if record is not None:
         turning_on = enabled == "true"
@@ -247,9 +241,9 @@ async def create_identity(
 ) -> RedirectResponse | HTMLResponse:
     """Generate an identity and seal it, in the process that stores it (D3).
 
-    `sighop keys new` writes a keyfile and `sighop keys import` seals it; the
-    browser has no filesystem between the two, so creating does both at once and
-    the *file* is the export. Neither surface gains a step the other lacks.
+    Generating a key and sealing it are one step here: the browser has no
+    filesystem to hold a keyfile between them, so creating does both at once and
+    the *file* is the export.
 
     The generated key avoids every node hash this run knows about, exactly as
     `create_keyfile` does: §3 rule 3 refuses two local identities sharing one,
@@ -263,8 +257,6 @@ async def create_identity(
     the form on a refusal, and key material must not be.
     """
     submitted = {"name": name, "node_type": node_type, "role": role}
-    if page.persistence is None:
-        return await _refuse(request, page, NO_DATABASE, **submitted)
     if page.sealing_secret is None:
         return await _refuse(request, page, NO_SEALING_SECRET, **submitted)
     try:
@@ -317,10 +309,9 @@ async def _taken_hashes(page: Panel) -> frozenset[int]:
     panel create the collision that stops the next start (design D3).
     """
     taken = {stub.node_hash for stub in page.state.adverts.stubs}
-    if page.persistence is not None:
-        listed = await page.persistence.entities.list_all()
-        if isinstance(listed, Succeeded):
-            taken.update(record.node_hash for record in listed.value)
+    listed = await page.persistence.entities.list_all()
+    if isinstance(listed, Succeeded):
+        taken.update(record.node_hash for record in listed.value)
     return frozenset(taken)
 
 
@@ -334,15 +325,13 @@ async def import_identity(
     document: Annotated[str, Form()] = "",
     role: Annotated[str, Form()] = "node",
 ) -> RedirectResponse | HTMLResponse:
-    """Seal a keyfile's private key into the store — `sighop keys import`'s own call.
+    """Seal a keyfile's private key into the store — the repository's own call.
 
     The document is parsed by the keystore's own parser, so a file the command
     line refuses is refused here for the same reason in the same words, and
     nothing is stored when it is.
     """
     submitted = {"document": document, "role": role}
-    if page.persistence is None:
-        return await _refuse(request, page, NO_DATABASE, **submitted)
     if page.sealing_secret is None:
         return await _refuse(request, page, NO_SEALING_SECRET, **submitted)
     try:
@@ -418,7 +407,7 @@ async def _reconcile_and_report_entity(
 async def identity(
     entity_id: str, request: Request, page: PanelDep, bot_deleted: str = ""
 ) -> HTMLResponse:
-    """`sighop keys show`, for a stored identity rather than for a file.
+    """One stored identity's public facts.
 
     No private key and no ciphertext: `EntityRecord` holds neither, so there is no
     rendering path along which either could escape.
@@ -468,7 +457,7 @@ async def _bot_context(page: Panel, record: EntityRecord | None) -> dict[str, ob
     from sighop.bots import drivers as bot_drivers
 
     context: dict[str, object] = {"is_bot": False, "bot": None}
-    if record is None or record.type != BOT_ENTITY_TYPE or page.persistence is None:
+    if record is None or record.type != BOT_ENTITY_TYPE:
         return context
     context["is_bot"] = True
     context["drivers"] = bot_drivers.driver_names()
@@ -493,8 +482,6 @@ async def _bot_context(page: Panel, record: EntityRecord | None) -> dict[str, ob
 
 
 async def _bindings_for(page: Panel) -> dict[str, list[str]]:
-    if page.persistence is None:
-        return {}
     return _bindings(
         await page.persistence.rooms.list_all(), await page.persistence.bots.list_all()
     )
@@ -511,8 +498,6 @@ def _is_loaded(page: Panel, record: EntityRecord | None) -> bool:
 
 
 async def _entity(page: Panel, entity_id: str) -> EntityRecord | None:
-    if page.persistence is None:
-        return None
     try:
         uuid.UUID(entity_id)
     except ValueError:
@@ -586,7 +571,7 @@ async def rename_identity(
     renaming back (design D6).
     """
     record = await _entity(page, entity_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return await rename_form(entity_id, request, page)
 
     def refuse(reason: str) -> HTMLResponse:
@@ -765,7 +750,7 @@ async def remove_identity(
     password: Annotated[str | None, Form()] = None,
     confirm_name: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop keys delete`'s own call, at the tier reveal and export are in.
+    """The repository's own call, at the tier reveal and export are in.
 
     Three gates, not one: the nonce, the operator's password, and the identity's
     name typed out — the last because the command line asks for it and this
@@ -817,8 +802,6 @@ async def remove_identity(
             entity_id,
             actor,
         )
-    if page.persistence is None:
-        return await _refuse_removal(request, page, record, serving, NO_DATABASE, entity_id, actor)
 
     removed = await page.persistence.entities.remove(record.public_key)
     if isinstance(removed, Failed) or not removed.value:
@@ -943,7 +926,7 @@ async def export_identity(
     )
     if refusal is not None:
         return refusal
-    if page.sealing_secret is None or page.persistence is None:
+    if page.sealing_secret is None:
         audit(
             page.logger,
             action=EXPORT_KEY,
@@ -1005,7 +988,7 @@ async def export_identity(
 
 async def _open(page: Panel, record: EntityRecord) -> LoadedEntity | None:
     """This one stored identity, with its private key opened. Never logged."""
-    assert page.persistence is not None and page.sealing_secret is not None
+    assert page.sealing_secret is not None
     try:
         loaded = await page.persistence.entities.load_all(page.sealing_secret)
     except (EntityLoadError, SealError):

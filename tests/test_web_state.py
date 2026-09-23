@@ -7,7 +7,7 @@ any page shows:
   run is asked to carry is started with it and cancelled with it, and a service
   that fails is a service that is gone — never a run that is.
 * **The seam has no cycle in it.** `runtime.py` imports nothing from `web/`,
-  `web/` imports nothing from `runtime.py`, and `cli.py` is the one module that
+  `web/` imports nothing from `runtime.py`, and `boot.py` is the one module that
   knows both. That is what makes it possible to drive every page from a stub,
   which is the property the whole panel's testability rests on.
 """
@@ -24,6 +24,7 @@ import sighop.runtime
 import sighop.web
 from sighop.runtime import Runtime, RuntimeConfig
 from sighop.web.state import DurableState, LiveState, PanelState
+from tests.dbfixtures import the_default_persistence
 from tests.webfixtures import (
     StubState,
     as_panel_state,
@@ -31,6 +32,8 @@ from tests.webfixtures import (
     signed_client,
     stub_state,
 )
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 
 class RecordingLogger:
@@ -71,6 +74,7 @@ def _runtime(*services, logger: RecordingLogger | None = None, out=None) -> Runt
     return Runtime(
         source=_empty_source(),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600.0, advert_tick=3600.0),
         out=out or io.StringIO(),
         logger=logger or RecordingLogger(),
@@ -153,7 +157,7 @@ async def test_the_runtime_satisfies_the_panel_state_structurally() -> None:
     state: PanelState = runtime  # checked by mypy, not only at run time
     assert isinstance(state, LiveState)
     assert isinstance(state, DurableState)
-    assert state.persistence is None
+    assert state.persistence is runtime.persistence
     assert state.scheduler is runtime.scheduler
     assert state.pipeline is runtime.pipeline
 
@@ -170,7 +174,7 @@ def test_a_stub_satisfies_the_panel_state_with_no_runtime_present() -> None:
     assert state.rooms == []
     assert state.radio is None
     assert state.probe_result is None
-    assert state.persistence is None
+    assert state.persistence is stub.persistence
 
 
 # --- 6.3 No cycle between the runtime and the panel -------------------------
@@ -209,8 +213,8 @@ def test_no_web_module_imports_the_runtime(path: Path) -> None:
     )
 
 
-def test_the_cli_is_the_only_module_that_knows_both() -> None:
-    """6.3: one module composes them, and it is the one that already composes
+def test_boot_is_the_only_module_that_knows_both() -> None:
+    """6.3: one module composes them — the entry point, which already composes
     everything else."""
     package = RUNTIME_FILE.parent
     both: list[str] = []
@@ -218,7 +222,7 @@ def test_the_cli_is_the_only_module_that_knows_both() -> None:
         names = _imports(path)
         if _reaches(names, "sighop.web") and _reaches(names, "sighop.runtime"):
             both.append(str(path.relative_to(package)))
-    assert both == ["cli.py"], f"{both} know both sides of the seam"
+    assert both == ["boot.py"], f"{both} know both sides of the seam"
 
 
 def test_a_stub_drives_every_page_with_no_runtime_present() -> None:

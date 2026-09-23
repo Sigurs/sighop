@@ -74,7 +74,6 @@ class _Sink:
 # --- 6.1 Upsert on the destination tuple ------------------------------------
 
 
-@pytest.mark.database
 async def test_hearing_one_route_twice_updates_it_rather_than_adding_a_row(
     database: Database,
 ) -> None:
@@ -97,7 +96,6 @@ async def test_hearing_one_route_twice_updates_it_rather_than_adding_a_row(
     assert restored.snr_db == -2.0
 
 
-@pytest.mark.database
 async def test_an_older_confirmation_arriving_late_does_not_regress_the_row(
     database: Database,
 ) -> None:
@@ -113,7 +111,6 @@ async def test_an_older_confirmation_arriving_late_does_not_regress_the_row(
     assert loaded.value[0][1].confirmed_at == LATER
 
 
-@pytest.mark.database
 async def test_two_routes_to_one_destination_are_two_rows(database: Database) -> None:
     """§13 unknown #3 needs the observation, so every candidate is stored."""
     repository = PathRepository(database=database)
@@ -127,7 +124,6 @@ async def test_two_routes_to_one_destination_are_two_rows(database: Database) ->
 # --- 6.2 The two keyings stay distinct --------------------------------------
 
 
-@pytest.mark.database
 async def test_a_hash_keyed_route_is_still_ambiguous_after_the_round_trip(
     database: Database,
 ) -> None:
@@ -142,7 +138,6 @@ async def test_a_hash_keyed_route_is_still_ambiguous_after_the_round_trip(
     assert key.node_hash == 0x42
 
 
-@pytest.mark.database
 async def test_a_key_keyed_and_a_hash_keyed_route_do_not_collide(
     database: Database,
 ) -> None:
@@ -163,7 +158,6 @@ async def test_a_key_keyed_and_a_hash_keyed_route_do_not_collide(
 # --- 6.3 An empty path is a route -------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_zero_hop_route_round_trips_and_is_not_the_absence_of_one(
     database: Database,
 ) -> None:
@@ -255,7 +249,6 @@ def test_a_freshly_learned_route_beats_a_restored_one_and_both_are_kept() -> Non
     }
 
 
-@pytest.mark.database
 async def test_a_restored_route_keeps_the_confirmation_time_it_was_learned_with(
     database: Database,
 ) -> None:
@@ -300,7 +293,6 @@ def test_net_paths_imports_no_sqlalchemy() -> None:
     assert not any(name.startswith("sighop.db") for name in names)
 
 
-@pytest.mark.database
 async def test_one_batch_carrying_a_route_twice_keeps_the_later_confirmation(
     database: Database,
 ) -> None:

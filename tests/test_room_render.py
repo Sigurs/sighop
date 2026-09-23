@@ -17,7 +17,6 @@ import pytest
 
 from sighop.monitor.render import (
     CLAIMED_MARK,
-    ROOMS_OFF,
     render_delivery_acknowledged,
     render_delivery_sent,
     render_login_admitted,
@@ -111,12 +110,6 @@ def test_a_room_bound_to_a_disabled_entity_says_it_is_not_served_and_why() -> No
 
     assert "NOT SERVED" in line
     assert "not enabled" in line
-
-
-def test_a_run_with_no_database_says_rooms_require_durable_storage() -> None:
-    """11.2, design D5: stated rather than omitted."""
-    assert "none" in ROOMS_OFF
-    assert "durable storage" in ROOMS_OFF
 
 
 # --- 11.3 The status line ---------------------------------------------------

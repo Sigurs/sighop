@@ -85,7 +85,6 @@ def test_a_room_name_may_hold_the_channel_separator() -> None:
     assert parse_room_name("Lobby: the second") == "Lobby: the second"
 
 
-@pytest.mark.database
 async def test_creating_a_room_applies_the_name_rules(database: Database) -> None:
     entity_id = await _room_server(database, "roomy")
     rooms = RoomRepository(database=database)
@@ -96,7 +95,6 @@ async def test_creating_a_room_applies_the_name_rules(database: Database) -> Non
     assert listed.value == [], "a refused name stored a room"
 
 
-@pytest.mark.database
 async def test_a_created_room_is_stored_under_the_stripped_name(database: Database) -> None:
     entity_id = await _room_server(database, "roomy")
     created = await RoomRepository(database=database).create(
@@ -109,7 +107,6 @@ async def test_a_created_room_is_stored_under_the_stripped_name(database: Databa
 # --- Renaming a room ---------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_room_rename_changes_the_name_and_nothing_else(database: Database) -> None:
     entity_id = await _room_server(database, "roomy")
     rooms = RoomRepository(database=database)
@@ -138,7 +135,6 @@ async def test_a_room_rename_changes_the_name_and_nothing_else(database: Databas
     assert after.value.created_at == created.value.created_at
 
 
-@pytest.mark.database
 async def test_a_room_rename_applies_the_name_rules(database: Database) -> None:
     entity_id = await _room_server(database, "roomy")
     rooms = RoomRepository(database=database)
@@ -155,7 +151,6 @@ async def test_a_room_rename_applies_the_name_rules(database: Database) -> None:
     assert [record.name for record in listed.value] == ["the-room"]
 
 
-@pytest.mark.database
 async def test_a_room_rename_onto_another_rooms_name_is_refused(database: Database) -> None:
     rooms = RoomRepository(database=database)
     first = await rooms.create(
@@ -179,7 +174,6 @@ async def test_a_room_rename_onto_another_rooms_name_is_refused(database: Databa
     assert sorted(record.name for record in listed.value) == ["the-lobby", "the-room"]
 
 
-@pytest.mark.database
 async def test_renaming_a_room_to_the_name_it_holds_is_accepted(database: Database) -> None:
     rooms = RoomRepository(database=database)
     created = await rooms.create(
@@ -196,7 +190,6 @@ async def test_renaming_a_room_to_the_name_it_holds_is_accepted(database: Databa
     assert [record.name for record in listed.value] == ["the-room"]
 
 
-@pytest.mark.database
 async def test_renaming_a_room_that_does_not_exist_reports_so(database: Database) -> None:
     renamed = await RoomRepository(database=database).rename(uuid.uuid4(), "nobody")
     assert isinstance(renamed, Succeeded)
@@ -206,7 +199,6 @@ async def test_renaming_a_room_that_does_not_exist_reports_so(database: Database
 # --- Deleting a room ---------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_deleting_a_room_takes_its_members_and_messages(database: Database) -> None:
     """The cascade is silent, which is why every caller counts before asking."""
     persistence = Persistence(database=database)
@@ -243,7 +235,6 @@ async def test_deleting_a_room_takes_its_members_and_messages(database: Database
     assert (await persistence.messages.count(room_id)).value == 0
 
 
-@pytest.mark.database
 async def test_deleting_a_room_leaves_its_identity_stored_and_unbound(
     database: Database,
 ) -> None:
@@ -266,7 +257,6 @@ async def test_deleting_a_room_leaves_its_identity_stored_and_unbound(
     assert (await persistence.entities.bound_to(entity_id)).value == []
 
 
-@pytest.mark.database
 async def test_an_identity_can_carry_a_new_room_after_the_old_one_is_deleted(
     database: Database,
 ) -> None:
@@ -286,7 +276,6 @@ async def test_an_identity_can_carry_a_new_room_after_the_old_one_is_deleted(
     assert again.value.name == "the-second-room"
 
 
-@pytest.mark.database
 async def test_deleting_a_room_that_does_not_exist_reports_so(database: Database) -> None:
     deleted = await RoomRepository(database=database).delete(uuid.uuid4())
     assert isinstance(deleted, Succeeded)

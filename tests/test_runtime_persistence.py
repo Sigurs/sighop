@@ -21,7 +21,6 @@ import pytest
 from sqlalchemy import text
 
 from sighop.config import (
-    DATABASE_SCHEMA_VARIABLE,
     Config,
     DatabaseConfig,
     generate_secret_key,
@@ -46,6 +45,8 @@ from tests.test_render import _dedup_stats, _status
 from tests.test_runtime import _events, _startup, runtime
 from tests.test_tx import ManualClock
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
 SECRET = base64.b64decode(generate_secret_key())
 URL = "postgresql+asyncpg://role:secret@db.example:5432/sighop"
@@ -68,26 +69,7 @@ def test_the_environment_supplies_the_database_when_no_override_is_given() -> No
     assert config.database.host == "db.example"
 
 
-def test_the_command_line_overrides_the_environment_and_names_what_is_in_force() -> None:
-    other = "postgresql+asyncpg://role:pw@elsewhere:5432/other"
-    config = Config.from_environment({"DATABASE_URL": URL}, database_url=other)
-    assert config.database is not None
-    assert config.database.host == "elsewhere"
-    assert "pw" not in config.database.redacted_url
-
-
-def test_neither_supplied_is_not_an_error() -> None:
-    assert Config.from_environment({}).database is None
-
-
 # --- 8.3 What startup says --------------------------------------------------
-
-
-def test_the_startup_line_for_an_in_memory_run_says_state_does_not_survive() -> None:
-    assert render_persistence() == (
-        "persistence: off — contacts, paths and the packet log are in memory only "
-        "and do not survive the process"
-    )
 
 
 def test_the_startup_line_for_a_persistent_run_names_the_database_and_counts() -> None:
@@ -140,14 +122,6 @@ def test_no_startup_line_can_carry_a_password() -> None:
     assert "secret" not in render_persistence(database=redacted, schema_version="0001")
 
 
-async def test_an_in_memory_run_reports_it_before_any_traffic() -> None:
-    out = io.StringIO()
-    run = runtime(_events(CAPTURE), out=out)
-    await run.run()
-    assert "persistence: off" in out.getvalue()
-    assert "do not survive the process" in out.getvalue()
-
-
 # --- 8.6 The status line ----------------------------------------------------
 
 
@@ -161,7 +135,7 @@ def test_the_three_persistence_states_are_distinguishable(state: str) -> None:
 
 
 def test_the_counters_read_zero_rather_than_being_omitted() -> None:
-    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=0)
+    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=0, persistence="on")
     assert "log_drop=0" in line
     assert "route_drop=0" in line
     assert "backfill=0" in line
@@ -205,7 +179,6 @@ async def test_degraded_clears_with_no_write_once_the_probe_succeeds() -> None:
 # --- 8.4 Entities from both sources -----------------------------------------
 
 
-@pytest.mark.database
 async def test_a_run_loads_entities_from_the_store_and_reports_the_source(
     database: Database,
 ) -> None:
@@ -230,7 +203,6 @@ async def test_a_run_loads_entities_from_the_store_and_reports_the_source(
     assert [stub.identity.public_key for stub in run.adverts.stubs] == [identity.public_key]
 
 
-@pytest.mark.database
 async def test_a_run_loads_both_sources_and_reports_each_with_its_own(
     database: Database, tmp_path
 ) -> None:
@@ -304,7 +276,6 @@ def test_a_keyfile_colliding_with_a_stored_entity_stops_the_run(tmp_path) -> Non
 # --- 8.2 / 8.5 A replay against a configured database -----------------------
 
 
-@pytest.mark.database
 async def test_a_replay_run_reaches_steady_state_and_stops_cleanly(
     database: Database,
 ) -> None:
@@ -318,7 +289,6 @@ async def test_a_replay_run_reaches_steady_state_and_stops_cleanly(
     assert persistence.packet_log_writer.pending == 0
 
 
-@pytest.mark.database
 async def test_a_replay_writes_nothing_by_default_and_writes_when_asked(
     database: Database,
 ) -> None:
@@ -347,7 +317,6 @@ async def test_a_replay_writes_nothing_by_default_and_writes_when_asked(
     assert packets > 0, "the opt-in did not write the feed"
 
 
-@pytest.mark.database
 async def test_the_startup_line_of_a_non_writing_replay_says_so(
     database: Database,
 ) -> None:
@@ -361,7 +330,6 @@ async def test_the_startup_line_of_a_non_writing_replay_says_so(
     assert "--persist-replay" in text_out
 
 
-@pytest.mark.database
 async def test_contacts_and_paths_come_back_on_the_next_run(database: Database) -> None:
     """The whole milestone in one test: run, restart, and find the mesh already
     known before a single frame arrives."""
@@ -393,7 +361,6 @@ async def _never_ending() -> AsyncIterator[ModemEvent]:
 # --- 8.8 A database at the wrong revision stops startup ---------------------
 
 
-@pytest.mark.database
 async def test_a_run_against_an_unmigrated_database_fails_naming_both_revisions(
     database_url: str,
 ) -> None:
@@ -408,7 +375,7 @@ async def test_a_run_against_an_unmigrated_database_fails_naming_both_revisions(
             await Persistence(database=handle).open()
         message = str(excinfo.value)
         assert migrations.expected_revision() in message
-        assert migrations.UPGRADE_COMMAND in message
+        assert migrations.RESTART_TO_MIGRATE in message
 
         # Nothing was applied: the schema is exactly as it was left.
         async with handle.engine.connect() as connection:
@@ -422,85 +389,6 @@ async def test_a_run_against_an_unmigrated_database_fails_naming_both_revisions(
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)
-
-
-@pytest.mark.database
-async def test_run_migrate_brings_an_empty_database_to_head_and_starts(
-    database_url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The compose deployment's start is its deploy: `run --migrate` applies the
-    chain, then opens as usual — and a second start applies nothing."""
-    from sighop.cli import build_parser, open_persistence
-
-    schema = "sighop_test_run_migrate"
-    await _drop_schema(database_url, schema)
-    await _create_schema(database_url, schema)
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, schema)
-    args = build_parser().parse_args(
-        ["run", "--replay", str(CAPTURE), "--migrate", "--database-url", database_url]
-    )
-    handle = Database(config=DatabaseConfig(url=database_url, schema=schema))
-    try:
-        for _ in range(2):
-            persistence, stored = await open_persistence(args, replay=True)
-            assert persistence is not None
-            assert stored == ()
-            await persistence.stop()
-            assert await handle.read_applied_revision() == migrations.expected_revision()
-    finally:
-        await handle.dispose()
-        await _drop_schema(database_url, schema)
-
-
-async def test_run_migrate_with_no_database_is_a_startup_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from sighop.cli import build_parser, open_persistence
-    from sighop.config import ConfigError
-
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    args = build_parser().parse_args(["run", "--replay", str(CAPTURE), "--migrate"])
-    with pytest.raises(ConfigError, match="--migrate") as excinfo:
-        await open_persistence(args, replay=True)
-    assert "DATABASE_URL" in str(excinfo.value)
-
-
-# --- 8.7 The db command surface ---------------------------------------------
-
-
-@pytest.mark.database
-async def test_db_current_agrees_with_the_code_against_the_dev_database(
-    database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from sighop.cli import main
-
-    assert database_config.schema is not None
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
-    out = io.StringIO()
-    code = await asyncio.to_thread(
-        main, ["db", "current", "--database-url", database_config.url], out=out
-    )
-    printed = out.getvalue()
-    assert code == 0
-    assert f"applied    {migrations.expected_revision()}" in printed
-    assert "agree      yes" in printed
-    assert "secret" not in printed
-
-
-@pytest.mark.database
-async def test_db_upgrade_is_idempotent_against_a_database_already_at_head(
-    database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from sighop.cli import main
-
-    assert database_config.schema is not None
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
-    out = io.StringIO()
-    code = await asyncio.to_thread(
-        main, ["db", "upgrade", "--database-url", database_config.url], out=out
-    )
-    assert code == 0
-    assert f"applied    {migrations.expected_revision()}" in out.getvalue()
 
 
 # --- 3.9 The reception path is unaffected by an unresponsive database -------
@@ -531,7 +419,9 @@ class _NeverAnswers:
         return True
 
 
-def test_decode_and_dispatch_timings_match_a_run_with_no_database() -> None:
+def test_decode_and_dispatch_do_not_wait_on_an_unresponsive_database() -> None:
+    """The route sink is off the reception path: a database that never answers
+    changes neither the decisions nor, beyond noise, the time they take."""
     records = _corpus_records()
     assert len(records) > 100, "this measurement needs a real capture"
 

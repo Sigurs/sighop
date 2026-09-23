@@ -199,12 +199,12 @@ class Panel:
     # --- Durable state ------------------------------------------------------
 
     @property
-    def persistence(self) -> Persistence | None:
+    def persistence(self) -> Persistence:
         return self.state.persistence
 
     @property
     def degraded(self) -> bool:
-        return self.state.persistence is not None and self.state.persistence.degraded
+        return self.state.persistence.degraded
 
 
 def panel(request: Request) -> Panel:

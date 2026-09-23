@@ -182,7 +182,7 @@ def event_from_observation(
 
 
 def sample_event(trigger: Trigger, now: dt.datetime) -> WebhookEvent:
-    """A made-up event marked as a test, for `sighop webhook test` (design D8).
+    """A made-up event marked as a test, for the panel's webhook test (design D8).
 
     It carries a position so a test message exercises the location link, the one
     field an operator has to click to check.

@@ -417,24 +417,20 @@ def unreadable[T](reason: str) -> Collection[T]:
     return Collection(unavailable=reason)
 
 
-def collection_for[T](outcome: object | None, *, degraded: str) -> Collection[T]:
+def collection_for[T](outcome: object, *, degraded: str) -> Collection[T]:
     """A repository read as something a template can tell apart from empty.
 
-    `None` is "there is no database to read", a `Failed` is "there is one and it
-    would not answer", and either is a different screen from a successful read
-    that found nothing. One function so every durable view draws the same three
-    states (`web-server`).
+    A `Failed` is "the database would not answer", which is a different screen
+    from a successful read that found nothing. One function so every durable
+    view draws the same two states (`web-server`).
     """
     from sighop.db.engine import Failed
 
-    if outcome is None:
-        return unreadable(NO_DATABASE)
     if isinstance(outcome, Failed):
         return unreadable(f"{degraded}: {outcome.error}")
     return read(outcome.value)  # type: ignore[attr-defined]
 
 
-NO_DATABASE = "no database is configured, so nothing durable is stored or read"
 DEGRADED = "the database is unreachable; this cannot be read until it returns"
 
 
@@ -482,13 +478,12 @@ def refused(reason: str, *, field: str = "", **submitted: str) -> Refusal:
 class PersistenceView:
     """What the panel says about durability, wherever it says it.
 
-    Three states rather than two: no database at all, a database that is
-    answering, and one that is degraded. The third is the one an operator has to
-    be able to see without looking for it, because everything durable on every
-    page is wrong-by-omission while it lasts.
+    Two states: a database that is answering, and one that is degraded. The
+    second is the one an operator has to be able to see without looking for it,
+    because everything durable on every page is wrong-by-omission while it
+    lasts. There is no "off": a database is required.
     """
 
-    configured: bool
     state: str
     degraded: bool
     discarded: int = 0
@@ -496,8 +491,6 @@ class PersistenceView:
 
     @property
     def text(self) -> str:
-        if not self.configured:
-            return "persistence off — nothing here survives the process"
         if self.degraded:
             return f"persistence degraded ({self.state}) — durable state cannot be read"
         return f"persistence {self.state}"
@@ -511,20 +504,16 @@ class PersistenceView:
 
     @property
     def level(self) -> str:
-        if not self.configured:
-            return "off"
         return "degraded" if self.degraded else "ok"
 
 
-def persistence_view(persistence: object | None) -> PersistenceView:
+def persistence_view(persistence: object) -> PersistenceView:
     """The durability line, from whatever the run is holding.
 
     Typed loosely on purpose: `web/state.py` names `Persistence`, and this
     reaches for a handful of its counters through `as_json()` rather than
     growing a second interface to the same object.
     """
-    if persistence is None:
-        return PersistenceView(configured=False, state="off", degraded=False)
     status = persistence.as_json()  # type: ignore[attr-defined]
     discarded = sum(
         int(value)
@@ -537,7 +526,6 @@ def persistence_view(persistence: object | None) -> PersistenceView:
         if key.endswith("_refused") and isinstance(value, int)
     )
     return PersistenceView(
-        configured=True,
         state=str(persistence.state),  # type: ignore[attr-defined]
         degraded=bool(persistence.degraded),  # type: ignore[attr-defined]
         discarded=discarded,

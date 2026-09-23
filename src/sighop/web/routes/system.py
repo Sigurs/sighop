@@ -17,11 +17,10 @@ from fastapi.responses import HTMLResponse
 
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.web.deps import Panel, panel
-from sighop.web.render import DEGRADED, NO_DATABASE, modem_readings
+from sighop.web.render import DEGRADED, modem_readings
 from sighop.web.routes.admin import (
-    ACCOUNT_COMMAND,
-    ACCOUNTS_ARE_A_TERMINAL_ACT,
-    MIGRATIONS_ARE_A_TERMINAL_ACT,
+    ACCOUNTS_ARE_NOT_MANAGED,
+    MIGRATIONS_ARE_APPLIED_AT_START,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -42,15 +41,11 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
     expected = migrations.expected_revision()
     applied: str | None = None
     unavailable = ""
-    if page.persistence is None:
-        unavailable = NO_DATABASE
-    else:
-        try:
-            applied = await page.persistence.database.read_applied_revision()
-        except Exception as exc:
-            # Classified by the engine; shown as the degraded state it is, which
-            # is a different screen from "no database is configured".
-            unavailable = f"{DEGRADED} ({exc})"
+    try:
+        applied = await page.persistence.database.read_applied_revision()
+    except Exception as exc:
+        # Classified by the engine; shown as the degraded state it is.
+        unavailable = f"{DEGRADED} ({exc})"
     scheduler = page.state.scheduler
     return page.page(
         request,
@@ -61,10 +56,9 @@ async def index(request: Request, page: PanelDep) -> HTMLResponse:
         expected=expected,
         agree=applied == expected and not unavailable,
         unavailable=unavailable,
-        upgrade_command=migrations.UPGRADE_COMMAND,
-        migrations_note=MIGRATIONS_ARE_A_TERMINAL_ACT,
-        accounts_note=ACCOUNTS_ARE_A_TERMINAL_ACT,
-        account_command=ACCOUNT_COMMAND,
+        reconcile=migrations.RESTART_TO_MIGRATE,
+        migrations_note=MIGRATIONS_ARE_APPLIED_AT_START,
+        accounts_note=ACCOUNTS_ARE_NOT_MANAGED,
         transmit_enabled=scheduler.transmit_enabled,
         ceiling_fraction=scheduler.budget.ceiling_fraction,
         regulatory_default=DEFAULT_CEILING_FRACTION,

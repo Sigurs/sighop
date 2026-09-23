@@ -22,8 +22,6 @@ import base64
 import datetime as dt
 import io
 
-import pytest
-
 from sighop.bots import drivers as bot_drivers
 from sighop.config import generate_secret_key
 from sighop.db.engine import Database, Succeeded
@@ -71,7 +69,6 @@ async def _tick() -> None:
     await asyncio.sleep(REFRESH_SECONDS * 6)
 
 
-@pytest.mark.database
 async def test_creating_an_identity_a_room_and_a_bot_reaches_a_running_process(
     database: Database,
 ) -> None:
@@ -131,7 +128,6 @@ async def test_creating_an_identity_a_room_and_a_bot_reaches_a_running_process(
         await asyncio.wait_for(task, 5)
 
 
-@pytest.mark.database
 async def test_disabling_then_removing_those_identities_withdraws_them_and_keeps_the_store(
     database: Database,
 ) -> None:

@@ -9,7 +9,6 @@ readback — with the one rule the whole display rests on, that nothing unverifi
 though it were verified.
 
 ## Requirements
-
 ### Requirement: Duty-cycle usage against the ceiling is always visible
 The system SHALL present, on every page of the interface, the airtime consumed in the current
 sliding window against the configured ceiling, expressed both as the remaining fraction and as the
@@ -75,7 +74,7 @@ ends and the live stream begins.
 - **THEN** recent packets are shown immediately rather than an empty pane that fills at the mesh's own rate
 
 #### Scenario: No recorded history available
-- **WHEN** no database is configured or the recorded history cannot be read
+- **WHEN** the recorded history cannot be read
 - **THEN** the feed starts empty and says that only live records are shown
 
 ### Requirement: Platform counters and modem health are presented

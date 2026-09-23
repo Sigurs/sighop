@@ -178,7 +178,6 @@ async def test_a_client_logs_in_posts_and_syncs_through_the_bus() -> None:
     assert await server.push_once() is False
 
 
-@pytest.mark.database
 async def test_the_same_exercise_runs_against_the_real_tables(database) -> None:
     """13.1: the loopback again, with Postgres behind it rather than a fixture."""
     secret = base64.b64decode(generate_secret_key())

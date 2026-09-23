@@ -1,7 +1,7 @@
 """Shared test setup.
 
 `configure_logging` is global and caches its bound loggers, so a test that runs
-`sighop.cli.main` binds structlog to whatever stream that command chose — under
+`sighop.boot.main` binds structlog to whatever stream the entry point chose — under
 pytest, a capture buffer that is closed when the test ends. Any later test whose
 code logs through the module-level logger then dies on a closed file, which
 makes failures depend on test order rather than on behaviour.
@@ -11,8 +11,9 @@ logging configuration is exercised by the code that owns it, and tests that care
 about log output pass their own recording logger.
 
 The database fixtures live in `tests/dbfixtures.py` and are re-exported here so
-every test module sees them. They skip when no test database is configured,
-which is the condition the proposal set: no test may require Postgres to pass.
+every test module sees them. The database is required: a run that configures
+none fails there rather than skipping, so a passing suite is a suite that
+exercised persistence.
 """
 
 from __future__ import annotations
@@ -23,29 +24,28 @@ import pytest
 
 from sighop.logging import configure_logging
 from tests.dbfixtures import (  # noqa: F401 - re-exported as fixtures
-    SKIP_REASON,
+    NO_DATABASE,
     configured_url,
     database,
     database_config,
     database_url,
+    default_persistence,
+    fresh_persistence,
     test_schema,
 )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Refuse the run once, before collection, when no database is configured.
+
+    The fixture refuses too, but it refuses per test, and a developer who has
+    not set the variable would read the same paragraph several hundred times
+    before reaching the summary. Stopping here states it once.
+    """
+    if configured_url() is None:
+        pytest.exit(NO_DATABASE, returncode=pytest.ExitCode.USAGE_ERROR)
 
 
 @pytest.fixture(autouse=True)
 def _isolated_logging() -> None:
     configure_logging(stream=io.StringIO())
-
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip every `database`-marked test when no test database is configured.
-
-    A skip rather than a failure, and applied at collection so the reason is
-    reported once per test rather than discovered inside a fixture.
-    """
-    if configured_url() is not None:
-        return
-    skip = pytest.mark.skip(reason=SKIP_REASON)
-    for item in items:
-        if "database" in item.keywords:
-            item.add_marker(skip)

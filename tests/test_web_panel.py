@@ -48,6 +48,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 TEMPLATE_DIR = Path(sighop.web.__file__).parent / "templates"
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 
@@ -341,21 +343,22 @@ def test_the_shared_partial_words_the_two_states_differently() -> None:
     assert "there\n    is nothing in it" in source or "nothing in it" in source
 
 
-def test_no_database_and_a_degraded_one_are_two_different_lines() -> None:
-    """9.5: three states of durability, not two."""
-    off = persistence_view(None)
-    assert off.configured is False
-    assert off.level == "off"
-    assert "nothing here survives" in off.text
+def test_a_working_and_a_degraded_database_are_two_different_lines() -> None:
+    """9.5: two states of durability. There is no "off": a database is required."""
 
     class _Fake:
-        state = "degraded"
-        degraded = True
+        def __init__(self, state: str, degraded: bool) -> None:
+            self.state = state
+            self.degraded = degraded
 
         def as_json(self) -> dict[str, object]:
             return {"packet_log_discarded": 3, "direct_messages_refused": 2}
 
-    degraded = persistence_view(_Fake())
+    working = persistence_view(_Fake("on", False))
+    assert working.level == "ok"
+    assert working.text == "persistence on"
+
+    degraded = persistence_view(_Fake("degraded", True))
     assert degraded.level == "degraded"
     assert "degraded" in degraded.text
     assert degraded.discarded == 3
@@ -365,6 +368,6 @@ def test_no_database_and_a_degraded_one_are_two_different_lines() -> None:
 
 def test_a_healthy_database_reports_no_losses_rather_than_zero_ones() -> None:
     """9.5: a count of nothing lost is noise; the absence of the phrase is the signal."""
-    healthy = PersistenceView(configured=True, state="ok", degraded=False)
+    healthy = PersistenceView(state="ok", degraded=False)
     assert healthy.losses_text == ""
     assert healthy.level == "ok"

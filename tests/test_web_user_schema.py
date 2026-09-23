@@ -145,7 +145,6 @@ def test_the_cap_is_exactly_the_documented_length() -> None:
 # --- 1.1 Against a real server ----------------------------------------------
 
 
-@pytest.mark.database
 async def test_the_server_refuses_a_second_row_with_the_same_username(
     database: Database,
 ) -> None:
@@ -158,7 +157,6 @@ async def test_the_server_refuses_a_second_row_with_the_same_username(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_the_server_columns_are_timestamptz(database: Database, test_schema: str) -> None:
     from sqlalchemy import text
 
@@ -180,7 +178,6 @@ async def test_the_server_columns_are_timestamptz(database: Database, test_schem
 # --- 1.2 The cycle, in a throwaway schema -----------------------------------
 
 
-@pytest.mark.database
 async def test_0005_upgrade_downgrade_upgrade_leaves_no_leftover_objects(
     database_url: str,
 ) -> None:
@@ -228,7 +225,6 @@ async def _objects_named_web_user(url: str, schema: str) -> set[str]:
 # --- 1.3 A database one revision behind -------------------------------------
 
 
-@pytest.mark.database
 async def test_a_database_at_0004_is_refused_naming_both_revisions_and_the_command(
     database_url: str,
 ) -> None:
@@ -244,7 +240,7 @@ async def test_a_database_at_0004_is_refused_naming_both_revisions_and_the_comma
         message = str(excinfo.value)
         assert "0004" in message
         assert migrations.expected_revision() in message
-        assert migrations.UPGRADE_COMMAND in message
+        assert migrations.RESTART_TO_MIGRATE in message
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)
@@ -253,7 +249,6 @@ async def test_a_database_at_0004_is_refused_naming_both_revisions_and_the_comma
 # --- 1.4 The default chat identity the account row carries -------------------
 
 
-@pytest.mark.database
 async def test_removing_an_identity_clears_every_default_naming_it(
     database: Database,
 ) -> None:

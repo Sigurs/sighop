@@ -1222,7 +1222,7 @@ class RoomRepository:
                 )
 
         # Checked before the insert so the refusal can *name* the existing room,
-        # which is what `sighop room create` prints. The unique constraint stays
+        # which is what the panel shows. The unique constraint stays
         # the backstop: this check loses a race and the constraint does not.
         existing = await self.get_for_entity(entity_id)
         if isinstance(existing, Succeeded) and existing.value is not None:
@@ -1343,8 +1343,8 @@ class RoomRepository:
 
         The duplicate check has no unique constraint behind it, unlike a
         channel's or a webhook's; `room.name` is a plain column. It is enforced
-        here because `sighop room show` and the rest of that surface address a
-        room by name.
+        here because a room is addressed by name wherever it is named to an
+        operator.
         """
         checked = parse_room_name(name)
         # Refused before `run`, which turns an exception into a `Failed` and
@@ -1856,7 +1856,7 @@ class BotRepository:
         """Bind a driver to an identity that carries no other role.
 
         Both refusals are checked before the insert so they can *name* what
-        already holds the entity, which is what `sighop bot create` prints. The
+        already holds the entity, which is what the panel shows. The
         unique constraint stays the backstop: this check loses a race and the
         constraint does not.
         """
@@ -2100,7 +2100,7 @@ class BotStateRepository:
         return await self.database.run("delete_bot_state", work)
 
     async def list(self, bot_id: uuid.UUID) -> Outcome[dict[str, object]]:
-        """Everything one bot has stored, which is what `sighop bot state` shows."""
+        """Everything one bot has stored, which is what the bot's state page shows."""
 
         async def work(session: object) -> dict[str, object]:
             rows = (
@@ -3084,8 +3084,8 @@ def _open_webhook(record: WebhookRecord, sealed: bytes, secret: bytes) -> Opened
 # --- Channels (change `channel-messaging`) ------------------------------------
 #
 # The station's group channels and what was said in them. Every rule a stored
-# channel obeys is here, so `sighop channel` and the panel refuse identically and
-# in the same words (design D9, the `webui-write-parity` lesson). No refusal
+# channel obeys is here, so every surface refuses identically and in the same
+# words (design D9, the `webui-write-parity` lesson). No refusal
 # repeats a pre-shared key: a refusal is printed to a terminal and rendered into
 # a page.
 
@@ -3413,40 +3413,6 @@ class ChannelRepository:
                 continue
             loaded.append(LoadedChannel(record.id, record.name, record.kind, key))
         return Succeeded(ChannelSet(channels=tuple(loaded), skipped=tuple(skipped)))
-
-    async def key_of(self, name: str, secret: bytes | None) -> Outcome[bytes | None]:
-        """One channel's key bytes, for `sighop channel key`. `None` for no such channel.
-
-        Raises `SealError` when a pre-shared key does not open, so the caller
-        can say why rather than print nothing.
-        """
-
-        async def work(session: object) -> tuple[ChannelRecord, bytes | None] | None:
-            row = (
-                await session.execute(  # type: ignore[attr-defined]
-                    select(ChannelRow).where(ChannelRow.name == name.strip())
-                )
-            ).scalar_one_or_none()
-            if row is None:
-                return None
-            return _channel(row), None if row.sealed_key is None else bytes(row.sealed_key)
-
-        outcome = await self.database.run("read_channel_key", work)
-        if not isinstance(outcome, Succeeded):
-            return outcome
-        if outcome.value is None:
-            return Succeeded(None)
-        record, sealed = outcome.value
-        if record.kind is ChannelKind.PSK:
-            if secret is None or sealed is None:
-                raise SealError(
-                    f"channel {record.name!r}: its pre-shared key is sealed under "
-                    "SIGHOP_SECRET_KEY, which is not set"
-                )
-            return Succeeded(open_value(sealed, secret, what=f"channel {record.name!r}"))
-        key = _derive_key(record, sealed, secret)
-        assert key is not None
-        return Succeeded(key.key)
 
 
 def _derive_key(

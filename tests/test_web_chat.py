@@ -59,6 +59,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 STATIC_DIR = Path(sighop.web.__file__).parent / "static"
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
@@ -912,7 +914,6 @@ def test_the_log_is_bounded() -> None:
     assert [record.ref for record in held] == ["m9", "m8", "m7"]
 
 
-@pytest.mark.database
 async def test_a_conversation_survives_a_restart(database: Database) -> None:
     """`dm-history`, and the milestone's exit criterion in miniature.
 
@@ -1384,25 +1385,6 @@ def test_an_identity_this_run_does_not_hold_is_refused_as_a_default() -> None:
     assert "not one this run holds" in refused_post.text
 
 
-def test_setting_a_default_without_a_database_is_refused_and_changes_nothing() -> None:
-    app, state, _log = _channel_app(stub_names=("dev-companion",))
-    stored = state.adverts.add_identity(
-        "dev-stored", generate_identity(), entity_id=str(uuid.uuid4())
-    )
-
-    with _client(app) as client:
-        _chatting_as(client, "an-identity-this-run-never-loaded")
-        refused_post = client.post(
-            "/chat/identity",
-            data={"identity": stored.identity.public_key.hex(), TOKEN_FIELD: csrf(client)},
-        )
-        assert session_of(client).default_entity_id == "an-identity-this-run-never-loaded"
-
-    assert refused_post.status_code == 400
-    assert "unreachable" in refused_post.text
-    assert "the default in force is the one you already had" in refused_post.text
-
-
 def test_setting_a_default_needs_the_session_token() -> None:
     app, state, _log = _channel_app(stub_names=("dev-companion",))
     stored = state.adverts.add_identity(
@@ -1417,7 +1399,6 @@ def test_setting_a_default_needs_the_session_token() -> None:
     assert without.status_code == 403
 
 
-@pytest.mark.database
 async def test_a_default_is_written_to_the_account_and_applied_at_once(
     database: Database,
 ) -> None:
@@ -1478,7 +1459,6 @@ async def test_a_default_is_written_to_the_account_and_applied_at_once(
         assert held.value.default_entity_id is None
 
 
-@pytest.mark.database
 async def test_a_default_only_ever_redirects_to_an_in_app_path(database: Database) -> None:
     """`safe_next`: a destination is a same-origin path or `/`, never a URL."""
     from sighop.db.persistence import Persistence

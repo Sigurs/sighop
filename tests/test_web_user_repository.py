@@ -43,7 +43,6 @@ def _value[T](outcome: Succeeded[T] | Failed) -> T:
 # --- 2.1 Each operation -----------------------------------------------------
 
 
-@pytest.mark.database
 async def test_add_stores_an_enabled_account_under_the_normalised_name(
     database: Database,
 ) -> None:
@@ -60,7 +59,6 @@ async def test_add_stores_an_enabled_account_under_the_normalised_name(
     assert stored.password_hash == HASH
 
 
-@pytest.mark.database
 async def test_a_username_differing_only_in_case_is_refused_naming_the_existing_one(
     database: Database,
 ) -> None:
@@ -76,12 +74,10 @@ async def test_a_username_differing_only_in_case_is_refused_naming_the_existing_
     assert stored is not None and stored.password_hash == HASH, "the stored row is unchanged"
 
 
-@pytest.mark.database
 async def test_get_answers_none_for_an_unknown_account(database: Database) -> None:
     assert _value(await WebUserRepository(database=database).get("nobody")) is None
 
 
-@pytest.mark.database
 async def test_list_returns_every_account_oldest_first(database: Database) -> None:
     users = WebUserRepository(database=database)
     earlier = dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
@@ -92,7 +88,6 @@ async def test_list_returns_every_account_oldest_first(database: Database) -> No
     assert [record.username for record in listed] == ["dev-first", "dev-second"]
 
 
-@pytest.mark.database
 async def test_set_password_replaces_the_hash_and_moves_the_epoch(database: Database) -> None:
     users = WebUserRepository(database=database)
     created = _value(
@@ -110,7 +105,6 @@ async def test_set_password_replaces_the_hash_and_moves_the_epoch(database: Data
     assert not _value(await users.set_password("nobody", password_hash=HASH))
 
 
-@pytest.mark.database
 async def test_set_enabled_disables_and_enables(database: Database) -> None:
     users = WebUserRepository(database=database)
     _value(await users.add("dev-operator", password_hash=HASH))
@@ -123,7 +117,6 @@ async def test_set_enabled_disables_and_enables(database: Database) -> None:
     assert not _value(await users.set_enabled("nobody", True))
 
 
-@pytest.mark.database
 async def test_remove_deletes_the_row(database: Database) -> None:
     users = WebUserRepository(database=database)
     _value(await users.add("dev-operator", password_hash=HASH))
@@ -132,7 +125,6 @@ async def test_remove_deletes_the_row(database: Database) -> None:
     assert not _value(await users.remove("dev-operator"))
 
 
-@pytest.mark.database
 async def test_count_enabled_counts_only_enabled_accounts(database: Database) -> None:
     users = WebUserRepository(database=database)
     assert _value(await users.count_enabled()) == 0
@@ -142,7 +134,6 @@ async def test_count_enabled_counts_only_enabled_accounts(database: Database) ->
     assert _value(await users.count_enabled()) == 2
 
 
-@pytest.mark.database
 async def test_count_counts_every_account_enabled_or_not(database: Database) -> None:
     users = WebUserRepository(database=database)
     assert _value(await users.count()) == 0
@@ -191,7 +182,6 @@ async def _still_waiting(task: asyncio.Task[object], seconds: float = 0.5) -> bo
     return not done
 
 
-@pytest.mark.database
 async def test_add_first_inserts_an_enabled_account_into_an_empty_table(
     database: Database,
 ) -> None:
@@ -203,7 +193,6 @@ async def test_add_first_inserts_an_enabled_account_into_an_empty_table(
     assert stored is not None and stored.id == record.id and stored.password_hash == HASH
 
 
-@pytest.mark.database
 @pytest.mark.parametrize("enabled", [True, False])
 async def test_add_first_inserts_nothing_beside_any_existing_account(
     database: Database, enabled: bool
@@ -214,7 +203,6 @@ async def test_add_first_inserts_nothing_beside_any_existing_account(
     assert [r.username for r in _value(await users.list())] == ["dev-existing"]
 
 
-@pytest.mark.database
 async def test_two_concurrent_add_first_calls_leave_exactly_one_row(database: Database) -> None:
     gated = _GatedDatabase(inner=database, operation="add_first_web_user")
     first = asyncio.create_task(
@@ -233,7 +221,6 @@ async def test_two_concurrent_add_first_calls_leave_exactly_one_row(database: Da
     assert [r.username for r in _value(await users.list())] == ["dev-first"]
 
 
-@pytest.mark.database
 async def test_a_plain_add_waits_for_a_setup_holding_its_lock(database: Database) -> None:
     gated = _GatedDatabase(inner=database, operation="add_first_web_user")
     setup = asyncio.create_task(
@@ -251,7 +238,6 @@ async def test_a_plain_add_waits_for_a_setup_holding_its_lock(database: Database
     assert [r.username for r in listed] == ["dev-setup", "dev-terminal"]
 
 
-@pytest.mark.database
 async def test_a_setup_waits_for_a_plain_add_holding_its_insert(database: Database) -> None:
     gated = _GatedDatabase(inner=database, operation="add_web_user")
     terminal = asyncio.create_task(
@@ -269,7 +255,6 @@ async def test_a_setup_waits_for_a_plain_add_holding_its_insert(database: Databa
     assert [r.username for r in listed] == ["dev-terminal"]
 
 
-@pytest.mark.database
 async def test_persistence_exposes_the_repository(database: Database) -> None:
     persistence = Persistence(database=database)
     _value(await persistence.web_users.add("dev-operator", password_hash=HASH))
@@ -316,7 +301,6 @@ def test_no_rendering_of_an_account_carries_its_hash() -> None:
 # --- 2.1 The default chat identity ------------------------------------------
 
 
-@pytest.mark.database
 async def test_the_default_identity_is_set_cleared_and_read_back(
     database: Database,
 ) -> None:
@@ -339,7 +323,6 @@ async def test_the_default_identity_is_set_cleared_and_read_back(
     assert _value(await users.get("dev-operator")).default_entity_id is None
 
 
-@pytest.mark.database
 async def test_setting_a_default_for_an_account_that_is_not_there_reports_false(
     database: Database,
 ) -> None:
@@ -347,7 +330,6 @@ async def test_setting_a_default_for_an_account_that_is_not_there_reports_false(
     assert not _value(await users.set_default_identity("nobody", None))
 
 
-@pytest.mark.database
 async def test_an_identity_no_row_holds_is_refused_naming_it(database: Database) -> None:
     """The refusal is the repository's, not the foreign key's: the caller is a
     person choosing from a list, and an integrity error is not an answer."""

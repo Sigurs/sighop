@@ -12,7 +12,7 @@ cursor is behind. The push loop is the room server's; this module only reads
 rows.
 
 The exception is **posting**, and it is a guarded action (design D4). What
-`sighop room post` does is `MessageRepository.store` plus one length check: it
+posting is `MessageRepository.store` plus one length check: it
 does not go through `RoomServer` at all, and whichever run is serving that room
 picks the row up through its own push loop. So the panel's post is the same one
 call — and the fact that a post is a stored row rather than a transmission is
@@ -37,7 +37,6 @@ from sighop.web.deps import Panel, panel
 from sighop.web.guarded import POST_TO_ROOM, audit
 from sighop.web.render import (
     DEGRADED,
-    NO_DATABASE,
     Collection,
     Refusal,
     advert_id,
@@ -88,19 +87,16 @@ async def render_index(
         "counts": {},
         "advert_ids": {},
         "hosts": [],
-        "database": page.persistence is not None,
         "deleted": deleted,
         "refusal": refusal,
     }
-    if page.persistence is None:
-        rooms: Collection[RoomRecord] = unreadable(NO_DATABASE)
+    listed = await page.persistence.rooms.list_all()
+    rooms: Collection[RoomRecord]
+    if isinstance(listed, Failed):
+        rooms = unreadable(DEGRADED)
     else:
-        listed = await page.persistence.rooms.list_all()
-        if isinstance(listed, Failed):
-            rooms = unreadable(DEGRADED)
-        else:
-            rooms = read(listed.value)
-            context.update(await rooms_context(page, listed.value))
+        rooms = read(listed.value)
+        context.update(await rooms_context(page, listed.value))
     return page.page(request, "rooms/index.html", rooms=rooms, **context, status_code=status_code)
 
 
@@ -124,7 +120,6 @@ async def rooms_context(page: Panel, listed: list[RoomRecord]) -> dict[str, obje
 
 async def room_counts(page: Panel, room: RoomRecord) -> tuple[int, int]:
     """Members and stored messages, or -1 for a count that could not be read."""
-    assert page.persistence is not None
     members = await page.persistence.members.load_for_room(room.id)
     messages = await page.persistence.messages.count(room.id)
     return (
@@ -139,7 +134,6 @@ async def _room_server_identities(page: Panel, bound: list[RoomRecord]) -> list[
     Only the ones that advert as room servers, because that is what a room runs
     on; offering the rest would be offering a choice the repository refuses.
     """
-    assert page.persistence is not None
     listed = await page.persistence.entities.list_all()
     if isinstance(listed, Failed):
         return []
@@ -174,13 +168,13 @@ async def history(
     unique per room, so paging back cannot show a message twice or skip one.
     """
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return page.page(
             request,
             "rooms/history.html",
             room=None,
-            posts=unreadable(NO_DATABASE),
-            status_code=404 if page.persistence is not None else 200,
+            posts=read([]),
+            status_code=404,
         )
     stored = await page.persistence.messages.history(
         room.id, limit=PAGE_SIZE, newest_first=True, before=before
@@ -223,13 +217,13 @@ def _post_view(post: PostRecord, page: Panel) -> dict[str, object]:
 async def members(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
     """Who is entitled to receive this room's history, and how far behind."""
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return page.page(
             request,
             "rooms/members.html",
             room=None,
-            members=unreadable(NO_DATABASE),
-            status_code=404 if page.persistence is not None else 200,
+            members=read([]),
+            status_code=404,
         )
     listed = await page.persistence.members.load_for_room(room.id)
     if isinstance(listed, Failed):
@@ -245,7 +239,6 @@ async def _member_view(member: MemberRecord, room: RoomRecord, page: Panel) -> d
     the public key is what makes a member a member (§3). Nothing here treats a
     shared hash as a conflict.
     """
-    assert page.persistence is not None
     unsynced = await page.persistence.messages.unsynced_count(
         room.id, since=member.sync_since, author_to_skip=member.public_key
     )
@@ -292,7 +285,7 @@ async def revoke(
     a demotion.
     """
     room = await _room(page, room_id)
-    if room is None or page.persistence is None or confirm != "yes":
+    if room is None or confirm != "yes":
         return RedirectResponse(f"/rooms/{room_id}/members", status_code=SEE_OTHER)
     await page.persistence.members.delete(room.id, bytes.fromhex(public_key))
     return RedirectResponse(f"/rooms/{room_id}/members", status_code=SEE_OTHER)
@@ -324,7 +317,7 @@ async def review(
 ) -> HTMLResponse:
     """The confirmation: what this post does, before it is a row.
 
-    The length check is `sighop room post`'s, applied for the same reason
+    The length check is the stored-post limit, applied for the same reason
     milestone 6 gave: a post arriving over the air is truncated because its
     author cannot be told, and an author who is *present* can be asked to
     shorten it instead. So it is refused with the limit, the overage and what
@@ -382,7 +375,7 @@ async def post(
     text: Annotated[str, Form()] = "",
     nonce: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """Store the post as the room's own identity — `sighop room post`'s call.
+    """Store the post as the room's own identity — the repository's own call.
 
     Not through `RoomServer`: a post is a row, and delivery belongs to the push
     loop of whichever run is serving the room. A closed transmit gate does not
@@ -414,7 +407,6 @@ async def post(
         )
         return page.page(request, "admin/refused.html", title="post to a room", status_code=403)
 
-    assert page.persistence is not None
     author = await _room_author(page, room)
     if author is None:  # pragma: no cover - the foreign key makes this unreachable
         audit(
@@ -459,7 +451,6 @@ async def post(
 
 async def _room_author(page: Panel, room: RoomRecord) -> bytes | None:
     """The room's own identity, which is what it posts as."""
-    assert page.persistence is not None
     entity = await page.persistence.entities.get_by_id(room.entity_id)
     if isinstance(entity, Failed) or entity.value is None:
         return None
@@ -467,8 +458,6 @@ async def _room_author(page: Panel, room: RoomRecord) -> bytes | None:
 
 
 async def _room(page: Panel, room_id: str) -> RoomRecord | None:
-    if page.persistence is None:
-        return None
     try:
         uuid.UUID(room_id)
     except ValueError:

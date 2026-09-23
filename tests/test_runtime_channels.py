@@ -17,14 +17,16 @@ from sqlalchemy import func, select
 from sighop.db.engine import Database, Succeeded
 from sighop.db.models import ChannelMessage as ChannelMessageRow
 from sighop.db.persistence import Persistence
-from sighop.monitor.render import CHANNELS_OFF
 from sighop.net.channels import ChannelKind, ChannelSet, LoadedChannel
 from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, channel_key_from_hashtag
 from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.runtime import Runtime, RuntimeConfig
+from tests.dbfixtures import the_default_persistence
 from tests.protocol.corpus import CAPTURES_DIR
 from tests.test_runtime import RecordingLogger, _events, _never_ends, _startup, run_briefly, runtime
 from tests.test_tx import ManualClock
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 PUBLIC_CAPTURE = CAPTURES_DIR / "2026-09-03.jsonl"
 """33 distinct Public frames (see `test_channel_foreign_decrypt.py`)."""
@@ -39,6 +41,7 @@ def _with_loader(loader, out: io.StringIO, source=None) -> Runtime:
     return Runtime(
         source=source if source is not None else _never_ends(),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600),
         radio=EU868_NARROW,
         clock=ManualClock(),
@@ -46,18 +49,6 @@ def _with_loader(loader, out: io.StringIO, source=None) -> Runtime:
         logger=RecordingLogger(),
         channel_loader=loader,
     )
-
-
-async def test_a_run_with_no_database_says_it_has_no_channels() -> None:
-    out = io.StringIO()
-    run = runtime(_events(PUBLIC_CAPTURE), out=out)
-    await run_briefly(run)
-
-    assert CHANNELS_OFF in out.getvalue()
-    assert "requires durable storage" in CHANNELS_OFF
-    assert len(run.channels.channels) == 0
-    assert run.channels.decrypted == 0 and run.channels.unknown > 0
-    assert "ch_rx=" not in out.getvalue()
 
 
 async def test_startup_lists_the_loaded_channels_with_their_hashes() -> None:
@@ -134,7 +125,6 @@ async def test_a_replay_decrypts_public_frames_with_a_loader() -> None:
     assert "✗ Public from claimed" in out.getvalue()
 
 
-@pytest.mark.database
 async def test_a_channel_added_to_the_repository_appears_after_reload(
     database: Database,
 ) -> None:
@@ -184,7 +174,6 @@ async def _replay(persistence: Persistence, **config: object) -> Runtime:
     return run
 
 
-@pytest.mark.database
 async def test_a_replay_records_channel_messages_only_when_writes_are_enabled(
     database: Database,
 ) -> None:

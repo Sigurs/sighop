@@ -68,7 +68,7 @@ KEYFILE_MODE = 0o600
 
 BURNED_WARNING = (
     "this keypair has been published as a test vector and must never be used "
-    "on air; generate a new one with `sighop keys new`"
+    "on air; create a new identity in the panel instead"
 )
 
 PLAINTEXT_KEY_NOTICE = (

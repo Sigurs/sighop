@@ -51,7 +51,6 @@ from sighop.web.guarded import (
     audit,
 )
 from sighop.web.render import (
-    NO_DATABASE,
     Refusal,
     collection_for,
     refused,
@@ -62,7 +61,6 @@ from sighop.web.render import (
 from sighop.web.routes import chat, keys, rooms
 from sighop.web.routes.chat import (
     CHANNEL_KEY_NEEDS_THE_SECRET,
-    CHANNELS_NEED_DURABLE_STORAGE,
 )
 
 PanelDep = Annotated[Panel, Depends(panel)]
@@ -90,15 +88,13 @@ async def create_room(
     guest_open: Annotated[str, Form()] = "",
     allow_read_only: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """Bind a room to a stored identity — `sighop room create`'s own call.
+    """Bind a room to a stored identity — the repository's own call.
 
     The admin password is required for the reason the command line requires it:
     it is the only credential that admits an administrator, and a room with none
     has no administrator and no way to gain one.
     """
     submitted = {"name": name, "entity_id": entity_id}
-    if page.persistence is None:
-        return await _refuse_room(request, page, NO_DATABASE, **submitted)
     if not admin_password:
         return await _refuse_room(
             request,
@@ -195,7 +191,7 @@ async def rotate_password(
     guest_open: Annotated[str, Form()] = "",
     allow_read_only: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
-    """Rotate through `RoomRepository.set_passwords` — `sighop room passwd`'s own.
+    """Rotate through `RoomRepository.set_passwords` — the repository's own call.
 
     Hashing happens in `passwords.py`, off the event loop and bounded, as it has
     since milestone 6. Nothing about a password reaches a log, a page or a
@@ -203,7 +199,7 @@ async def rotate_password(
     into an event.
     """
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
     # Through `PasswordHasher`, which runs Argon2id in a thread under a
@@ -232,7 +228,7 @@ async def retention_form(room_id: str, request: Request, page: PanelDep) -> HTML
     """How many stored messages a bound would remove, before it is applied."""
     room = await _room(page, room_id)
     stored = 0
-    if room is not None and page.persistence is not None:
+    if room is not None:
         counted = await page.persistence.messages.count(room.id)
         stored = counted.value if isinstance(counted, Succeeded) else -1
     return page.page(
@@ -252,7 +248,7 @@ async def set_retention(
     retention_messages: Annotated[str, Form()] = "",
 ) -> RedirectResponse:
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return RedirectResponse("/rooms", status_code=SEE_OTHER)
     await page.persistence.rooms.set_retention(
         room.id,
@@ -274,8 +270,6 @@ def _optional_int(value: str) -> int | None:
 
 
 async def _room(page: Panel, room_id: str) -> RoomRecord | None:
-    if page.persistence is None:
-        return None
     listed = await page.persistence.rooms.list_all()
     if isinstance(listed, Failed):
         return None
@@ -305,10 +299,10 @@ async def rename_room(
     page: PanelDep,
     name: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop room rename`'s own call. No nonce and no password: a rename is
+    """The repository's own call. No nonce and no password: a rename is
     reversible by renaming back and destroys nothing (design D6)."""
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return await rename_room_form(room_id, request, page)
     try:
         renamed = await page.persistence.rooms.rename(room.id, name)
@@ -343,7 +337,7 @@ async def delete_room_form(room_id: str, request: Request, page: PanelDep) -> HT
     room = await _room(page, room_id)
     members = messages = None
     identity = None
-    if room is not None and page.persistence is not None:
+    if room is not None:
         members, messages = await rooms.room_counts(page, room)
         held = await page.persistence.entities.get_by_id(room.entity_id)
         identity = held.value if isinstance(held, Succeeded) else None
@@ -367,7 +361,7 @@ async def delete_room(
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop room delete`'s own call, behind confirm-and-nonce.
+    """The repository's own call, behind confirm-and-nonce.
 
     No password: this destroys stored content rather than key material or what
     the station may do, which is the tier `REMOVE_CHANNEL` is in (design D6).
@@ -377,7 +371,7 @@ async def delete_room(
     title = "delete room"
     actor = page.actor(request)
     room = await _room(page, room_id)
-    if room is None or page.persistence is None:
+    if room is None:
         return await delete_room_form(room_id, request, page)
     if not page.nonces.spend(nonce, REMOVE_ROOM, room_id):
         audit(
@@ -436,7 +430,7 @@ async def create_bot(
     entity_id: Annotated[str, Form()] = "",
     driver: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """Bind a driver to an identity — `sighop bot create`'s own call.
+    """Bind a driver to an identity — the repository's own call.
 
     With the driver's own defaults, enabled and in observe mode: a new bot runs
     its whole decision path and transmits nothing until an operator says
@@ -452,8 +446,6 @@ async def create_bot(
     from sighop.bots.greeter import seeded_entries
 
     submitted = {"entity_id": entity_id, "driver": driver}
-    if page.persistence is None:
-        return await _refuse_bot(request, page, NO_DATABASE, **submitted)
     try:
         config = bot_drivers.default_config(driver)
     except UnknownDriverError as exc:
@@ -549,7 +541,7 @@ async def set_bot_enabled(
     """Enable or disable one bot, reaching the run right after the store
     takes it — the same immediacy `web-admin` already gives a room delete."""
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     turning_on = enabled == "true"
     await page.persistence.bots.set_enabled(bot.id, turning_on)
@@ -589,7 +581,7 @@ async def set_bot_mode(
 ) -> RedirectResponse:
     """Observe needs no confirmation; active does, and is refused without one."""
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     if mode == "active" and confirm != "yes":
         # Unchanged, and the operator is sent back to the page that explains it.
@@ -606,21 +598,21 @@ async def set_bot_config(
     key: Annotated[str, Form()] = "",
     value: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """One key and one value, as `sighop bot set` takes them (design D7).
+    """One key and one value at a time (design D7).
 
     Per key rather than a whole object, for the reason the command line is per
     key: a refusal names the key it is about, and a valid change is not lost
     because another key in the same object was wrong. `drivers.validate_config`
-    is exactly what `sighop bot set` calls — it routes the runtime's two
-    reserved keys to the runtime and the rest to the driver that owns them — so
-    a value this refuses is one the command line refuses, in the same words, and
+    routes the runtime's two reserved keys to the runtime and the rest to the
+    driver that owns them — so a value this refuses is refused in the owner's
+    own words, and
     the stored configuration is exactly what it was.
     """
     from sighop.bots import drivers as bot_drivers
     from sighop.bots.base import BotConfigError, UnknownDriverError
 
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     try:
         # Against the driver named by the *stored* row, so the check is the one
@@ -654,7 +646,7 @@ async def delete_bot_form(bot_id: str, request: Request, page: PanelDep) -> HTML
     bot = await _bot(page, bot_id)
     keys = None
     identity = None
-    if bot is not None and page.persistence is not None:
+    if bot is not None:
         stored = await page.persistence.bot_state.list(bot.id)
         keys = len(stored.value) if isinstance(stored, Succeeded) else None
         held = await page.persistence.entities.get_by_id(bot.entity_id)
@@ -678,7 +670,7 @@ async def delete_bot(
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop bot delete`'s own call, behind confirm-and-nonce.
+    """The repository's own call, behind confirm-and-nonce.
 
     No password, on `REMOVE_CHANNEL`'s terms: this destroys stored content, not
     key material and not what the station may do (design D6).
@@ -688,7 +680,7 @@ async def delete_bot(
     title = "delete bot"
     actor = page.actor(request)
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return await delete_bot_form(bot_id, request, page)
     if not page.nonces.spend(nonce, REMOVE_BOT, bot_id):
         audit(
@@ -743,8 +735,6 @@ async def delete_bot(
 
 
 async def _bot(page: Panel, bot_id: str) -> BotRecord | None:
-    if page.persistence is None:
-        return None
     try:
         uuid.UUID(bot_id)
     except ValueError:
@@ -802,7 +792,7 @@ async def greeted(
     bot = await _bot(page, bot_id)
     records: list[dict[str, object]] = []
     other_keys = 0
-    if bot is not None and page.persistence is not None:
+    if bot is not None:
         stored = await page.persistence.bot_state.list(bot.id)
         if isinstance(stored, Succeeded):
             records, other_keys = _greeting_rows(stored.value)
@@ -870,11 +860,11 @@ def _recorded_at(value: object) -> dt.datetime | None:
 async def clear_greeting(
     bot_id: str, page: PanelDep, public_key: Annotated[str, Form()] = ""
 ) -> RedirectResponse:
-    """Release one contact — `sighop bot greeted <peer> --clear`'s own call."""
+    """Release one contact — the repository's own call."""
     from sighop.bots.greeter import greeted_key
 
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     try:
         key = greeted_key(bytes.fromhex(public_key))
@@ -888,7 +878,7 @@ async def clear_greeting(
 async def set_greeting(
     bot_id: str, page: PanelDep, public_key: Annotated[str, Form()] = ""
 ) -> RedirectResponse:
-    """Excuse one contact — `sighop bot greeted <peer> --set`'s own call.
+    """Excuse one contact — the repository's own call.
 
     Marked as set by an operator rather than as greeted or seeded: three
     different facts about why a bot owes a contact nothing.
@@ -896,7 +886,7 @@ async def set_greeting(
     from sighop.bots.greeter import greeted_key, operator_entry
 
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     try:
         raw = bytes.fromhex(public_key)
@@ -920,7 +910,7 @@ async def seed_greetings(bot_id: str, page: PanelDep) -> RedirectResponse:
     from sighop.bots.greeter import seeded_entries
 
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None:
+    if bot is None:
         return RedirectResponse("/admin/identities", status_code=SEE_OTHER)
     contacts = await page.persistence.contacts.load_all()
     if isinstance(contacts, Succeeded):
@@ -938,7 +928,7 @@ async def clear_state_form(bot_id: str, request: Request, page: PanelDep) -> HTM
     """What clearing forgets, before it forgets it."""
     bot = await _bot(page, bot_id)
     keys = 0
-    if bot is not None and page.persistence is not None:
+    if bot is not None:
         stored = await page.persistence.bot_state.list(bot.id)
         keys = len(stored.value) if isinstance(stored, Succeeded) else -1
     return page.page(
@@ -966,7 +956,7 @@ async def clear_state(
     events, and a redirect would lose the difference.
     """
     bot = await _bot(page, bot_id)
-    if bot is None or page.persistence is None or confirm != "yes":
+    if bot is None or confirm != "yes":
         return await clear_state_form(bot_id, request, page)
     removed = await page.persistence.bot_state.clear(bot.id)
     return page.page(
@@ -981,30 +971,31 @@ async def clear_state(
 
 # --- 7. What is deliberately absent (shown on `/system`) --------------------
 
-MIGRATIONS_ARE_A_TERMINAL_ACT = (
+MIGRATIONS_ARE_APPLIED_AT_START = (
     "Migrations are not applied from here, and that is deliberate rather than "
     "unbuilt. There are no roles in this interface — every account is an "
     "operator — so offering DDL here would make a stolen session enough to "
-    "change the schema; and DESIGN.md §6 makes applying a migration an act an "
-    "operator takes on purpose, never a side effect of starting something. It "
-    "is one command in a terminal."
+    "change the schema. sighop applies outstanding migrations when it starts, "
+    "and only then: restarting it is how a database behind this build is brought "
+    "up to date."
 )
 """Design D6. An operator who has just been told the revisions disagree will
 look for the button, and not finding one is ambiguous between "not built yet"
-and "deliberately not offered". This says which."""
+and "deliberately not offered". This says which, and says what to do instead."""
 
-ACCOUNT_COMMAND = "sighop web user"
-
-ACCOUNTS_ARE_A_TERMINAL_ACT = (
-    "Accounts are not managed from here: adding one, setting a password and "
-    "disabling or removing one are done in a terminal on the host with "
-    f"`{ACCOUNT_COMMAND} add|passwd|disable|enable|remove|list`. With no roles, "
-    "anyone signed in could otherwise create a second account for themselves, "
-    "and a stolen session would become a credential that outlives it. Terminal "
-    "access to the host is the stronger proof of being the operator. A change "
-    "made there ends affected sessions within a minute."
+ACCOUNTS_ARE_NOT_MANAGED = (
+    "Accounts are not managed from here, and at present they are not managed "
+    "anywhere else either. The account first-run setup created is the only one; "
+    "there is no way to add a second, change a password, or disable or remove one "
+    "short of editing the database directly. With no roles, anyone signed in "
+    "could otherwise create an account for themselves, and a stolen session "
+    "would become a credential that outlives it — which is why the panel has "
+    "never offered it. A change made in the database ends affected sessions "
+    "within a minute."
 )
-"""Milestone 9 design D2, stated where it would be looked for."""
+"""Stated where it would be looked for. The command that used to do this went
+with the command line (require-database-web-drop-cli); its replacement is a
+separate change, and until then this says so rather than pointing nowhere."""
 
 
 # --- 13 Guarded actions -----------------------------------------------------
@@ -1400,14 +1391,10 @@ async def raise_ceiling(
 #
 # Every write is `WebhookRepository`'s own call, which is where the command line
 # validates too: a URL, a trigger or a hop limit this refuses is one
-# `sighop webhook` refuses in the same words. A submitted URL is never put back
+# the repository refuses in its own words. A submitted URL is never put back
 # into a page — not after it is stored, and not in a form re-shown after a
 # refusal — because the URL is the credential that lets anyone post to it.
 
-WEBHOOKS_NEED_DURABLE_STORAGE = (
-    "Webhooks are stored configuration and require durable storage. This run has "
-    "no database, so none can be configured or sent."
-)
 
 WEBHOOK_URL_NEEDS_THE_SECRET = (
     "SIGHOP_SECRET_KEY is not available to this panel, and webhook URLs are "
@@ -1425,20 +1412,15 @@ async def webhooks(
     status_code: int = 200,
 ) -> HTMLResponse:
     """Every webhook with its target as scheme and host, and its last outcomes."""
-    from sighop.db.repositories import WebhookRecord
     from sighop.webhooks.config import WebhookFormat
     from sighop.webhooks.triggers import Trigger
 
-    listed: Outcome[list[WebhookRecord]] | None = None
-    if page.persistence is not None:
-        listed = await page.persistence.webhooks.list_all()
+    listed = await page.persistence.webhooks.list_all()
     dispatcher = page.state.webhooks
     return page.page(
         request,
         "admin/webhooks.html",
         webhooks=collection_for(listed, degraded="webhooks cannot be read"),
-        no_database=page.persistence is None,
-        no_database_note=WEBHOOKS_NEED_DURABLE_STORAGE,
         counters=None if dispatcher is None else dispatcher.as_json(),
         triggers=[trigger.value for trigger in Trigger],
         formats=[kind.value for kind in WebhookFormat],
@@ -1457,8 +1439,6 @@ async def _refuse_webhook(
 
 
 async def _webhook(page: Panel, webhook_id: str):  # type: ignore[no-untyped-def]
-    if page.persistence is None:
-        return None
     try:
         wanted = uuid.UUID(webhook_id)
     except ValueError:
@@ -1477,7 +1457,7 @@ async def create_webhook(
     triggers: Annotated[list[str] | None, Form()] = None,
     max_hops: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop webhook add`'s own call. The URL is not carried back on refusal."""
+    """The repository's own call. The URL is not carried back on refusal."""
     from sighop.webhooks.config import WebhookConfigError
 
     submitted = {
@@ -1486,8 +1466,6 @@ async def create_webhook(
         "triggers": ",".join(triggers or ()),
         "max_hops": max_hops,
     }
-    if page.persistence is None:
-        return await _refuse_webhook(request, page, WEBHOOKS_NEED_DURABLE_STORAGE, **submitted)
     if page.sealing_secret is None:
         return await _refuse_webhook(request, page, WEBHOOK_URL_NEEDS_THE_SECRET, **submitted)
     try:
@@ -1511,7 +1489,7 @@ async def set_webhook_enabled(
     webhook_id: str, enabled: Annotated[str, Form()], page: PanelDep
 ) -> RedirectResponse:
     record = await _webhook(page, webhook_id)
-    if record is not None and page.persistence is not None:
+    if record is not None:
         await page.persistence.webhooks.set_enabled(record.id, enabled == "true")
     return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
 
@@ -1525,14 +1503,14 @@ async def set_webhook_settings(
     triggers: Annotated[list[str] | None, Form()] = None,
     max_hops: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop webhook set`'s own call: format, triggers and hop limit together.
+    """The repository's own call: format, triggers and hop limit together.
 
     An empty hop limit removes the limit, as `--no-max-hops` does.
     """
     from sighop.webhooks.config import WebhookConfigError
 
     record = await _webhook(page, webhook_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
     try:
         changed = await page.persistence.webhooks.update(
@@ -1560,11 +1538,11 @@ async def set_webhook_url(
     page: PanelDep,
     url: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop webhook set-url`'s own call. What was typed is never shown back."""
+    """The repository's own call. What was typed is never shown back."""
     from sighop.webhooks.config import WebhookConfigError
 
     record = await _webhook(page, webhook_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
     if page.sealing_secret is None:
         return await _refuse_webhook(
@@ -1608,12 +1586,12 @@ async def rename_webhook(
     page: PanelDep,
     name: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop webhook rename`'s own call. The sealed URL is not touched, and
+    """The repository's own call. The sealed URL is not touched, and
     nothing beyond scheme and host is rendered, refusal included."""
     from sighop.webhooks.config import WebhookConfigError
 
     record = await _webhook(page, webhook_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return await rename_webhook_form(webhook_id, request, page)
     try:
         renamed = await page.persistence.webhooks.rename(record.id, name)
@@ -1657,9 +1635,9 @@ async def remove_webhook(
     page: PanelDep,
     confirm: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop webhook remove`'s own call, only with the explicit confirmation."""
+    """The repository's own call, only with the explicit confirmation."""
     record = await _webhook(page, webhook_id)
-    if record is None or page.persistence is None or confirm != "yes":
+    if record is None or confirm != "yes":
         return await remove_webhook_form(webhook_id, request, page)
     await page.persistence.webhooks.remove(record.id)
     return RedirectResponse("/admin/webhooks", status_code=SEE_OTHER)
@@ -1672,7 +1650,7 @@ async def send_webhook_sample(
     page: PanelDep,
     trigger: Annotated[str, Form()] = "",
 ) -> HTMLResponse:
-    """`sighop webhook test`'s own call: one sample, no retry, outcome shown.
+    """The repository's own call: one sample, no retry, outcome shown.
 
     CSRF-protected like every write, and not a guarded action: it neither
     transmits on air nor reveals a secret (design D8).
@@ -1681,7 +1659,7 @@ async def send_webhook_sample(
     from sighop.webhooks.triggers import Trigger
 
     record = await _webhook(page, webhook_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return await webhooks(request, page, status_code=404)
     try:
         chosen = Trigger(trigger)
@@ -1722,7 +1700,7 @@ async def send_webhook_sample(
 # --- Channels (channel-messaging, `web-admin`) -------------------------------
 #
 # Every write is `ChannelRepository`'s own call, so a hashtag or key this refuses
-# is one `sighop channel` refuses in the same words, and every change is followed
+# is refused in the repository's own words, and every change is followed
 # by `reload_channels()` so this run decrypts on it at once. The list and the
 # forms are on `/chat` (design D3); a refusal is re-shown there.
 
@@ -1754,12 +1732,10 @@ async def add_hashtag_channel(
     hashtag: Annotated[str, Form()] = "",
     name: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop channel add --hashtag`'s own call."""
+    """The repository's own call."""
     from sighop.db.repositories import ChannelConfigError
 
     submitted = {"hashtag": hashtag, "name": name}
-    if page.persistence is None:
-        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE, **submitted)
     try:
         outcome = await page.persistence.channels.add_hashtag(
             hashtag, name=name or None, secret=page.sealing_secret
@@ -1776,11 +1752,9 @@ async def add_psk_channel(
     name: Annotated[str, Form()] = "",
     key: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop channel add --psk-stdin`'s own call. The key is never carried back."""
+    """The repository's own call. The key is never carried back."""
     from sighop.db.repositories import ChannelConfigError
 
-    if page.persistence is None:
-        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE, name=name)
     if page.sealing_secret is None:
         return await _refuse_channel(
             request, page, CHANNEL_KEY_NEEDS_THE_SECRET, field="psk", name=name
@@ -1796,11 +1770,9 @@ async def add_psk_channel(
 
 @router.post("/channels/public", response_model=None)
 async def add_public_channel(request: Request, page: PanelDep) -> RedirectResponse | HTMLResponse:
-    """`sighop channel add --public`'s own call: re-adding Public after a removal."""
+    """The repository's own call: re-adding Public after a removal."""
     from sighop.db.repositories import ChannelConfigError
 
-    if page.persistence is None:
-        return await _refuse_channel(request, page, CHANNELS_NEED_DURABLE_STORAGE)
     try:
         outcome = await page.persistence.channels.add_public()
     except ChannelConfigError as exc:
@@ -1809,8 +1781,6 @@ async def add_public_channel(request: Request, page: PanelDep) -> RedirectRespon
 
 
 async def _stored_channel(page: Panel, channel_id: str):  # type: ignore[no-untyped-def]
-    if page.persistence is None:
-        return None
     try:
         wanted = int(channel_id)
     except ValueError:
@@ -1838,12 +1808,12 @@ async def rename_channel(
     page: PanelDep,
     name: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop channel rename`'s own call. No key material is touched, and
+    """The repository's own call. No key material is touched, and
     none is rendered — including in the form re-shown after a refusal."""
     from sighop.db.repositories import ChannelConfigError
 
     record = await _stored_channel(page, channel_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return await rename_channel_form(channel_id, request, page)
     try:
         renamed = await page.persistence.channels.rename(record.id, name)
@@ -1874,7 +1844,7 @@ async def remove_channel_form(channel_id: str, request: Request, page: PanelDep)
     """What removing deletes, counted, before it deletes it."""
     record = await _stored_channel(page, channel_id)
     messages: int | None = None
-    if record is not None and page.persistence is not None:
+    if record is not None:
         counted = await page.persistence.channels.message_count(record.id)
         messages = counted.value if isinstance(counted, Succeeded) else None
     return page.page(
@@ -1895,13 +1865,13 @@ async def remove_channel(
     page: PanelDep,
     nonce: Annotated[str, Form()] = "",
 ) -> RedirectResponse | HTMLResponse:
-    """`sighop channel remove --delete-history`'s own call, behind confirm-and-nonce."""
+    """The repository's own call, behind confirm-and-nonce."""
     from urllib.parse import quote
 
     title = "remove channel"
     actor = page.actor(request)
     record = await _stored_channel(page, channel_id)
-    if record is None or page.persistence is None:
+    if record is None:
         return await remove_channel_form(channel_id, request, page)
     if not page.nonces.spend(nonce, REMOVE_CHANNEL, channel_id):
         audit(

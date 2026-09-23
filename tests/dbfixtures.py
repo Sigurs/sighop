@@ -11,8 +11,18 @@ the migrations the deployment runs, and it cannot collide with another
 developer's run. Its one hazard is a crashed run leaving a schema behind, which
 is why they share a prefix and stale ones are dropped at session start.
 
-Every database test is gated behind the `database` marker and skips when no test
-database is configured, so the existing suite gains no database dependency.
+The database is not optional and no test skips for want of one (`database`
+spec). The environment must name one — `SIGHOP_TEST_DATABASE_URL` or
+`DATABASE_URL` — and a run that names neither fails at once, naming both, rather
+than reporting a reduced suite as a passing one.
+
+A container engine is deliberately not a route to a database here. The
+development container carries no Docker socket, so a suite that started its own
+server would be a suite that only ran on the host, and the per-run schema below
+already gives every isolation property a throwaway server would: the migration
+chain is applied into it, it is dropped with `CASCADE` when the run ends, and
+its random name keeps two concurrent runs — or two developers on one shared
+database — out of each other's tables.
 """
 
 from __future__ import annotations
@@ -25,10 +35,13 @@ from collections.abc import AsyncIterator, Iterator
 import asyncpg
 import pytest
 import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from sighop.config import DatabaseConfig
 from sighop.db import migrations
 from sighop.db.engine import Database
+from sighop.db.persistence import Persistence
 
 TEST_DATABASE_URL_VARIABLE = "SIGHOP_TEST_DATABASE_URL"
 """Preferred over `DATABASE_URL` so a developer can point the suite somewhere
@@ -36,9 +49,12 @@ other than the database their runtime is using, without unsetting either."""
 
 SCHEMA_PREFIX = "sighop_test_"
 
-SKIP_REASON = (
-    f"no test database configured: set {TEST_DATABASE_URL_VARIABLE} or DATABASE_URL "
-    "(for example `uv run --env-file .env.dev pytest -m database`)"
+NO_DATABASE = (
+    "the test suite requires PostgreSQL and no database is configured.\n"
+    f"Set {TEST_DATABASE_URL_VARIABLE} or DATABASE_URL — for example\n"
+    "`uv run --env-file .env.dev pytest`.\n"
+    "The run creates a schema of its own in that database and drops it afterwards, "
+    "so it leaves nothing behind."
 )
 
 
@@ -48,9 +64,15 @@ def configured_url() -> str | None:
 
 @pytest.fixture(scope="session")
 def database_url() -> str:
+    """The database this run works in, or a failure that names how to give it one.
+
+    `pytest.fail` rather than `pytest.skip`: a suite that cannot reach a database
+    has not passed, and reporting it as skipped is how a green run comes to mean
+    less than it appears to.
+    """
     url = configured_url()
     if url is None:
-        pytest.skip(SKIP_REASON)
+        pytest.fail(NO_DATABASE, pytrace=False)
     return url
 
 
@@ -92,6 +114,82 @@ async def database(database_config: DatabaseConfig) -> AsyncIterator[Database]:
     await _truncate(handle)
     try:
         yield handle
+    finally:
+        await handle.dispose()
+
+
+@pytest.fixture
+def fresh_persistence(database_config: DatabaseConfig) -> Persistence:
+    """A `Persistence` over the run's schema, emptied, and not yet used.
+
+    Every runtime and every page has a database behind it (`database` spec), so
+    a test that builds either carries a real one rather than `None`. It is
+    emptied here, as the `database` fixture empties before each test, so a test
+    cannot see another test's rows.
+
+    Unpooled, because of where it is first used. A synchronous page test's
+    client runs the application on its own thread and its own event loop, and an
+    asyncpg connection belongs to the loop that opened it: a pooled one would
+    outlive that loop, could not be closed from anywhere, and the role allows
+    30. With no pool, every session closes its connection inside the loop that
+    opened it, and nothing is left to dispose of.
+    """
+    asyncio.run(_emptied(database_config))
+    return Persistence(database=UnpooledDatabase(config=database_config))
+
+
+_default_persistence: Persistence | None = None
+
+
+@pytest.fixture
+def default_persistence(fresh_persistence: Persistence) -> Iterator[Persistence]:
+    """Make `fresh_persistence` what helpers use when a test passes none.
+
+    `stub_state()` and the runtime-building helpers take a `persistence`
+    argument; a test that has rows to put in place first passes its own. The
+    many that have none would otherwise need a fixture threaded through every
+    helper between them and the constructor, so a module opts in once, at the
+    top, where a reader sees it:
+
+        pytestmark = pytest.mark.usefixtures("default_persistence")
+    """
+    global _default_persistence
+    _default_persistence = fresh_persistence
+    try:
+        yield fresh_persistence
+    finally:
+        _default_persistence = None
+
+
+def the_default_persistence() -> Persistence:
+    """The persistence `default_persistence` provided, or a failure saying how to get one."""
+    if _default_persistence is None:
+        raise RuntimeError(
+            "no Persistence for this test: pass persistence=..., or declare "
+            'pytestmark = pytest.mark.usefixtures("default_persistence") in this module'
+        )
+    return _default_persistence
+
+
+class UnpooledDatabase(Database):
+    """`Database`, with a connection per session instead of a pool (see above)."""
+
+    __slots__ = ()
+
+    @property
+    def engine(self) -> AsyncEngine:
+        if self._engine is None:
+            self._engine = create_async_engine(
+                self.config.url, poolclass=NullPool, connect_args=self.config.connect_args()
+            )
+            self._sessions = async_sessionmaker(self._engine, expire_on_commit=False)
+        return self._engine
+
+
+async def _emptied(config: DatabaseConfig) -> None:
+    handle = Database(config=config)
+    try:
+        await _truncate(handle)
     finally:
         await handle.dispose()
 
@@ -178,5 +276,27 @@ async def _truncate(handle: Database) -> None:
                 "INSERT INTO channel (name, kind, channel_hash, created_at) "
                 "VALUES ('Public', 'public', 17, now())"
             )
+        )
+        await session.commit()
+
+
+async def strand_a_row(database: Database, name: str, secret: bytes) -> None:
+    """Rewrite one identity row's key material as a pre-0008 build sealed it.
+
+    What migration 0008 leaves behind for a row it could not carry forward
+    (design D10): a public key still held, and a seed nothing can open.
+    """
+    import os
+
+    from nacl.secret import SecretBox
+    from sqlalchemy import text
+
+    from sighop.db.sealing import SEAL_VERSION
+
+    sealed = bytes([SEAL_VERSION]) + bytes(SecretBox(secret).encrypt(os.urandom(32)))
+    async with database.sessions() as session:
+        await session.execute(
+            text("UPDATE entity SET sealed_private_key = :sealed WHERE name = :name"),
+            {"sealed": sealed, "name": name},
         )
         await session.commit()

@@ -59,7 +59,7 @@ RESERVED_CONFIG_KEYS = frozenset({"rate_per_hour", "burst"})
 """Configuration keys the runtime owns rather than the driver.
 
 Driver configuration and the two limit values share one JSONB column because
-they are set, listed and validated together (`sighop bot set`). These two are
+they are set, listed and validated together (the bot's configuration form). These two are
 the runtime's; a driver's validator is never asked about them and may not claim
 them."""
 
@@ -68,9 +68,9 @@ class BotMode(StrEnum):
     """Whether this bot may touch the radio at all (design D4).
 
     Stored on the row rather than passed per run, so a bot cannot become active
-    because an operator forgot which flags the last run had. `--enable-transmit`
-    is the *other* gate and is unchanged: the mode says this bot is meant to
-    act, the flag says this run is allowed to transmit, and they answer to
+    because an operator forgot how the last run was started. The node's
+    transmit gate is the *other* gate and is unchanged: the mode says this bot is
+    meant to act, the gate says this node is allowed to transmit, and they answer to
     different people.
     """
 
@@ -440,8 +440,8 @@ class Bot(Protocol):
 
     Two handlers, both optional in effect — a driver that cares about only one
     kind of event implements the other as a no-op — and three pieces of
-    configuration behaviour, because `sighop bot set` hands each value to the
-    driver that owns it rather than to a schema in the CLI (design D14).
+    configuration behaviour, because setting a value hands it to the driver
+    that owns it rather than to a schema in the panel (design D14).
 
     There is no `on_channel_message`, by operator decision. See the module
     docstring: a channel's sender is unauthenticated and its key often guessable,
@@ -488,7 +488,7 @@ class UnknownDriverError(ValueError):
 
 @dataclass(slots=True)
 class BotCounters:
-    """What one bot did, for the periodic status report and `sighop bot show`.
+    """What one bot did, for the periodic status report and the bot's page.
 
     Every field is reported even at zero, for the reason the persistence
     counters are: a field that disappears when it is zero cannot be told from a

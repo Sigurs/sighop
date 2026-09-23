@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 import sighop.protocol
+from sighop.db.persistence import Persistence
 from sighop.net.acks import AckDispatcher, AckRegistry
 from sighop.net.bus import IngressPipeline, NetworkBus
 from sighop.net.contacts import ContactStore
@@ -160,49 +161,24 @@ def test_no_protocol_module_imports_anything_this_milestone_added() -> None:
     assert not {name for name in names if name.startswith(("sighop.web", "fastapi"))}
 
 
-# --- 16.3 The suite passes in all three configurations ----------------------
+# --- 16.3 The panel is constructible with and without a feed ----------------
+#
+# The third configuration this once covered, a panel with no database, no
+# longer exists: a database is required (`database` spec).
 
 
-def test_every_panel_test_that_needs_a_database_says_so() -> None:
-    """16.3: what makes "the suite passes with no database configured" true.
-
-    A test that takes the `database` fixture without the marker does not skip —
-    it fails, on exactly the machine least able to do anything about it. The
-    marker is the gate `conftest.py` applies, so this checks that every test
-    that needs one carries it.
-    """
-    unmarked: list[str] = []
-    for path in sorted(Path("tests").glob("test_web_*.py")):
-        source = path.read_text()
-        tree = ast.parse(source)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            if not node.name.startswith("test_"):
-                continue
-            takes_database = any(argument.arg == "database" for argument in node.args.args)
-            marked = any(
-                ast.unparse(decorator) == "pytest.mark.database"
-                for decorator in node.decorator_list
-            )
-            if takes_database and not marked:
-                unmarked.append(f"{path.name}::{node.name}")
-    assert not unmarked, (
-        f"{unmarked} need a database and are not marked; they would fail rather "
-        "than skip on a machine without one"
-    )
-
-
-@pytest.mark.parametrize("configuration", ["no database", "no interface", "both"])
-def test_the_panel_is_constructible_in_every_configuration(configuration: str) -> None:
-    """16.3: a page renders with no database, no feed, or neither."""
+@pytest.mark.parametrize("with_feed", [True, False])
+def test_the_panel_is_constructible_with_and_without_a_feed(
+    with_feed: bool, fresh_persistence: Persistence
+) -> None:
+    """16.3: a page renders whether or not a feed hub is attached."""
 
     from sighop.web.app import allowed_hosts, create_app
     from tests.webfixtures import authenticator, stub_state
 
-    feed = FeedHub() if configuration != "no interface" else None
+    feed = FeedHub() if with_feed else None
     app = create_app(
-        stub_state(),
+        stub_state(persistence=fresh_persistence),
         auth=authenticator(),
         feed=feed,
         hosts=allowed_hosts("127.0.0.1", 8080),

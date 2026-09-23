@@ -136,7 +136,6 @@ def _message(room_id: uuid.UUID, post_timestamp: int) -> Message:
     )
 
 
-@pytest.mark.database
 async def test_an_identity_may_carry_only_one_room(database: Database) -> None:
     """1.1: a second room on one identity is refused by the schema itself."""
     entity_id = await _entity(database)
@@ -150,7 +149,6 @@ async def test_an_identity_may_carry_only_one_room(database: Database) -> None:
             await session.commit()
 
 
-@pytest.mark.database
 async def test_a_new_room_keeps_everything_until_a_policy_is_set(database: Database) -> None:
     """1.1: both bounds come back NULL, which is what "unlimited" is stored as."""
     entity_id = await _entity(database)
@@ -168,7 +166,6 @@ async def test_a_new_room_keeps_everything_until_a_policy_is_set(database: Datab
         assert stored.allow_read_only is False
 
 
-@pytest.mark.database
 async def test_two_members_of_one_room_may_share_a_node_hash(database: Database) -> None:
     """1.2, §3: at 1 in 256 they eventually will, and that is not an error."""
     entity_id = await _entity(database)
@@ -189,7 +186,6 @@ async def test_two_members_of_one_room_may_share_a_node_hash(database: Database)
         assert len(rows) == 2
 
 
-@pytest.mark.database
 async def test_one_public_key_cannot_join_one_room_twice(database: Database) -> None:
     """1.2: the public key is the identity, and membership is keyed on it."""
     entity_id = await _entity(database)
@@ -205,7 +201,6 @@ async def test_one_public_key_cannot_join_one_room_twice(database: Database) -> 
             await session.commit()
 
 
-@pytest.mark.database
 async def test_an_ordering_value_is_unique_within_its_room_and_not_across_rooms(
     database: Database,
 ) -> None:
@@ -230,7 +225,6 @@ async def test_an_ordering_value_is_unique_within_its_room_and_not_across_rooms(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_removing_a_room_removes_its_members_and_its_history(database: Database) -> None:
     """1.4: `ON DELETE CASCADE`, so no orphan outlives the room it belonged to."""
     entity_id = await _entity(database)

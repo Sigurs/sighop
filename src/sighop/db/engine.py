@@ -358,20 +358,18 @@ class Database:
             raise SchemaVersionError(
                 f"the database at {self.config.host}:{self.config.port}/"
                 f"{self.config.database} has no schema version recorded (no migrations "
-                f"applied); this code expects revision {expected}. Apply them with "
-                f"`{migrations.UPGRADE_COMMAND}` — sighop never migrates as a side "
-                "effect of starting"
+                f"applied); this code expects revision {expected}. To apply them, "
+                f"{migrations.RESTART_TO_MIGRATE}"
             )
         if not migrations.knows_revision(applied):
             raise SchemaVersionError(
                 f"the database is at revision {applied}, which this code does not know; "
                 f"it expects {expected}. Refusing to operate against an unknown schema "
-                "rather than guessing what it holds — run a build that knows it, or "
-                f"reconcile with `{migrations.UPGRADE_COMMAND}`"
+                "rather than guessing what it holds — run a build that knows it"
             )
         raise SchemaVersionError(
             f"the database is at revision {applied} and this code expects {expected}; "
-            f"apply the outstanding migrations with `{migrations.UPGRADE_COMMAND}`"
+            f"to apply the outstanding migrations, {migrations.RESTART_TO_MIGRATE}"
         )
 
     # --- Bounded, contained operations -------------------------------------

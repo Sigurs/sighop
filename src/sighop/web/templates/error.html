@@ -17,8 +17,9 @@
     <h1>something failed</h1>
     <p class="note">
       This request did not complete. What went wrong was recorded in the run's
-      own event stream — the terminal running <span class="mono">sighop run</span>,
-      or wherever <span class="mono">--log-file</span> points — and is
+      own event stream — the node's standard error (<span class="mono">docker
+      compose logs sighop</span> under compose), or wherever
+      <span class="mono">SIGHOP_LOG_FILE</span> points — and is
       deliberately not described here: a page is a rendering path to whoever
       holds the browser, and the event is where an operator looks anyway.
     </p>

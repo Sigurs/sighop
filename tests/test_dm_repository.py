@@ -91,7 +91,6 @@ def record(
 # --- 3.1 The repository -----------------------------------------------------
 
 
-@pytest.mark.database
 async def test_one_ref_twice_in_one_batch_becomes_one_row_carrying_the_later_state(
     database: Database,
 ) -> None:
@@ -121,7 +120,6 @@ async def test_one_ref_twice_in_one_batch_becomes_one_row_carrying_the_later_sta
     assert stored.ack_latency_ms == pytest.approx(812.5)
 
 
-@pytest.mark.database
 async def test_a_resolution_in_a_later_batch_updates_the_same_row(
     database: Database,
 ) -> None:
@@ -141,7 +139,6 @@ async def test_a_resolution_in_a_later_batch_updates_the_same_row(
     ]
 
 
-@pytest.mark.database
 async def test_an_update_does_not_move_a_message_in_its_conversation(
     database: Database,
 ) -> None:
@@ -179,7 +176,6 @@ async def test_an_update_does_not_move_a_message_in_its_conversation(
     assert [row.ref for row in page.value] == ["second", "first"]
 
 
-@pytest.mark.database
 async def test_a_conversation_reads_newest_first_and_pages_stably(
     database: Database,
 ) -> None:
@@ -209,7 +205,6 @@ async def test_a_conversation_reads_newest_first_and_pages_stably(
     assert len(set(seen)) == 8, "a message appeared on two pages"
 
 
-@pytest.mark.database
 async def test_a_peer_with_a_wrong_clock_cannot_reorder_a_conversation(
     database: Database,
 ) -> None:
@@ -240,7 +235,6 @@ async def test_a_peer_with_a_wrong_clock_cannot_reorder_a_conversation(
     )
 
 
-@pytest.mark.database
 async def test_two_identities_talking_to_one_contact_are_two_conversations(
     database: Database,
 ) -> None:
@@ -274,7 +268,6 @@ async def test_two_identities_talking_to_one_contact_are_two_conversations(
     assert counted.value == 3
 
 
-@pytest.mark.database
 async def test_a_conversation_summary_carries_its_latest_message_and_its_count(
     database: Database,
 ) -> None:
@@ -358,7 +351,6 @@ def test_a_replay_run_has_no_direct_message_sink() -> None:
 # --- 3.3 What a restart reports ---------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_restart_reports_what_the_database_holds_before_the_first_frame(
     database: Database,
 ) -> None:
@@ -401,7 +393,6 @@ async def test_a_restart_reports_what_the_database_holds_before_the_first_frame(
     assert "messages=4" in line
 
 
-@pytest.mark.database
 async def test_a_stop_writes_what_more_than_one_lane_had_buffered(
     database: Database, database_config: DatabaseConfig
 ) -> None:
@@ -449,7 +440,6 @@ async def test_a_stop_writes_what_more_than_one_lane_had_buffered(
 # --- 3.4 What the pruners do not touch --------------------------------------
 
 
-@pytest.mark.database
 async def test_pruning_the_packet_log_removes_no_recorded_message(
     database: Database,
 ) -> None:
@@ -491,7 +481,6 @@ async def test_pruning_the_packet_log_removes_no_recorded_message(
     assert held.value == 4
 
 
-@pytest.mark.database
 async def test_room_retention_removes_no_recorded_message(database: Database) -> None:
     """3.4: room retention is a room's policy over a room's history.
 

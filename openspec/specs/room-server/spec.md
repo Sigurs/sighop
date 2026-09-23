@@ -6,8 +6,7 @@ which local entity owns an inbound packet, how requests for keep-alive, status a
 answered, and what a run reports about the rooms it serves.
 
 ## Requirements
-
-### Requirement: A room is bound to exactly one stored identity, which adverts as a room server
+### Requirement: A room is bound to exactly one stored identity, which adverts as a room server entity
 The system SHALL bind a room to exactly one stored entity, SHALL advertise that entity with the
 room-server node type on the same advert schedule and under the same advert policy as any other
 entity, and SHALL refuse to bind a second room to an identity that already has one.
@@ -19,10 +18,6 @@ entity, and SHALL refuse to bind a second room to an identity that already has o
 #### Scenario: Binding a second room to one identity
 - **WHEN** a room is created on an identity that already has one
 - **THEN** it is refused with a message naming the existing room, and nothing is changed
-
-#### Scenario: No durable storage is configured
-- **WHEN** the runtime starts with no database configured
-- **THEN** no rooms exist, no room server is served, and the startup output states that rooms require durable storage rather than silently serving nothing
 
 ### Requirement: An entity that serves a room owns the packets addressed to it
 The system SHALL handle traffic addressed to a room server entity's node hash as room-server

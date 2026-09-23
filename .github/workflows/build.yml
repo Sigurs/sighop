@@ -6,8 +6,9 @@ name: Build image
 # Discord, and only the newest three versions are kept.
 #
 # The scan reports vulnerabilities in the log and does not fail the build
-# (operator decision, milestone 9). Database tests skip: CI configures no
-# Postgres, as `build.sh` never requires one.
+# (operator decision, milestone 9). The test gate needs a database — the suite
+# refuses to run without one rather than skip half of itself — so the job runs a
+# throwaway Postgres beside it.
 
 on:
   push:
@@ -30,6 +31,24 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # The test gate's database, for this job only. On a non-UTC zone on purpose:
+    # one test proves a timestamp round-trips through a server whose TimeZone is
+    # not UTC, which is what the deployment's database is.
+    services:
+      postgres:
+        image: postgres:18@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae
+        env:
+          POSTGRES_USER: sighop
+          POSTGRES_PASSWORD: sighop-ci
+          POSTGRES_DB: sighop
+          TZ: Europe/Helsinki
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sighop -d sighop"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -48,6 +67,7 @@ jobs:
       - name: Build and verify (build.sh)
         env:
           IMAGE: ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
+          SIGHOP_TEST_DATABASE_URL: postgresql+asyncpg://sighop:sighop-ci@localhost:5432/sighop
         run: ./build.sh
 
       - name: Log in to GHCR

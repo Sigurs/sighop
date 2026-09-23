@@ -98,7 +98,8 @@ def test_the_final_stage_has_no_user_the_entrypoint_and_the_build_identity() -> 
     final = text[text.rindex("\nFROM ") :]
     assert not re.search(r"^USER\b", final, re.M), "the image must not hardcode a user"
     assert 'ENTRYPOINT ["sighop"]' in final
-    assert 'CMD ["--help"]' in final
+    # No CMD: the entry point takes no arguments and refuses any it is given.
+    assert not re.search(r"^CMD\b", final, re.M), "the image passes the node an argument"
     assert "SIGHOP_ALEMBIC_DIR=/app/alembic" in final
     assert "PYTHONDONTWRITEBYTECODE=1" in final
     assert "SIGHOP_COMMIT_HASH=${SIGHOP_COMMIT}" in final
@@ -129,21 +130,25 @@ def test_the_sighop_service_reaches_the_modem_by_stable_path_with_a_numeric_grou
     assert re.search(r"source: \"\$\{SIGHOP_MODEM:\?[^}]+\}\"\n\s+target: /dev/modem", body)
     assert re.search(r"^\s+restart: unless-stopped$", body, re.M)
     assert '- "${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}:8080"' in body
-    assert "--web-allowed-host\n      - localhost:${SIGHOP_WEB_PORT:-8080}\n" in body
-    assert "--web-allowed-host\n      - 127.0.0.1:${SIGHOP_WEB_PORT:-8080}\n" in body
-    # Compose cannot omit an argument, so the extra name defaults to one already
-    # listed and --web-allowed-host drops the duplicate.
+    assert "SIGHOP_MODEM: /dev/modem" in body
+    assert "SIGHOP_WEB_HOST: 0.0.0.0" in body
+    # Compose cannot omit an entry, so the extra name defaults to one already
+    # listed and the node drops the duplicate.
     assert (
-        "--web-allowed-host\n      - ${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}\n"
-        in body
-    )
-    assert "--enable-transmit" not in body, "a fresh deployment is receive-only"
+        'SIGHOP_WEB_ALLOWED_HOSTS: "localhost:${SIGHOP_WEB_PORT:-8080},'
+        "127.0.0.1:${SIGHOP_WEB_PORT:-8080},"
+        '${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}"'
+    ) in body
+    assert "SIGHOP_ENABLE_TRANSMIT" not in body, "a fresh deployment is receive-only"
     assert "privileged" not in body
 
 
-def test_the_platform_migrates_on_start() -> None:
-    body = _service(COMPOSE.read_text(), "sighop")
-    assert re.search(r"command:\n\s+- run\n\s+- --migrate\n", body)
+def test_every_setting_is_an_environment_variable_and_there_is_no_command() -> None:
+    """`compose-deployment`: the node migrates by starting, so there is nothing
+    to ask for — and it takes no arguments, so there is nothing to pass."""
+    body = _service(_without_comments(COMPOSE.read_text()), "sighop")
+    assert not re.search(r"^\s+(command|entrypoint):", body, re.M)
+    assert re.search(r"^\s+environment:$", body, re.M)
 
 
 def test_the_database_is_external_and_one_file_serves_every_host() -> None:
@@ -211,8 +216,12 @@ def test_the_smoke_run_is_a_stranger_on_a_read_only_root() -> None:
     for flag in ("--read-only --tmpfs /tmp", '--user "${SMOKE_USER}"', "--cap-drop ALL"):
         assert flag in text
     assert 'SMOKE_USER="52037:52037"' in text
-    smoke = text[text.index("smoke() {") : text.index("check_trivyignore() {")]
-    assert '"${IMAGE}" --help' in smoke and '"${IMAGE}" run --help' in smoke
+    smoke = text[text.index("smoke() {") : text.index("replay() {")]
+    # Imports the whole application, then requires the real entry point to
+    # refuse an empty environment and say how to make the secret.
+    assert '--entrypoint python "${IMAGE}"' in smoke and "import sighop.boot" in smoke
+    assert 'if refusal=$("${constrained[@]}" "${IMAGE}" 2>&1); then' in smoke
+    assert 'grep -qF "openssl rand -base64 32"' in smoke
 
 
 def test_the_replay_gate_compares_the_image_with_the_host_byte_for_byte() -> None:
@@ -220,6 +229,8 @@ def test_the_replay_gate_compares_the_image_with_the_host_byte_for_byte() -> Non
     replay = text[text.index("replay() {") : text.index("check_trivyignore() {")]
     assert "captures/*.jsonl" in replay
     assert "cmp -s" in replay
+    assert "uv run --locked python -m sighop.replay" in replay
+    assert '--entrypoint python "${IMAGE}" -m sighop.replay' in replay
     assert '--user "${SMOKE_USER}"' in replay and "--read-only" in replay
     assert "--network none" in replay
 
@@ -276,3 +287,14 @@ def test_one_push_is_one_package_version() -> None:
     text = BUILD.read_text()
     image = text[text.index("image() {") : text.index("smoke() {")]
     assert "--provenance=false" in image and "--sbom=false" in image
+
+
+def test_the_workflow_gives_the_test_gate_a_database() -> None:
+    """`database`: the suite refuses to run without one, so CI must provide it —
+    pinned by digest like every other image here, and on a non-UTC zone."""
+    text = WORKFLOW.read_text()
+    assert re.search(
+        r"^\s+services:\n\s+postgres:\n\s+image: postgres:\d+@sha256:[0-9a-f]{64}$", text, re.M
+    )
+    assert "TZ: Europe/Helsinki" in text
+    assert "SIGHOP_TEST_DATABASE_URL: postgresql+asyncpg://" in text

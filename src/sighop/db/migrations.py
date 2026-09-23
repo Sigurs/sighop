@@ -1,18 +1,15 @@
 """Alembic as the only schema authority (design D5).
 
-`alembic upgrade head` is a deliberate act — `sighop db upgrade` — and never a
-side effect of starting the node. `sighop run` compares the database's applied
-revision against the revision compiled into the code and refuses to start when
-they differ, naming both and the command that reconciles them.
+The node applies outstanding migrations every time it starts, before the
+schema-version check and before any traffic (`node-boot`). There is no separate
+command and no flag: starting the container is the deploy, and a step the only
+deployment always takes is not a choice, it is one someone can forget.
 
-Auto-migrating on startup is what turns a rollback into an outage: an old binary
-restarted after a failed deploy meets a schema it does not know, and a new binary
-racing another instance applies DDL twice. Refusing is one line of operational
-friction and removes the whole class.
-
-The exception is opt-in and single-instance: `sighop run --migrate`, which the
-compose deployment passes (milestone 9, operator decision). It only moves a
-database that is *behind* forward; one ahead of the code still refuses.
+Only *behind* is fixed that way. A database *ahead* of the code is refused,
+naming both revisions: nothing in this build describes its schema, and operating
+against it would corrupt silently. That refusal is also what keeps a rollback
+from being an outage in disguise — an older build restarted against a newer
+schema stops and says so rather than guessing.
 
 **Why the bridge.** asyncpg has no synchronous mode and Alembic's migration
 runner is synchronous by construction, so `alembic/env.py` drives the migration
@@ -40,8 +37,8 @@ ALEMBIC_DIR_VARIABLE = "SIGHOP_ALEMBIC_DIR"
 container that packages sighop is milestone 9's; until then the repository
 checkout is the deployment and this is the escape hatch."""
 
-UPGRADE_COMMAND = "sighop db upgrade"
-"""Named in every version-mismatch message. One command, quoted identically
+RESTART_TO_MIGRATE = "restart sighop: it applies outstanding migrations when it starts"
+"""Named in every behind-the-code message. One phrasing, quoted identically
 everywhere, because an error that describes a fix vaguely is a fix nobody applies."""
 
 

@@ -122,7 +122,6 @@ def _bot(entity_id: uuid.UUID, *, driver: str = "greeter") -> Bot:
     )
 
 
-@pytest.mark.database
 async def test_an_identity_may_carry_only_one_bot(database: Database) -> None:
     """1.1: a second bot on one identity is refused by the schema itself."""
     entity_id = await _entity(database)
@@ -136,7 +135,6 @@ async def test_an_identity_may_carry_only_one_bot(database: Database) -> None:
             await session.commit()
 
 
-@pytest.mark.database
 async def test_a_stored_bot_comes_back_enabled_and_observing(database: Database) -> None:
     """1.1: the two defaults survive the round trip, which is where they matter."""
     entity_id = await _entity(database)
@@ -151,7 +149,6 @@ async def test_a_stored_bot_comes_back_enabled_and_observing(database: Database)
         assert stored.mode == "observe"
 
 
-@pytest.mark.database
 async def test_two_bots_may_hold_one_key_and_one_bot_may_not_hold_it_twice(
     database: Database,
 ) -> None:
@@ -183,7 +180,6 @@ async def test_two_bots_may_hold_one_key_and_one_bot_may_not_hold_it_twice(
             await session.commit()
 
 
-@pytest.mark.database
 async def test_removing_a_bot_removes_its_state(database: Database) -> None:
     """1.3: `ON DELETE CASCADE`, so no greeting record outlives its bot."""
     bot = _bot(await _entity(database))
@@ -210,7 +206,6 @@ async def test_removing_a_bot_removes_its_state(database: Database) -> None:
 # --- 1.5 A database one revision behind -------------------------------------
 
 
-@pytest.mark.database
 async def test_a_database_at_0002_is_refused_naming_both_revisions_and_the_command(
     database_url: str,
 ) -> None:
@@ -233,7 +228,7 @@ async def test_a_database_at_0002_is_refused_naming_both_revisions_and_the_comma
         # what this test is about is that the refusal names where the code
         # expects the database to be — not which milestone was the last one.
         assert migrations.expected_revision() in message
-        assert migrations.UPGRADE_COMMAND in message
+        assert migrations.RESTART_TO_MIGRATE in message
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)

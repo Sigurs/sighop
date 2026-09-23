@@ -36,6 +36,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 
 

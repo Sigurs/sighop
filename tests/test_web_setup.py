@@ -32,6 +32,8 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 BASE = "http://127.0.0.1:8080"
 USERNAME = "dev-first"
@@ -102,7 +104,8 @@ def test_the_setup_form_is_served_while_setup_is_pending_and_carries_nothing() -
     for name in ("setup_code", "username", "password", "password_again"):
         assert f'name="{name}"' in body
     assert body.count('autocomplete="new-password"') == 2
-    assert "sighop web user add" in body and "docker compose logs sighop" in body
+    assert "docker compose logs sighop" in body
+    assert "the only one there will be" in " ".join(body.split())
     assert served.setup.code not in body and served.setup.display not in body
     assert stub.identity.private_key.hex() not in body
     assert stub.identity.public_key.hex() not in body
@@ -249,7 +252,6 @@ def test_a_submission_without_the_process_token_is_refused_before_anything_is_ch
 # --- 3.5 An account added from a terminal while setup is served -------------
 
 
-@pytest.mark.database
 async def test_an_account_added_through_the_repository_closes_setup(database: object) -> None:
     import httpx2
 

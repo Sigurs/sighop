@@ -8,7 +8,6 @@ transmit or persist anything, and holds the limits — rate, mode, isolation —
 driver is allowed to do with the radio.
 
 ## Requirements
-
 ### Requirement: A driver reaches the mesh only through its context
 The system SHALL define a bot driver as an object with handlers for advert observations and for
 received direct messages, and SHALL pass every handler a context that is the driver's only means of
@@ -42,20 +41,16 @@ entity.
 - **WHEN** a direct message addressed to a different local entity is received
 - **THEN** the bot's driver is not invoked for it
 
-### Requirement: Bots require durable storage
-The system SHALL run bots only when a database is configured, and SHALL state at startup that no
-bots are running when there is none, rather than running them against memory alone. This is
-required because a driver's decisions depend on state restored before any traffic is processed, and
-a driver that cannot distinguish a restart from a first run would repeat every action it has ever
-taken.
-
-#### Scenario: A run without a database
-- **WHEN** the runtime starts with no database configured
-- **THEN** no bot is run and the output states that bots require durable storage
+### Requirement: Bots run only against durable storage
+The system SHALL run bots only against durable storage, which the node now always has. A driver's
+decisions depend on state restored before any traffic is processed, and a driver that cannot
+distinguish a restart from a first run would repeat every action it has ever taken; the system SHALL
+therefore suppress driver actions that require persisting state whenever storage becomes
+unavailable, rather than taking them against state it cannot record.
 
 #### Scenario: A run whose database is unreachable at startup
 - **WHEN** a database is configured but cannot be reached
-- **THEN** startup fails as it already does for any configured database, and no bot runs against partial state
+- **THEN** startup fails as it does for any configured database, and no bot runs against partial state
 
 #### Scenario: The database becomes degraded while running
 - **WHEN** durable storage becomes unavailable during a run

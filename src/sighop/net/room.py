@@ -762,7 +762,8 @@ class RoomServer:
                 reason=str(RefusalReason.REPLAY),
                 detail=(
                     f"login timestamp {body.timestamp} is not newer than the recorded "
-                    f"{existing.last_timestamp}; `sighop room revoke` allows a fresh login"
+                    f"{existing.last_timestamp}; revoking the member in the panel allows "
+                    "a fresh login"
                 ),
             )
             self._emit(

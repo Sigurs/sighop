@@ -12,7 +12,6 @@ from __future__ import annotations
 import base64
 
 import httpx2
-import pytest
 from fastapi import FastAPI
 
 from sighop.config import generate_secret_key
@@ -72,7 +71,6 @@ def _app(state: StubState) -> FastAPI:
 # --- 14.1 History -----------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_history_is_newest_first_with_its_ordering_timestamps(
     database: Database,
 ) -> None:
@@ -95,7 +93,6 @@ async def test_history_is_newest_first_with_its_ordering_timestamps(
     assert "ordering timestamp" in body
 
 
-@pytest.mark.database
 async def test_paging_back_keeps_the_same_total_order_across_pages(
     database: Database,
 ) -> None:
@@ -129,7 +126,6 @@ async def test_paging_back_keeps_the_same_total_order_across_pages(
     assert on_first | on_second == {f"m{index:03d}" for index in range(total)}
 
 
-@pytest.mark.database
 async def test_a_message_whose_bytes_are_not_text_is_shown_as_such(
     database: Database,
 ) -> None:
@@ -154,7 +150,6 @@ async def test_a_message_whose_bytes_are_not_text_is_shown_as_such(
 # --- 14.2 Authors -----------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_verified_author_is_named_and_marked_verified(
     database: Database,
 ) -> None:
@@ -186,7 +181,6 @@ async def test_a_verified_author_is_named_and_marked_verified(
     assert "identity-verified" in body
 
 
-@pytest.mark.database
 async def test_an_author_matching_no_verified_contact_is_shown_as_a_key(
     database: Database,
 ) -> None:
@@ -212,7 +206,6 @@ async def test_an_author_matching_no_verified_contact_is_shown_as_a_key(
 # --- 14.3 Members -----------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_the_member_list_carries_permission_cursor_and_unsynced_count(
     database: Database,
 ) -> None:
@@ -239,7 +232,6 @@ async def test_the_member_list_carries_permission_cursor_and_unsynced_count(
     assert ">4<" in body, "the unsynced count is not shown"
 
 
-@pytest.mark.database
 async def test_two_members_sharing_a_node_hash_are_two_members(
     database: Database,
 ) -> None:
@@ -285,7 +277,6 @@ async def _add_member(persistence: Persistence, room, public_key: bytes) -> byte
 # --- 14.4 Revocation --------------------------------------------------------
 
 
-@pytest.mark.database
 async def test_revocation_states_what_it_removes_and_then_removes_it(
     database: Database,
 ) -> None:
@@ -323,7 +314,6 @@ async def test_revocation_states_what_it_removes_and_then_removes_it(
 # --- 14.5 Unserved rooms ----------------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_room_this_run_does_not_serve_is_listed_as_unserved(
     database: Database,
 ) -> None:
@@ -351,7 +341,6 @@ async def test_a_room_this_run_does_not_serve_is_listed_as_unserved(
 # --- 14.6 Browsing transmits nothing ----------------------------------------
 
 
-@pytest.mark.database
 async def test_opening_paging_and_refreshing_transmits_nothing(
     database: Database,
 ) -> None:

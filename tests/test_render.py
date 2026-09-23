@@ -318,13 +318,13 @@ def test_summary_line_reports_the_session_counts():
             adverts_verified=53,
             adverts_failed=1,
             node_hashes=12,
-            reconnects=2,
-            reboots=3,
+            duplicates=40,
+            paths_learned=7,
         )
     )
 
     assert line == (
-        "-- frames=351 failed=0 adverts=53 advert_failures=1 nodes_heard=12 reconnects=2 reboots=3"
+        "-- frames=351 failed=0 adverts=53 advert_failures=1 nodes_heard=12 duplicates=40 paths=7"
     )
 
 
@@ -378,21 +378,25 @@ def _dedup_stats(**overrides):
 def test_the_status_line_leads_with_the_gate_and_the_duty_cycle():
     from sighop.monitor.render import render_status
 
-    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=5, contacts=3)
+    line = render_status(
+        _status(), dedup=_dedup_stats(), learned_paths=5, contacts=3, persistence="on"
+    )
 
     # Milestone 5 appends persistence: the state, and three counters that read
-    # zero rather than being omitted (`runtime-cli` spec).
+    # zero rather than being omitted (`node-boot` spec).
     assert line == (
         "== TX=disabled duty= 12.5% (45/360s) q=0/0/2/1 tx=4 sup=7 drop=1 fail=2 "
         "dup=11.0% cache=42/4096 paths=5 contacts=3 "
-        "persist=off log_drop=0 route_drop=0 backfill=0"
+        "persist=on log_drop=0 route_drop=0 backfill=0"
     )
 
 
 def test_an_enabled_transmitter_says_so_in_the_status_line():
     from sighop.monitor.render import render_status
 
-    line = render_status(_status(transmit_enabled=True), dedup=_dedup_stats(), learned_paths=0)
+    line = render_status(
+        _status(transmit_enabled=True), dedup=_dedup_stats(), learned_paths=0, persistence="on"
+    )
 
     assert line.startswith("== TX=ENABLED ")
 
@@ -404,6 +408,7 @@ def test_the_status_line_marks_the_reserve_and_a_raised_ceiling():
         _status(reserve_reached=True, above_regulatory_default=True),
         dedup=_dedup_stats(),
         learned_paths=0,
+        persistence="on",
     )
 
     assert "RESERVE(classes 2-3 stalled)" in line
@@ -413,7 +418,9 @@ def test_the_status_line_marks_the_reserve_and_a_raised_ceiling():
 def test_the_status_line_reports_an_active_advert_override():
     from sighop.monitor.render import render_status
 
-    line = render_status(_status(), dedup=_dedup_stats(), learned_paths=0, active_overrides=2)
+    line = render_status(
+        _status(), dedup=_dedup_stats(), learned_paths=0, active_overrides=2, persistence="on"
+    )
 
     assert line.endswith("overrides=2")
 

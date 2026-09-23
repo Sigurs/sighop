@@ -2,9 +2,13 @@
 
 Milestone 8 built a panel that could watch everything and change almost nothing.
 This change closes the distance, and every test here is ultimately about one
-property: **a write in the browser is the repository call the command line
-makes**. Not "behaves the same" — *is* the same call, so a rule has one
-implementation and a refusal reads the same in both surfaces.
+property: **a write in the browser is a repository call**. Not "behaves like
+one" — *is* one, so a rule has one implementation, in the repository, and a
+refusal reads in the browser exactly as the repository words it.
+
+(These tests once compared the panel against the command line that made the
+same calls. The command line is gone; the repository it was a thin wrapper
+around is what the panel is now compared against.)
 
 The two heavy ones are guarded on the pattern milestone 8 established, because
 they are not configuration changes:
@@ -15,7 +19,6 @@ they are not configuration changes:
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import datetime as dt
 import io
@@ -29,10 +32,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from sighop.bots import drivers as bot_drivers
-from sighop.cli import main
 from sighop.config import (
-    DATABASE_SCHEMA_VARIABLE,
-    SECRET_KEY_VARIABLE,
     DatabaseConfig,
     generate_secret_key,
 )
@@ -41,6 +41,7 @@ from sighop.db.persistence import Persistence
 from sighop.db.repositories import (
     BOT_ENTITY_TYPE,
     MAX_ENTITY_NAME_BYTES,
+    EntityNameError,
     LoadedEntity,
     advert_config_for,
 )
@@ -70,22 +71,10 @@ from tests.webfixtures import (
     stub_state,
 )
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 SECRET = base64.b64decode(generate_secret_key())
-
-
-@pytest.fixture
-def cli_store_environment(database_config: DatabaseConfig, monkeypatch: pytest.MonkeyPatch) -> str:
-    """Point `sighop.cli.main` at the same throwaway schema the panel is using.
-
-    So that "the browser and the command line store the same thing" is tested
-    against one database rather than two, which is the only way the claim means
-    anything.
-    """
-    monkeypatch.setenv(SECRET_KEY_VARIABLE, base64.b64encode(SECRET).decode())
-    assert database_config.schema is not None
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
-    return database_config.url
 
 
 NOW = dt.datetime(2026, 9, 12, 12, 0, tzinfo=dt.UTC)
@@ -191,34 +180,15 @@ def test_the_secret_reaches_the_panel_and_appears_in_no_page() -> None:
             assert SECRET.hex() not in client.get(path).text
 
 
-def test_the_cli_supplies_the_secret_only_when_a_database_is_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """1.3, design D1: `cli.py` is the one module that knows both sides.
+def test_the_entry_point_hands_the_panel_the_sealing_secret() -> None:
+    """1.3, design D1: `boot.py` is the one module that knows both sides, so it
+    is where the environment's secret reaches the panel."""
+    from sighop.boot import web_sealing_secret
+    from sighop.config import Config
 
-    And a run with no database is handed nothing: it has no sealed seed to open,
-    so demanding the variable would refuse a capability that run does not have.
-    """
-    import argparse
-
-    from sighop.cli import _web_sealing_secret
-    from sighop.config import SECRET_KEY_VARIABLE
-
-    monkeypatch.setenv(SECRET_KEY_VARIABLE, generate_secret_key())
-    args = argparse.Namespace(database_url=None)
-
-    # The one attribute the decision reads, which is the whole of what it
-    # needs from a run; typed loosely here rather than composing a `Runtime`.
-    assert _web_sealing_secret(args, _FakeRuntime(persistence=None)) is None  # type: ignore[arg-type]
-    supplied = _web_sealing_secret(args, _FakeRuntime(persistence=object()))  # type: ignore[arg-type]
-    assert isinstance(supplied, bytes) and len(supplied) == 32
-
-
-class _FakeRuntime:
-    """Only the one attribute the secret decision reads."""
-
-    def __init__(self, *, persistence: object | None) -> None:
-        self.persistence = persistence
+    secret = generate_secret_key()
+    config = Config(database=DatabaseConfig(url="postgresql+asyncpg://r:p@h/d"), secret_key=secret)
+    assert web_sealing_secret(config) == base64.b64decode(secret)
 
 
 # --- 2. Identities: create, inspect, import ---------------------------------
@@ -259,7 +229,6 @@ def _shape(record) -> dict[str, object]:
     }
 
 
-@pytest.mark.database
 async def test_an_identity_created_in_the_browser_is_stored_as_the_cli_stores_one(
     database: Database,
 ) -> None:
@@ -290,11 +259,11 @@ async def test_an_identity_created_in_the_browser_is_stored_as_the_cli_stores_on
     assert response.headers["location"] == f"/admin/identities/{made.id}"
 
 
-@pytest.mark.database
-async def test_an_identity_created_from_a_supplied_private_key_matches_the_cli(
-    database: Database, cli_store_environment: str
+async def test_an_identity_created_from_a_supplied_private_key_is_what_the_repository_stores(
+    database: Database,
 ) -> None:
-    """The same key, through both surfaces, is the same stored identity."""
+    """The same key, through the panel and through the repository directly, is
+    the same stored identity: the panel adds nothing of its own to the row."""
     held = generate_identity()
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -316,33 +285,17 @@ async def test_an_identity_created_from_a_supplied_private_key_matches_the_cli(
     assert entity.identity.private_key == held.private_key
     assert entity.name == "from-a-device"
 
-    # And what `sighop keys import --private-key` stores for the same key.
+    # And what the repository stores for the same key when asked directly.
     async with database.sessions() as session:
         await session.execute(text("DELETE FROM entity"))
         await session.commit()
-    assert (
-        await asyncio.to_thread(
-            main,
-            [
-                "keys",
-                "import",
-                "--private-key",
-                held.private_key.hex(),
-                "--name",
-                "from-a-device",
-                "--database-url",
-                cli_store_environment,
-            ],
-            out=io.StringIO(),
-        )
-        == 0
-    )
-    from_cli = (await persistence.entities.load_all(SECRET)).value[0]
-    assert _shape(from_cli.record) == _shape(entity.record)
-    assert from_cli.identity.private_key == entity.identity.private_key
+    stored = await persistence.entities.store(name="from-a-device", identity=held, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    direct = (await persistence.entities.load_all(SECRET)).value[0]
+    assert _shape(direct.record) == _shape(entity.record)
+    assert direct.identity.private_key == entity.identity.private_key
 
 
-@pytest.mark.database
 async def test_an_empty_private_key_field_still_generates(database: Database) -> None:
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -357,7 +310,6 @@ async def test_an_empty_private_key_field_still_generates(database: Database) ->
     assert [row.name for row in listed.value] == ["generated"]
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     ("supplied", "expected"),
     [
@@ -367,14 +319,14 @@ async def test_an_empty_private_key_field_still_generates(database: Database) ->
         ("roo\x01my", "U+0001"),
     ],
 )
-async def test_a_refused_identity_name_reads_the_same_in_both_surfaces(
-    database: Database, cli_store_environment: str, capsys, supplied: str, expected: str
+async def test_a_refused_identity_name_reads_as_the_repository_words_it(
+    database: Database, supplied: str, expected: str
 ) -> None:
-    """One validator in the repository, so neither surface can drift (design D4).
+    """One validator in the repository, so the panel cannot drift from it (design D4).
 
-    The name rules live where the public-key rules already do, which is why
-    both halves are checked against the same string rather than against two
-    hand-written ones.
+    The name rules live where the public-key rules already do, which is why the
+    panel's refusal is checked against the repository's own wording rather than
+    against a string written for the page.
     """
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -385,31 +337,14 @@ async def test_a_refused_identity_name_reads_the_same_in_both_surfaces(
     assert response.status_code == 400
     assert expected in response.text
 
-    code = await asyncio.to_thread(
-        main,
-        [
-            "keys",
-            "import",
-            "--private-key",
-            generate_identity().private_key.hex(),
-            "--name",
-            supplied,
-            "--database-url",
-            cli_store_environment,
-        ],
-        out=io.StringIO(),
-    )
-    assert code == 2
-    error = capsys.readouterr().err
-    assert expected in error, (
-        f"the command line refused {supplied!r} differently from the panel: {error!r}"
-    )
+    with pytest.raises(EntityNameError) as excinfo:
+        await persistence.entities.store(name=supplied, identity=generate_identity(), secret=SECRET)
+    assert expected in str(excinfo.value)
 
     listed = await persistence.entities.list_all()
     assert listed.value == [], "a refused name stored an identity"
 
 
-@pytest.mark.database
 @pytest.mark.parametrize(
     ("supplied", "expected"),
     [
@@ -445,7 +380,6 @@ async def test_a_supplied_private_key_is_refused_in_the_command_lines_words(
     assert listed.value == [], "a refused key stored something"
 
 
-@pytest.mark.database
 async def test_a_refused_private_key_is_not_echoed_back_into_the_form(
     database: Database,
 ) -> None:
@@ -475,7 +409,6 @@ async def test_a_refused_private_key_is_not_echoed_back_into_the_form(
     )
 
 
-@pytest.mark.database
 async def test_a_supplied_key_colliding_with_a_known_node_hash_is_refused(
     database: Database,
 ) -> None:
@@ -503,7 +436,6 @@ async def test_a_supplied_key_colliding_with_a_known_node_hash_is_refused(
     assert listed.value == []
 
 
-@pytest.mark.database
 async def test_creation_avoids_every_node_hash_this_run_knows(
     database: Database,
 ) -> None:
@@ -538,7 +470,6 @@ async def test_creation_avoids_every_node_hash_this_run_knows(
     assert len(hashes) == len(set(hashes)), "two stored identities share a node hash"
 
 
-@pytest.mark.database
 async def test_the_identity_page_shows_every_field_and_no_seed(
     database: Database,
 ) -> None:
@@ -562,7 +493,6 @@ async def test_the_identity_page_shows_every_field_and_no_seed(
     assert identity.private_key.hex() not in body, "the page leaked a private key"
 
 
-@pytest.mark.database
 async def test_a_keyfile_imported_in_the_browser_matches_one_the_cli_imported(
     database: Database,
     tmp_path,
@@ -601,7 +531,6 @@ async def test_a_keyfile_imported_in_the_browser_matches_one_the_cli_imported(
     assert entity.identity.private_key == keyfile.identity.private_key
 
 
-@pytest.mark.database
 async def test_a_malformed_keyfile_is_refused_with_the_keystores_own_reason(
     database: Database,
 ) -> None:
@@ -632,7 +561,6 @@ async def test_a_malformed_keyfile_is_refused_with_the_keystores_own_reason(
     assert listed.value == [], "a refused import stored something"
 
 
-@pytest.mark.database
 async def test_a_refused_import_re_renders_with_the_submitted_document(
     database: Database,
 ) -> None:
@@ -648,7 +576,6 @@ async def test_a_refused_import_re_renders_with_the_submitted_document(
     assert "wrong-version" in response.text, "the submitted document was discarded"
 
 
-@pytest.mark.database
 async def test_a_public_key_already_stored_is_refused_by_the_repository(
     database: Database,
 ) -> None:
@@ -673,7 +600,6 @@ async def test_a_public_key_already_stored_is_refused_by_the_repository(
     assert len(listed.value) == 1
 
 
-@pytest.mark.database
 async def test_a_bot_identity_that_adverts_wrongly_is_refused_by_the_repository(
     database: Database,
 ) -> None:
@@ -699,24 +625,9 @@ async def test_a_bot_identity_that_adverts_wrongly_is_refused_by_the_repository(
     assert listed.value == []
 
 
-def test_creating_without_a_database_says_so_rather_than_failing() -> None:
-    """2.1: a run with no database is a run that stores nothing, stated."""
-    app, _state, _log = _built(stub_state(), sealing_secret=None)
-
-    with _client(app) as client:
-        response = client.post(
-            "/admin/identities/create",
-            data={TOKEN_FIELD: csrf(client), "name": "nowhere"},
-        )
-
-    assert response.status_code == 400
-    assert "no database is configured" in response.text
-
-
 # --- 3. Exporting an identity (guarded) -------------------------------------
 
 
-@pytest.mark.database
 async def test_the_export_confirmation_names_the_identity_and_holds_no_key(
     database: Database,
 ) -> None:
@@ -733,7 +644,6 @@ async def test_the_export_confirmation_names_the_identity_and_holds_no_key(
     assert identity.private_key.hex() not in body
 
 
-@pytest.mark.database
 async def test_the_exported_document_is_the_command_lines_file(
     database: Database,
     tmp_path,
@@ -779,7 +689,6 @@ def _without_timestamp(document: bytes) -> object:
     return parsed
 
 
-@pytest.mark.database
 async def test_an_exported_keyfile_re_imports_as_the_identity_it_came_from(
     database: Database,
 ) -> None:
@@ -806,7 +715,6 @@ async def test_an_exported_keyfile_re_imports_as_the_identity_it_came_from(
     assert parsed.name == "there-and-back"
 
 
-@pytest.mark.database
 async def test_the_difference_in_protection_is_stated_in_both_places(
     database: Database,
 ) -> None:
@@ -824,7 +732,6 @@ async def test_the_difference_in_protection_is_stated_in_both_places(
         assert "whatever protection the download directory gives it" in body
 
 
-@pytest.mark.database
 async def test_an_export_without_a_confirmation_produces_nothing(
     database: Database,
 ) -> None:
@@ -867,7 +774,6 @@ async def test_an_export_without_a_confirmation_produces_nothing(
     assert identity.private_key.hex() not in repr(audited), "an event carried the private key"
 
 
-@pytest.mark.database
 async def test_a_disabled_stored_identity_can_still_be_exported(
     database: Database,
 ) -> None:
@@ -899,7 +805,6 @@ async def test_a_disabled_stored_identity_can_still_be_exported(
 # --- 4. Rooms: create, and the read-only fallback ---------------------------
 
 
-@pytest.mark.database
 async def test_a_room_created_in_the_browser_matches_one_the_cli_created(
     database: Database,
 ) -> None:
@@ -941,7 +846,6 @@ async def test_a_room_created_in_the_browser_matches_one_the_cli_created(
     assert "correct-horse-battery-staple" not in response.text
 
 
-@pytest.mark.database
 async def test_a_second_room_on_one_identity_is_refused(database: Database) -> None:
     """4.1: one identity is one node to the mesh, and a node is one room."""
     persistence = Persistence(database=database)
@@ -970,7 +874,6 @@ async def test_a_second_room_on_one_identity_is_refused(database: Database) -> N
     assert len(listed.value) == 1
 
 
-@pytest.mark.database
 async def test_a_room_cannot_be_created_without_an_admin_password(
     database: Database,
 ) -> None:
@@ -1000,7 +903,6 @@ async def test_a_room_cannot_be_created_without_an_admin_password(
     assert listed.value == []
 
 
-@pytest.mark.database
 async def test_only_unbound_room_server_identities_are_offered(
     database: Database,
 ) -> None:
@@ -1025,7 +927,6 @@ async def test_only_unbound_room_server_identities_are_offered(
     assert f'value="{companion.id}"' not in body, "an identity that is not a room server"
 
 
-@pytest.mark.database
 async def test_the_read_only_fallback_can_be_set_and_cleared(
     database: Database,
 ) -> None:
@@ -1065,7 +966,6 @@ async def test_the_read_only_fallback_can_be_set_and_cleared(
     assert listed.value[0].allow_read_only is False, "the flag could not be cleared"
 
 
-@pytest.mark.database
 async def test_a_room_created_here_is_served_by_a_run_that_loads_its_identity(
     database: Database,
 ) -> None:
@@ -1105,7 +1005,6 @@ async def test_a_room_created_here_is_served_by_a_run_that_loads_its_identity(
 
 def _runtime(persistence: Persistence, *, stored: tuple[LoadedEntity, ...]):
     """A run that is composed but never started — only its room loading is asked."""
-    import io
 
     from sighop.runtime import Runtime, RuntimeConfig
 
@@ -1142,7 +1041,6 @@ async def _room(database: Database, *, name: str = "post-lounge"):
     return persistence, room.value, entity.value
 
 
-@pytest.mark.database
 async def test_the_composer_names_the_room_and_bounds_the_text(
     database: Database,
 ) -> None:
@@ -1158,7 +1056,6 @@ async def test_the_composer_names_the_room_and_bounds_the_text(
     assert "room's <strong>own identity</strong>" in body
 
 
-@pytest.mark.database
 async def test_an_over_length_post_is_refused_with_the_text_preserved(
     database: Database,
 ) -> None:
@@ -1181,7 +1078,6 @@ async def test_an_over_length_post_is_refused_with_the_text_preserved(
     assert counted.value == 0, "a refused post stored something"
 
 
-@pytest.mark.database
 async def test_the_confirmation_states_what_the_post_does_when_served(
     database: Database,
 ) -> None:
@@ -1201,7 +1097,6 @@ async def test_the_confirmation_states_what_the_post_does_when_served(
     assert "transmit gate is closed" not in body
 
 
-@pytest.mark.database
 async def test_the_confirmation_says_when_no_run_will_deliver_it(
     database: Database,
 ) -> None:
@@ -1218,7 +1113,6 @@ async def test_the_confirmation_says_when_no_run_will_deliver_it(
     assert "run that loads this room" in " ".join(body.split())
 
 
-@pytest.mark.database
 async def test_the_confirmation_says_when_the_gate_is_closed(
     database: Database,
 ) -> None:
@@ -1236,7 +1130,6 @@ async def test_the_confirmation_says_when_the_gate_is_closed(
     assert "put on the air only when the gate is opened" in body
 
 
-@pytest.mark.database
 async def test_a_confirmed_post_is_the_row_the_command_line_stores(
     database: Database,
 ) -> None:
@@ -1273,7 +1166,6 @@ async def test_a_confirmed_post_is_the_row_the_command_line_stores(
     assert posts[0].sender_timestamp is None
 
 
-@pytest.mark.database
 async def test_a_post_without_a_confirmation_stores_nothing(
     database: Database,
 ) -> None:
@@ -1297,7 +1189,6 @@ async def test_a_post_without_a_confirmation_stores_nothing(
     assert audited[0]["room_name"] == "post-lounge"
 
 
-@pytest.mark.database
 async def test_a_confirmed_post_is_its_own_event_naming_the_room(
     database: Database,
 ) -> None:
@@ -1330,7 +1221,6 @@ async def test_a_confirmed_post_is_its_own_event_naming_the_room(
     assert len(log.named("web_request")) == 2
 
 
-@pytest.mark.database
 async def test_opening_the_composer_and_the_confirmation_store_nothing(
     database: Database,
 ) -> None:
@@ -1354,7 +1244,6 @@ async def test_opening_the_composer_and_the_confirmation_store_nothing(
     assert state.scheduler.status().as_json() == before, "composing transmitted"
 
 
-@pytest.mark.database
 async def test_a_confirmation_cannot_be_replayed(database: Database) -> None:
     """5.4 / 13.1: one nonce, one post — a reload posts nothing twice."""
     persistence, room, _entity = await _room(database)
@@ -1377,7 +1266,6 @@ async def test_a_confirmation_cannot_be_replayed(database: Database) -> None:
     assert counted.value == 1
 
 
-@pytest.mark.database
 async def test_an_over_length_post_is_refused_at_the_confirmation_too(
     database: Database,
 ) -> None:
@@ -1429,7 +1317,6 @@ async def _bot_identity(persistence: Persistence, *, name: str):
     return outcome.value
 
 
-@pytest.mark.database
 async def test_a_bot_created_in_the_browser_matches_one_the_cli_created(
     database: Database,
 ) -> None:
@@ -1467,7 +1354,6 @@ async def test_a_bot_created_in_the_browser_matches_one_the_cli_created(
     assert made.entity_name == "browser-bot"
 
 
-@pytest.mark.database
 async def test_an_unknown_driver_is_refused_by_listing_what_exists(
     database: Database,
 ) -> None:
@@ -1494,7 +1380,6 @@ async def test_an_unknown_driver_is_refused_by_listing_what_exists(
     assert listed.value == []
 
 
-@pytest.mark.database
 async def test_a_new_bot_is_seeded_with_the_contacts_the_node_knows(
     database: Database,
 ) -> None:
@@ -1526,7 +1411,6 @@ async def test_a_new_bot_is_seeded_with_the_contacts_the_node_knows(
     assert record["outcome"] == SEEDED
 
 
-@pytest.mark.database
 async def test_a_refused_configuration_value_names_its_own_key(
     database: Database,
 ) -> None:
@@ -1553,7 +1437,6 @@ async def test_a_refused_configuration_value_names_its_own_key(
     assert listed.value[0].config == before
 
 
-@pytest.mark.database
 async def test_one_key_changes_and_the_others_do_not(database: Database) -> None:
     """6.2: the whole reason the form is per key rather than one object."""
     persistence, bot = await _greeter(database)
@@ -1574,7 +1457,6 @@ async def test_one_key_changes_and_the_others_do_not(database: Database) -> None
     }
 
 
-@pytest.mark.database
 async def test_the_configuration_textarea_is_gone(database: Database) -> None:
     """6.2: two ways to edit one thing is how the two disagree."""
     persistence, _bot = await _greeter(database)
@@ -1588,7 +1470,6 @@ async def test_the_configuration_textarea_is_gone(database: Database) -> None:
     assert 'name="key" value="burst"' in body, "the per-key form is not there either"
 
 
-@pytest.mark.database
 async def test_a_greeting_record_can_be_listed_cleared_set_and_seeded(
     database: Database,
 ) -> None:
@@ -1645,7 +1526,6 @@ async def test_a_greeting_record_can_be_listed_cleared_set_and_seeded(
     assert written.value["name"] == "a-peer"
 
 
-@pytest.mark.database
 async def test_seeding_leaves_an_existing_record_alone(database: Database) -> None:
     """6.3 / 6.4, `web-admin`: contacts that had a record keep the one they had."""
     from sighop.bots.greeter import OPERATOR, greeted_key
@@ -1671,7 +1551,6 @@ async def test_seeding_leaves_an_existing_record_alone(database: Database) -> No
     assert kept.value["at"] == "earlier"
 
 
-@pytest.mark.database
 async def test_both_statements_precede_the_actions_they_are_about(
     database: Database,
 ) -> None:
@@ -1701,7 +1580,6 @@ async def test_both_statements_precede_the_actions_they_are_about(
     )
 
 
-@pytest.mark.database
 async def test_clearing_a_bots_whole_state_states_and_counts(
     database: Database,
 ) -> None:
@@ -1733,7 +1611,6 @@ async def test_clearing_a_bots_whole_state_states_and_counts(
     assert emptied.value == {}
 
 
-@pytest.mark.database
 async def test_clearing_a_record_makes_the_greeter_eligible_again(
     database: Database,
 ) -> None:
@@ -1800,7 +1677,6 @@ async def _greeter(database: Database):
 # --- 7. The schema page, and what is deliberately absent --------------------
 
 
-@pytest.mark.database
 async def test_the_schema_page_shows_both_revisions_and_that_they_agree(
     database: Database,
 ) -> None:
@@ -1820,8 +1696,7 @@ async def test_the_schema_page_shows_both_revisions_and_that_they_agree(
     assert "revision this code expects" in body
 
 
-@pytest.mark.database
-async def test_a_disagreement_names_both_revisions_and_the_command(
+async def test_a_disagreement_names_both_revisions_and_what_to_do(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1839,10 +1714,9 @@ async def test_a_disagreement_names_both_revisions_and_the_command(
     assert "0099_imaginary" in body
     assert (real or "(none)") in body
     assert "revisions disagree" in body
-    assert migrations.UPGRADE_COMMAND in body
+    assert migrations.RESTART_TO_MIGRATE in body
 
 
-@pytest.mark.database
 async def test_the_schema_page_says_migrations_are_not_applied_here(
     database: Database,
 ) -> None:
@@ -1857,7 +1731,7 @@ async def test_the_schema_page_says_migrations_are_not_applied_here(
     assert "not applied from here, and that is deliberate" in collapsed
     assert "stolen session" in collapsed, "the reason is roles, not a missing login"
     assert "port with no authentication" not in collapsed, "milestone 8's reason is gone"
-    assert "act an operator takes on purpose" in collapsed
+    assert "applies outstanding migrations when it starts" in collapsed
 
 
 def test_no_route_on_the_interface_applies_a_migration() -> None:
@@ -1878,7 +1752,7 @@ def test_no_route_on_the_interface_applies_a_migration() -> None:
         assert "upgrade_async" not in source, f"{route.path} applies a migration"
 
 
-def test_the_identities_page_says_the_secret_is_a_terminal_command() -> None:
+def test_the_identities_page_says_the_secret_is_not_generated_here() -> None:
     """7.3: named where an operator would look for it."""
     app, _state, _log = _built(stub_state())
 
@@ -1889,7 +1763,7 @@ def test_the_identities_page_says_the_secret_is_a_terminal_command() -> None:
     assert "not generated here" in collapsed
     assert "must never be regenerated" in collapsed
     assert "unrecoverable" in collapsed
-    assert "sighop keys secret" in collapsed
+    assert "openssl rand -base64 32" in collapsed
 
 
 def test_the_identities_page_says_removal_is_offered_and_what_it_costs() -> None:
@@ -1948,19 +1822,6 @@ def test_exactly_one_route_removes_a_stored_identity_and_it_is_guarded() -> None
     assert "confirm_name" in source, "the removal does not ask for the typed name"
 
 
-def test_the_schema_page_with_no_database_says_so_rather_than_nothing() -> None:
-    """7.4: and it is not the same wording a degraded database gets."""
-    app, _state, _log = _built(stub_state())
-
-    with _client(app) as client:
-        body = client.get("/system").text
-
-    assert "no database is configured" in body
-    assert "unreachable" not in body
-    assert "cannot be read" in body, "the page rendered empty"
-
-
-@pytest.mark.database
 async def test_a_degraded_database_is_its_own_wording_on_the_schema_page(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -2080,7 +1941,6 @@ def _every_page(app: FastAPI, ids: dict[str, str]) -> list[tuple[str, str]]:
     return found
 
 
-@pytest.mark.database
 async def test_every_page_this_change_added_renders_the_meter(
     database: Database,
 ) -> None:
@@ -2123,7 +1983,6 @@ async def test_every_page_this_change_added_renders_the_meter(
             assert "persistence" in response.text, f"{path} does not state durability"
 
 
-@pytest.mark.database
 async def test_no_safe_request_on_the_enlarged_interface_changes_anything(
     database: Database,
 ) -> None:
@@ -2171,7 +2030,6 @@ async def test_no_safe_request_on_the_enlarged_interface_changes_anything(
     assert after_state.value == bot_state.value, "a safe request changed durable state"
 
 
-@pytest.mark.database
 async def test_every_new_write_emits_exactly_one_request_event(
     database: Database,
 ) -> None:
@@ -2201,7 +2059,6 @@ async def test_every_new_write_emits_exactly_one_request_event(
     )
 
 
-@pytest.mark.database
 async def test_every_new_guarded_action_emits_one_further_event(
     database: Database,
 ) -> None:
@@ -2283,52 +2140,24 @@ async def test_the_enlarged_interface_changes_no_replay_count() -> None:
 # --- webhook-notifications 8.1: a webhook added in either surface -----------
 
 
-@pytest.mark.database
-async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
-    database: Database, monkeypatch: pytest.MonkeyPatch
+async def test_a_webhook_added_in_the_browser_is_what_the_repository_stores(
+    database: Database,
 ) -> None:
-    """Through `WebhookRepository.create` in both surfaces, so one stored shape."""
-    import asyncio
-    import io
-    import sys
-
-    from sighop.cli import main
-    from sighop.config import DATABASE_SCHEMA_VARIABLE, SECRET_KEY_VARIABLE
+    """Through `WebhookRepository.create` either way, so one stored shape."""
     from sighop.db.sealing import open_value
 
     persistence = Persistence(database=database)
-    config = database.config
-    assert config.schema is not None
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, config.schema)
-    monkeypatch.setenv(SECRET_KEY_VARIABLE, base64.b64encode(SECRET).decode())
     url = "https://discord.com/api/webhooks/1/token"
 
-    def cli() -> int:
-        original_in, original_err = sys.stdin, sys.stderr
-        sys.stdin, sys.stderr = io.StringIO(f"{url}\n"), io.StringIO()
-        try:
-            return main(
-                [
-                    "webhook",
-                    "add",
-                    "cli-hook",
-                    "--format",
-                    "discord",
-                    "--trigger",
-                    "new_repeater",
-                    "--trigger",
-                    "new_companion",
-                    "--max-hops",
-                    "3",
-                    "--database-url",
-                    config.url,
-                ],
-                out=io.StringIO(),
-            )
-        finally:
-            sys.stdin, sys.stderr = original_in, original_err
-
-    assert await asyncio.to_thread(cli) == 0
+    created = await persistence.webhooks.create(
+        name="direct-hook",
+        url=url,
+        format="discord",
+        triggers=["new_repeater", "new_companion"],
+        max_hops=3,
+        secret=SECRET,
+    )
+    assert isinstance(created, Succeeded)
 
     app, _state, _log = _built(stub_state(persistence=persistence))
     async with _live(app) as client:
@@ -2363,7 +2192,7 @@ async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
             "last": (row.last_delivered_at, row.last_failed_at, row.last_failure),
         }
 
-    assert shape(rows["cli-hook"]) == shape(rows["browser-hook"])
+    assert shape(rows["direct-hook"]) == shape(rows["browser-hook"])
 
 
 # --- The deletes and renames this change added -------------------------------
@@ -2372,9 +2201,8 @@ async def test_a_webhook_added_in_the_browser_matches_one_the_cli_added(
 # call the command line makes, so a rule has one implementation.
 
 
-@pytest.mark.database
-async def test_a_room_deleted_in_either_surface_leaves_the_same_store(
-    database: Database, cli_store_environment: str
+async def test_a_room_deleted_in_the_panel_leaves_what_the_repository_leaves(
+    database: Database,
 ) -> None:
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -2402,32 +2230,18 @@ async def test_a_room_deleted_in_either_surface_leaves_the_same_store(
     assert from_panel is not None, "the panel deleted the identity too"
     assert (await persistence.rooms.list_all()).value == []
 
-    cli_entity_id, _cli_room_id = await _room("from-the-terminal")
-    assert (
-        await asyncio.to_thread(
-            main,
-            [
-                "room",
-                "delete",
-                "from-the-terminal",
-                "--delete-history",
-                "--database-url",
-                cli_store_environment,
-            ],
-            out=io.StringIO(),
-        )
-        == 0
-    )
-    from_cli = (await persistence.entities.get_by_id(cli_entity_id)).value
-    assert from_cli is not None, "the command line deleted the identity too"
+    direct_entity_id, direct_room_id = await _room("from-the-repository")
+    deleted = await persistence.rooms.delete(direct_room_id)
+    assert isinstance(deleted, Succeeded) and deleted.value
+    direct = (await persistence.entities.get_by_id(direct_entity_id)).value
+    assert direct is not None, "the repository deleted the identity too"
     assert (await persistence.rooms.list_all()).value == []
-    # The two surfaces left the same shape behind: an identity, unbound.
-    assert (from_panel.type, from_panel.enabled) == (from_cli.type, from_cli.enabled)
+    # Both left the same shape behind: an identity, unbound.
+    assert (from_panel.type, from_panel.enabled) == (direct.type, direct.enabled)
 
 
-@pytest.mark.database
-async def test_a_rename_in_either_surface_leaves_the_same_row(
-    database: Database, cli_store_environment: str
+async def test_a_rename_in_the_panel_leaves_the_row_the_repository_leaves(
+    database: Database,
 ) -> None:
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -2441,42 +2255,25 @@ async def test_a_rename_in_either_surface_leaves_the_same_row(
         )
     from_panel = _shape((await persistence.entities.get_by_id(stored.value.id)).value)
 
-    assert (
-        await asyncio.to_thread(
-            main,
-            [
-                "keys",
-                "rename",
-                "from-the-panel",
-                "from-the-terminal",
-                "--database-url",
-                cli_store_environment,
-            ],
-            out=io.StringIO(),
-        )
-        == 0
-    )
-    from_cli = _shape((await persistence.entities.get_by_id(stored.value.id)).value)
+    renamed = await persistence.entities.rename(held.public_key, "from-the-repository")
+    assert isinstance(renamed, Succeeded)
+    direct = _shape((await persistence.entities.get_by_id(stored.value.id)).value)
 
     # Everything but the name is untouched by either.
     assert {k: v for k, v in from_panel.items() if k != "name"} == {
-        k: v for k, v in from_cli.items() if k != "name"
+        k: v for k, v in direct.items() if k != "name"
     }
     assert from_panel["name"] == "from-the-panel"
-    assert from_cli["name"] == "from-the-terminal"
+    assert direct["name"] == "from-the-repository"
     opened = await persistence.entities.load_all(SECRET)
     assert opened.value[0].identity.private_key == held.private_key
 
 
-@pytest.mark.database
-async def test_a_refused_rename_reads_the_same_in_both_surfaces(
-    database: Database, cli_store_environment: str, capsys
-) -> None:
+async def test_a_refused_rename_reads_as_the_repository_words_it(database: Database) -> None:
     persistence = Persistence(database=database)
     app, _state, _log = _built(stub_state(persistence=persistence))
-    stored = await persistence.entities.store(
-        name="before", identity=generate_identity(), secret=SECRET
-    )
+    before = generate_identity()
+    stored = await persistence.entities.store(name="before", identity=before, secret=SECRET)
     assert isinstance(stored, Succeeded)
     await persistence.entities.store(name="taken", identity=generate_identity(), secret=SECRET)
 
@@ -2487,20 +2284,14 @@ async def test_a_refused_rename_reads_the_same_in_both_surfaces(
     assert response.status_code == 400
     assert "already named" in response.text
 
-    code = await asyncio.to_thread(
-        main,
-        ["keys", "rename", "before", "taken", "--database-url", cli_store_environment],
-        out=io.StringIO(),
-    )
-    assert code == 2
-    assert "already named" in capsys.readouterr().err
+    with pytest.raises(EntityNameError, match="already named"):
+        await persistence.entities.rename(before.public_key, "taken")
     assert sorted(r.name for r in (await persistence.entities.list_all()).value) == [
         "before",
         "taken",
     ]
 
 
-@pytest.mark.database
 async def test_the_whole_lifecycle_through_the_panel(database: Database) -> None:
     """Create an identity, bind a room, delete the room, rename, then remove.
 
@@ -2571,7 +2362,6 @@ async def test_the_whole_lifecycle_through_the_panel(database: Database) -> None
     assert (await persistence.entities.list_all()).value == []
 
 
-@pytest.mark.database
 async def test_an_identity_carries_a_new_room_after_the_old_one_is_deleted(
     database: Database,
 ) -> None:
@@ -2624,7 +2414,6 @@ def _built_with_announce(
     return app, state, said
 
 
-@pytest.mark.database
 async def test_creating_an_identity_reaches_the_run_without_a_restart(
     database: Database,
 ) -> None:
@@ -2649,7 +2438,6 @@ async def test_creating_an_identity_reaches_the_run_without_a_restart(
     assert any("now held by this run" in line for line in said)
 
 
-@pytest.mark.database
 async def test_importing_an_identity_reaches_the_run_without_a_restart(
     database: Database,
 ) -> None:
@@ -2671,7 +2459,6 @@ async def test_importing_an_identity_reaches_the_run_without_a_restart(
     assert any("now held by this run" in line for line in said)
 
 
-@pytest.mark.database
 async def test_a_colliding_identity_states_the_store_took_it_and_the_run_did_not(
     database: Database,
 ) -> None:
@@ -2698,7 +2485,6 @@ async def test_a_colliding_identity_states_the_store_took_it_and_the_run_did_not
     )
 
 
-@pytest.mark.database
 async def test_disabling_an_identity_reaches_the_run_without_a_restart(
     database: Database,
 ) -> None:
@@ -2724,7 +2510,6 @@ async def test_disabling_an_identity_reaches_the_run_without_a_restart(
     assert any("no longer holds it" in line for line in said)
 
 
-@pytest.mark.database
 async def test_removing_an_identity_reaches_the_run_without_a_restart(
     database: Database,
 ) -> None:
@@ -2757,7 +2542,6 @@ async def test_removing_an_identity_reaches_the_run_without_a_restart(
     assert any("no longer holds it or advertises" in line for line in said)
 
 
-@pytest.mark.database
 async def test_creating_a_room_reaches_the_run_without_a_restart(database: Database) -> None:
     persistence = Persistence(database=database)
     identity = generate_identity()
@@ -2786,7 +2570,6 @@ async def test_creating_a_room_reaches_the_run_without_a_restart(database: Datab
     assert said, "the write must state its effect on the running process"
 
 
-@pytest.mark.database
 async def test_creating_a_bot_reaches_the_run_without_a_restart(database: Database) -> None:
     persistence = Persistence(database=database)
     host = await _bot_identity(persistence, name="bot-host")
@@ -2803,7 +2586,6 @@ async def test_creating_a_bot_reaches_the_run_without_a_restart(database: Databa
     assert said, "the write must state its effect on the running process"
 
 
-@pytest.mark.database
 async def test_enabling_a_bot_reaches_the_run_without_a_restart(database: Database) -> None:
     persistence = Persistence(database=database)
     host = await _bot_identity(persistence, name="bot-host")
@@ -2826,3 +2608,58 @@ async def test_enabling_a_bot_reaches_the_run_without_a_restart(database: Databa
 
     assert state.bot_reconciles == 1
     assert said, "the write must state its effect on the running process"
+
+
+async def test_a_stranded_identity_can_be_removed_and_re_imported_from_the_panel(
+    database: Database,
+) -> None:
+    """The recovery migration 0008 leaves an operator needing (design D10).
+
+    A row sealed under the removed seed format holds its public key, so the
+    identity cannot be re-imported until the row is gone — and the panel is now
+    the only surface there is to remove it and bring the key back with.
+    """
+    from tests.dbfixtures import strand_a_row
+
+    persistence = Persistence(database=database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    held = generate_identity()
+    stored = await persistence.entities.store(name="carried-forward", identity=held, secret=SECRET)
+    assert isinstance(stored, Succeeded)
+    await strand_a_row(database, "carried-forward", SECRET)
+
+    async with _live(app) as client:
+        blocked = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="carried-forward",
+            private_key=held.private_key.hex(),
+        )
+        assert blocked.status_code == 400, "the stranded row did not block re-import"
+
+        confirm = (await client.get(f"/admin/identities/{stored.value.id}/remove")).text
+        removed = await _apost(
+            client,
+            app,
+            f"/admin/identities/{stored.value.id}/remove",
+            nonce=_nonce(confirm),
+            password=OPERATOR_PASSWORD,
+            confirm_name="carried-forward",
+        )
+        assert removed.status_code == 303, removed.text
+
+        restored = await _apost(
+            client,
+            app,
+            "/admin/identities/create",
+            name="carried-forward",
+            private_key=held.private_key.hex(),
+        )
+        assert restored.status_code == 303, restored.text
+
+    loaded = await persistence.entities.load_openable(SECRET)
+    assert isinstance(loaded, Succeeded)
+    [entity] = loaded.value.opened
+    assert entity.public_key == held.public_key, "the identity did not survive"
+    assert not loaded.value.stranded

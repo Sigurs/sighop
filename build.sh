@@ -12,19 +12,23 @@
 #   format ruff format --check — checks only, so a build never rewrites the tree
 #   lint   ruff check
 #   types  mypy
-#   test   pytest (database tests skip without a URL, as they always have)
+#   test   pytest — needs SIGHOP_TEST_DATABASE_URL or DATABASE_URL, else the one
+#          .env.dev names; the suite refuses to run without a database
 #   image  docker build, version from `uv version`, commit from git (-dirty if modified)
-#   smoke  the image starts as a stranger (UID 52037) on a read-only root, no capabilities
-#   replay every committed capture replayed inside the image (musl) renders byte for byte
-#          what the same replay renders on this host — the tests never run on musl
+#   smoke  as a stranger (UID 52037) on a read-only root with no capabilities, the image
+#          imports and its entry point refuses an empty environment
+#   replay every committed capture, rendered by `python -m sighop.replay` inside the image
+#          (musl), matches byte for byte what it renders on this host — the tests never
+#          run on musl
 #   scan   trivy, from a pinned image, fed a `docker save` tarball — never the socket.
 #          Reports HIGH and CRITICAL findings, fixed and unfixed; it fails only when
 #          the scan itself cannot run or .trivyignore breaks its rule, never on a
 #          finding (operator decision, milestone 9)
 #
-# Needs only the project's toolchain (uv) and a container engine. The image is
-# never pushed. IMAGE overrides the tag (default sighop:<version>-<commit>); the
-# image is also tagged sighop:local, which compose.yaml uses by default.
+# Needs only the project's toolchain (uv), a container engine, and a PostgreSQL for
+# the test gate. The image is never pushed. IMAGE overrides the tag (default
+# sighop:<version>-<commit>); the image is also tagged sighop:local, which
+# compose.yaml uses by default.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -73,7 +77,17 @@ lint() { uv run --locked ruff check; }
 
 types() { uv run --locked mypy; }
 
-tests() { uv run --locked pytest -q; }
+tests() {
+  # The suite refuses to run without a database. CI names one; on a
+  # development host the gitignored .env.dev already does, so it is used when
+  # nothing else was given — explicitly, and said, rather than silently.
+  if [ -z "${SIGHOP_TEST_DATABASE_URL:-}" ] && [ -z "${DATABASE_URL:-}" ] && [ -f .env.dev ]; then
+    echo "test: no database in the environment; using the one .env.dev names"
+    uv run --locked --env-file .env.dev pytest -q || return 1
+    return 0
+  fi
+  uv run --locked pytest -q || return 1
+}
 
 image() {
   # No provenance or SBOM attestation manifests: pushed to a registry, each one
@@ -90,9 +104,8 @@ image() {
 }
 
 smoke() {
-  # `cli.py` imports the web application at module level, so `--help` loads
-  # FastAPI, Jinja, PyNaCl and SQLAlchemy: the whole application imports as a
-  # user the image has never heard of, on a root nothing can write to.
+  # Two things, both as a user the image has never heard of, on a root nothing
+  # can write to, with no capabilities and no network.
   local constrained=(
     docker run --rm
     --read-only --tmpfs /tmp
@@ -101,29 +114,42 @@ smoke() {
     --security-opt no-new-privileges
     --network none
   )
-  "${constrained[@]}" "${IMAGE}" --help > /dev/null || return 1
-  "${constrained[@]}" "${IMAGE}" run --help > /dev/null || return 1
-  echo "smoke: ${IMAGE} started as ${SMOKE_USER} on a read-only root with no capabilities"
+  # 1. The whole application imports — FastAPI, Jinja, PyNaCl, SQLAlchemy, the
+  #    templates' package — which is what `--help` used to prove by accident.
+  "${constrained[@]}" --entrypoint python "${IMAGE}" \
+    -c "import sighop.boot, sighop.web.app, sighop.runtime, sighop.replay" || return 1
+  # 2. The real entry point, with an empty environment, refuses to start: it
+  #    exits non-zero and says how to make the secret it needs. Passing on a
+  #    node that *started* would be passing on the wrong thing.
+  local refusal
+  if refusal=$("${constrained[@]}" "${IMAGE}" 2>&1); then
+    echo "smoke: ${IMAGE} started with an empty environment instead of refusing" >&2
+    return 1
+  fi
+  if ! grep -qF "openssl rand -base64 32" <<<"${refusal}"; then
+    echo "smoke: ${IMAGE} refused, but not by naming how to generate SIGHOP_SECRET_KEY:" >&2
+    echo "${refusal}" | head -20 >&2
+    return 1
+  fi
+  echo "smoke: ${IMAGE} imports and refuses an empty environment as ${SMOKE_USER} on a read-only root"
 }
 
 replay() {
   # The image is Alpine (musl) and the test suite runs on the host (glibc), so
   # this is the one place the platform's own behaviour is checked on the libc
-  # it ships with. Receptions only: a replay never transmits and needs no
-  # database, so both runs are told to have none.
+  # it ships with. `python -m sighop.replay` renders a capture through the
+  # decode path — no modem, no database, no network — so both sides need none.
   local capture expected actual count=0
   expected=$(mktemp) || return 1
   actual=$(mktemp) || return 1
   # shellcheck disable=SC2064
   trap "rm -f '${expected}' '${actual}'" RETURN
   for capture in captures/*.jsonl; do
-    env -u DATABASE_URL -u DATABASE_URL_FILE \
-      uv run --locked sighop run --replay "${capture}" --status-interval 3600 \
-      > "${expected}" 2> /dev/null || return 1
+    uv run --locked python -m sighop.replay "${capture}" > "${expected}" 2> /dev/null || return 1
     docker run --rm --read-only --tmpfs /tmp --user "${SMOKE_USER}" --cap-drop ALL \
       --security-opt no-new-privileges --network none \
       -v "${PWD}/captures:/app/captures:ro" \
-      "${IMAGE}" run --replay "${capture}" --status-interval 3600 \
+      --entrypoint python "${IMAGE}" -m sighop.replay "${capture}" \
       > "${actual}" 2> /dev/null || return 1
     if ! cmp -s "${expected}" "${actual}"; then
       echo "replay: ${capture} renders differently inside the image:" >&2

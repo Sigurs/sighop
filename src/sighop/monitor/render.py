@@ -19,7 +19,6 @@ from sighop.bots.base import (
     BotActed,
     BotDispatchDropped,
     BotFailed,
-    BotMode,
     BotRuntimeEvent,
     BotSendResult,
     BotSuppressed,
@@ -155,10 +154,6 @@ def render_detail_line(record: RxRecord) -> str:
     raise AssertionError(f"unhandled outcome {record.outcome!r}")  # pragma: no cover
 
 
-def render_record(record: RxRecord) -> str:
-    return f"{render_frame_line(record)}\n{render_detail_line(record)}"
-
-
 # --- Payload details -------------------------------------------------------
 
 
@@ -278,8 +273,12 @@ def render_replay_startup(provenance: dict | None, source: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class Summary:
-    """The counts a monitor session reports. Raw receptions, not deduplicated
-    ones: milestone 3's dedup needs an unfiltered baseline (design D9).
+    """The counts a replayed capture reports (`python -m sighop.replay`).
+
+    Raw receptions, not deduplicated ones, beside what deduplication and path
+    learning made of them: the parity gate compares these between the build host
+    and the image, so decoding, signature checks, dedup and path learning are all
+    checked on the C library the image ships.
     """
 
     frames: int = 0
@@ -287,16 +286,16 @@ class Summary:
     adverts_verified: int = 0
     adverts_failed: int = 0
     node_hashes: int = 0
-    reconnects: int = 0
-    reboots: int = 0
+    duplicates: int = 0
+    paths_learned: int = 0
 
 
 def render_summary(summary: Summary) -> str:
     return (
         f"-- frames={summary.frames} failed={summary.decode_failures} "
         f"adverts={summary.adverts_verified} advert_failures={summary.adverts_failed} "
-        f"nodes_heard={summary.node_hashes} reconnects={summary.reconnects} "
-        f"reboots={summary.reboots}"
+        f"nodes_heard={summary.node_hashes} duplicates={summary.duplicates} "
+        f"paths={summary.paths_learned}"
     )
 
 
@@ -320,7 +319,7 @@ def render_run_startup(
 ) -> str:
     """The banner. With the gate open it says what that now means.
 
-    Milestone 3's `--enable-transmit` reached a hand-off that dropped the
+    Milestone 3's transmit flag reached a hand-off that dropped the
     packet; milestone 4's keys a transmitter. The banner has to say the second
     thing, name every identity that will originate traffic — a public key on the
     air is what another node stores — and state the ceiling in force.
@@ -361,15 +360,6 @@ def render_run_startup(
     return "\n".join(lines)
 
 
-PERSISTENCE_OFF = "off"
-PERSISTENCE_ON = "on"
-PERSISTENCE_DEGRADED = "degraded"
-"""Three states, and the difference between the first two and the third is the
-whole point (design D8): "off" is a choice an operator made and "degraded" is a
-fault they have not yet noticed. A status line that rendered them alike would
-make a broken database look like a deliberate configuration."""
-
-
 def render_status(
     status: SchedulerStatus,
     *,
@@ -377,7 +367,7 @@ def render_status(
     learned_paths: int,
     active_overrides: int = 0,
     contacts: int = 0,
-    persistence: str = PERSISTENCE_OFF,
+    persistence: str,
     packet_log_discarded: int = 0,
     routes_discarded: int = 0,
     awaiting_backfill: int = 0,
@@ -440,7 +430,7 @@ def render_stubs(stubs: Sequence[EntityStub]) -> str:
 
 def render_persistence(
     *,
-    database: str | None = None,
+    database: str,
     schema_version: str | None = None,
     entities: int = 0,
     contacts: int = 0,
@@ -452,13 +442,13 @@ def render_persistence(
     writing: bool = True,
     not_writing_because: str = "",
 ) -> str:
-    """Whether this run's state survives it, and what came back if it does.
+    """The database this run's state is in, and what came back from it.
 
-    An operator must never have to infer durability. With no database the line
-    says so in the words milestone 4 used, because that is still what happens;
-    with one it names the database in force, the applied schema version and the
-    counts restored — so "nothing was heard yet" and "nothing was restored" are
-    two visibly different things before any traffic arrives.
+    An operator must never have to infer durability. The line names the database
+    in force, the applied schema version and the counts restored — so "nothing
+    was heard yet" and "nothing was restored" are two visibly different things
+    before any traffic arrives. There is no in-memory wording: a database is
+    required, so a run that is printing this has one.
 
     The restored counts are a snapshot from before the pipeline started, unlike
     the live figures in the status line: they are what persistence supplied, not
@@ -467,11 +457,6 @@ def render_persistence(
     `database` is expected already redacted — this function never sees a
     password, so there is no rendering path along which one could escape.
     """
-    if database is None:
-        return (
-            "persistence: off — contacts, paths and the packet log are in memory "
-            "only and do not survive the process"
-        )
     state = "on" if writing else f"on, not writing ({not_writing_because})"
     # Conversations are counted, not restored into memory: there is no in-memory
     # store of them to fill. They are on this line anyway, because the question
@@ -603,16 +588,15 @@ def render_dm_event(event: DirectMessageEvent) -> str:
 # reception, so a replay would render differently every time, and the frame line
 # above each one already places it. The id is in the logged event.
 
-CHANNELS_OFF = (
-    "channels: none — channels are stored configuration, and that requires durable "
-    "storage; group text is left undecrypted"
-)
+CHANNELS_NONE = "channels: none configured; group text is left undecrypted"
+"""What a run with an empty channel table says. Also the line a run carries
+before the loader has answered, so the field is never blank."""
 
 
 def render_channel_startup(channels: ChannelSet) -> str:
     """The channels a run loaded, with hashes, and any it had to skip."""
     if not channels.channels and not channels.skipped:
-        return "channels: none configured; group text is left undecrypted"
+        return CHANNELS_NONE
     loaded = ", ".join(
         f"{channel.name}[{channel.channel_hash:02x}]"
         f"({channel.kind}{', guessable' if channel.guessable else ''})"
@@ -841,14 +825,6 @@ def _provenance_field(provenance: dict, key: str) -> str:
 # login exchange, and inventing one from a contact would present a claim as a
 # fact.
 
-ROOMS_OFF = (
-    "rooms: none — a room is bound to a stored identity, and stored identities "
-    "require durable storage"
-)
-"""What `sighop run` says with no database configured (design D5). Stated rather
-than omitted: a run that silently served no rooms would look identical to one
-whose rooms failed to load."""
-
 
 def render_room_startup(
     *,
@@ -1047,9 +1023,6 @@ def render_room_event(event: RoomEvent) -> str:
 # `bots/` never imports this module: every function here takes a typed event or
 # plain values, exactly as the room renderers do (milestone 6 design D17).
 
-WEBHOOKS_OFF_NO_DATABASE = (
-    "webhooks: none — webhooks are stored configuration, and that requires durable storage"
-)
 WEBHOOKS_OFF_REPLAY = (
     "webhooks: none — replay; a replayed reception carries an earlier session's "
     "timestamps and would announce an old sighting as new"
@@ -1062,16 +1035,6 @@ WEBHOOKS_OFF_NO_SECRET = (
 def render_webhook_startup(summary: str) -> str:
     return f"webhooks: {summary}"
 
-
-BOTS_OFF = (
-    "bots: none — a bot's decisions depend on state restored before any traffic, "
-    "and that requires durable storage"
-)
-"""What `sighop run` says with no database configured (design D5). §7 rule 1 —
-"new means never seen in the persistent contact table, not new since process
-start" — is a statement about a table that does not exist without one, so a
-DB-less greeter would greet the entire neighbourhood on every restart. Stated
-rather than omitted, exactly as the equivalent room line is."""
 
 OBSERVE_NOTE = "transmitted nothing (observe mode)"
 """One phrase, used everywhere an observation is rendered, so an operator learns
@@ -1187,25 +1150,6 @@ def render_bot_event(event: BotRuntimeEvent) -> str:
             return render_bot_dispatch_dropped(event)
         case BotFailed():
             return render_bot_failed(event)
-
-
-def render_bot_mode_change(name: str, mode: BotMode) -> str:
-    """What `sighop bot mode` prints, which is where the two gates get said.
-
-    The mode is one of them and the run's `--enable-transmit` is the other, and
-    an operator who has just made a bot active is exactly the person who needs
-    to be told that the second one still applies (design D4).
-    """
-    if mode is BotMode.ACTIVE:
-        return (
-            f"bot {name!r} is now active: it may transmit. Transmission still "
-            "requires the run's --enable-transmit flag and stays under the "
-            "duty-cycle ceiling"
-        )
-    return (
-        f"bot {name!r} is now in observe mode: it runs its whole decision path "
-        "and transmits nothing"
-    )
 
 
 def _render_limit(value: object) -> str:

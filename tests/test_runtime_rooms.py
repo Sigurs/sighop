@@ -22,7 +22,6 @@ from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import EntityRepository, MemberRecord
 from sighop.db.times import ensure_utc
-from sighop.monitor.render import ROOMS_OFF
 from sighop.passwords import hash_password
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType, Permission
@@ -30,6 +29,8 @@ from sighop.runtime import Runtime, RuntimeConfig
 from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
 from tests.test_runtime import _events, _startup, runtime
 from tests.test_tx import ManualClock, RecordingLogger
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 SECRET = base64.b64decode(generate_secret_key())
 CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
@@ -81,16 +82,6 @@ def _live_runtime(persistence: Persistence, *, config: RuntimeConfig | None = No
 # --- 11.2 What a run says when it serves no room ----------------------------
 
 
-async def test_a_run_with_no_database_says_rooms_require_durable_storage() -> None:
-    """11.2, design D5: no rooms, said rather than omitted. No database needed."""
-    out = io.StringIO()
-    run = runtime(_events(CAPTURE), out=out)
-
-    assert run.rooms == []
-    assert run._room_lines() == [ROOMS_OFF]
-
-
-@pytest.mark.database
 async def test_a_run_with_a_database_and_no_rooms_says_none_are_configured(
     database: Database,
 ) -> None:
@@ -101,7 +92,6 @@ async def test_a_run_with_a_database_and_no_rooms_says_none_are_configured(
     assert run._room_lines() == ["rooms: none configured"]
 
 
-@pytest.mark.database
 async def test_a_room_on_a_disabled_identity_is_reported_as_not_served(
     database: Database,
 ) -> None:
@@ -126,7 +116,6 @@ async def test_a_room_on_a_disabled_identity_is_reported_as_not_served(
 # --- 11.1 A room that is served ---------------------------------------------
 
 
-@pytest.mark.database
 async def test_a_room_is_served_and_reported_before_any_traffic(
     database: Database,
 ) -> None:
@@ -156,7 +145,6 @@ async def test_a_room_is_served_and_reported_before_any_traffic(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_the_room_server_is_a_bus_subscriber_and_owns_its_entity(
     database: Database,
 ) -> None:
@@ -191,7 +179,6 @@ async def test_the_room_server_is_a_bus_subscriber_and_owns_its_entity(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_the_push_loop_and_the_pruner_start_and_shut_down_cleanly(
     database: Database,
 ) -> None:
@@ -215,7 +202,6 @@ async def test_the_push_loop_and_the_pruner_start_and_shut_down_cleanly(
     assert run.rooms[0].deliveries_outstanding == 0
 
 
-@pytest.mark.database
 async def test_a_member_who_logged_in_before_a_restart_comes_back_with_the_room(
     database: Database,
 ) -> None:
@@ -263,7 +249,6 @@ async def test_a_member_who_logged_in_before_a_restart_comes_back_with_the_room(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_only_one_room_may_be_bound_to_an_identity(database: Database) -> None:
     """12.1: refused with a message naming the existing room, and nothing changes."""
     from sighop.db.repositories import RoomExistsError
@@ -283,7 +268,6 @@ async def test_only_one_room_may_be_bound_to_an_identity(database: Database) -> 
     assert [existing.name for existing in rooms.value] == ["lounge"]
 
 
-@pytest.mark.database
 async def test_retention_can_be_set_and_cleared_back_to_unlimited(
     database: Database,
 ) -> None:
@@ -309,7 +293,6 @@ async def test_retention_can_be_set_and_cleared_back_to_unlimited(
     assert cleared.value.retention == "unlimited"
 
 
-@pytest.mark.database
 async def test_rotating_a_password_leaves_the_membership_alone(
     database: Database,
 ) -> None:
@@ -341,7 +324,6 @@ async def test_rotating_a_password_leaves_the_membership_alone(
     assert len(members.value) == 1, "rotating a password evicted a member"
 
 
-@pytest.mark.database
 async def test_revoking_removes_the_cursor_and_the_replay_guard_with_the_member(
     database: Database,
 ) -> None:
@@ -370,7 +352,6 @@ async def test_revoking_removes_the_cursor_and_the_replay_guard_with_the_member(
     assert members.value == []
 
 
-@pytest.mark.database
 async def test_history_is_stored_ordered_and_read_back_byte_for_byte(
     database: Database,
 ) -> None:
@@ -400,7 +381,6 @@ async def test_history_is_stored_ordered_and_read_back_byte_for_byte(
     assert history.value[1].rendered.is_valid_utf8 is False
 
 
-@pytest.mark.database
 async def test_the_pruner_applies_a_policy_against_the_real_table(
     database: Database,
 ) -> None:
@@ -423,7 +403,6 @@ async def test_the_pruner_applies_a_policy_against_the_real_table(
     assert remaining.value == 2
 
 
-@pytest.mark.database
 async def test_a_room_read_for_an_entity_that_has_none_is_none_not_an_error(
     database: Database,
 ) -> None:
@@ -436,7 +415,6 @@ async def test_a_room_read_for_an_entity_that_has_none_is_none_not_an_error(
 # --- Stopping a deleted room, without a restart ------------------------------
 
 
-@pytest.mark.database
 async def test_a_deleted_room_stops_being_served_without_a_restart(
     database: Database,
 ) -> None:
@@ -470,7 +448,6 @@ async def test_a_deleted_room_stops_being_served_without_a_restart(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_stopping_a_room_this_run_does_not_serve_reports_so(
     database: Database,
 ) -> None:
@@ -492,7 +469,6 @@ async def test_stopping_a_room_this_run_does_not_serve_reports_so(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_stopping_one_room_leaves_the_others_served(database: Database) -> None:
     persistence, room, _loaded = await _stored_room_server(database)
     entities = EntityRepository(database=database)
@@ -532,7 +508,6 @@ async def test_stopping_one_room_leaves_the_others_served(database: Database) ->
 # --- 1.1 / 1.2 The alias live adoption depends on (design D5) --------------
 
 
-@pytest.mark.database
 async def test_serving_and_stopping_a_room_keeps_the_path_body_alias(
     database: Database,
 ) -> None:
@@ -562,7 +537,6 @@ async def test_serving_and_stopping_a_room_keeps_the_path_body_alias(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_an_identity_appended_after_a_room_cycle_reaches_the_path_body_reader(
     database: Database,
 ) -> None:
@@ -593,7 +567,6 @@ async def test_an_identity_appended_after_a_room_cycle_reaches_the_path_body_rea
 # --- 4.1-4.4 `reconcile_rooms` (design D7, room-server) ---------------------
 
 
-@pytest.mark.database
 async def test_a_room_on_an_unheld_identity_is_not_served_and_states_why(
     database: Database,
 ) -> None:
@@ -614,7 +587,6 @@ async def test_a_room_on_an_unheld_identity_is_not_served_and_states_why(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_a_room_is_served_once_its_identity_is_adopted_mid_run(
     database: Database,
 ) -> None:
@@ -635,7 +607,6 @@ async def test_a_room_is_served_once_its_identity_is_adopted_mid_run(
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_a_first_room_taken_up_mid_run_starts_the_pruner(database: Database) -> None:
     """4.2: constructed and started when the first room is taken up mid-run —
     `_load_rooms` builds one only when startup already finds a room, and this
@@ -654,7 +625,6 @@ async def test_a_first_room_taken_up_mid_run_starts_the_pruner(database: Databas
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_the_last_room_withdrawn_mid_run_stops_the_pruner(database: Database) -> None:
     """4.2's other half: nothing is left to prune once the last room stops.
 
@@ -685,7 +655,6 @@ async def test_the_last_room_withdrawn_mid_run_stops_the_pruner(database: Databa
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_disabling_the_identity_stops_the_room_with_members_and_messages_intact(
     database: Database,
 ) -> None:
@@ -725,7 +694,6 @@ async def test_disabling_the_identity_stops_the_room_with_members_and_messages_i
     await persistence.stop()
 
 
-@pytest.mark.database
 async def test_taking_up_a_room_mid_run_leaves_the_others_undisturbed(
     database: Database,
 ) -> None:

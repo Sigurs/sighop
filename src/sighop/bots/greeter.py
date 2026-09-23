@@ -35,9 +35,9 @@ existed, along with every peer a rate limit or a degraded database made us skip
 once. A contact created before the greeter existed can never be created again.
 
 What keeps that from meaning *the whole contact table at once* is that a new
-greeter is **seeded**: `sighop bot create` records every contact already present
+greeter is **seeded**: creating one records every contact already present
 as greeted, marked `seeded` rather than sent. The debt is data an operator reads
-and edits with `sighop bot greeted`, one contact at a time, rather than a rule
+and edits on the bot's greeted page, one contact at a time, rather than a rule
 that also refuses what the rule was never meant to refuse.
 
 **Why the record goes first.** A crash between writing the greeting record and
@@ -121,11 +121,11 @@ trade — an attempt over-counted is a greeting not sent, and an attempt
 under-counted is a stranger messaged twice."""
 
 SEEDED = "seeded"
-"""A record written by `sighop bot create` for a contact that already existed.
+"""A record written when a bot is created, for a contact that already existed.
 
 Distinct from a sent greeting on purpose: it is the difference between "we said
 hello" and "we decided not to owe this one a hello", and an operator reading
-`sighop bot greeted` needs to be able to tell them apart before releasing one."""
+the greeted list needs to be able to tell them apart before releasing one."""
 
 OPERATOR = "operator"
 """A record an operator set by hand, to excuse a contact from being greeted."""
@@ -160,9 +160,8 @@ def seeded_entries(contacts: Iterable[Contact], *, at: str) -> dict[str, object]
     creating a greeter on a node that already knows fifty peers is a decision to
     message fifty strangers. Which contacts, which key and which record are all
     one decision and it lives here, beside the key convention, because the
-    command line and the browser both create greeters and must incur the same
-    debt — `sighop bot create` and the panel's create form call this with the
-    same durable contact table.
+    panel's create form calls this with the durable contact table, so every
+    greeter incurs the same debt however it came to exist.
     """
     return {
         greeted_key(contact.public_key): {
@@ -617,7 +616,7 @@ def _record(
     """One greeting record. `acknowledged` is the field the gate turns on.
 
     Kept separate from `outcome` rather than derived from it, because a reader —
-    an operator running `sighop bot greeted`, or a future driver — should not
+    an operator reading the greeted list, or a future driver — should not
     have to know which outcome strings count as delivered.
     """
     return {

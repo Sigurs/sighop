@@ -19,18 +19,21 @@ import io
 import re
 import signal
 import socket
+from collections.abc import AsyncIterator
 
 import pytest
 
-from sighop.cli import main
-from sighop.config import DATABASE_SCHEMA_VARIABLE, DatabaseConfig
-from sighop.db.engine import Database, Succeeded
-from sighop.db.repositories import WebUserRepository
-from sighop.runtime import Runtime, RuntimeConfig
-from sighop.web.app import (
+from sighop.boot import attach_web
+from sighop.config import (
     DEFAULT_WEB_HOST,
     DEFAULT_WEB_PORT,
-    NO_DATABASE_FOR_WEB,
+    Config,
+    DatabaseConfig,
+    generate_secret_key,
+)
+from sighop.db.engine import Succeeded
+from sighop.runtime import Runtime, RuntimeConfig
+from sighop.web.app import (
     NO_ENABLED_ACCOUNT,
     PLAIN_HTTP_WARNING,
     WebBindError,
@@ -41,30 +44,21 @@ from sighop.web.app import (
     validate_allowed_hosts,
 )
 from sighop.web.auth import FirstRunSetup
+from tests.dbfixtures import the_default_persistence
 from tests.protocol.corpus import CAPTURES_DIR
 from tests.test_web_state import RecordingLogger, _empty_source, _startup
 from tests.webfixtures import MemoryAccounts, authenticator, signed_client, stub_state
 
+pytestmark = pytest.mark.usefixtures("default_persistence")
+
 CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
-
-
-@pytest.fixture(autouse=True)
-def _no_database(monkeypatch) -> None:
-    """Nothing here is about persistence, so nothing here configures a database.
-
-    `sighop run` refuses to start against a database at the wrong revision, by
-    design — so a developer whose shell exports `DATABASE_URL` would otherwise
-    see these tests fail for a reason that has nothing to do with the web
-    interface.
-    """
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("SIGHOP_TEST_DATABASE_URL", raising=False)
 
 
 def _runtime(logger: RecordingLogger | None = None, out: io.StringIO | None = None) -> Runtime:
     return Runtime(
         source=_empty_source(),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600.0, advert_tick=3600.0),
         out=out or io.StringIO(),
         logger=logger or RecordingLogger(),
@@ -74,11 +68,10 @@ def _runtime(logger: RecordingLogger | None = None, out: io.StringIO | None = No
 # --- 7.1 The application factory --------------------------------------------
 
 
-def test_a_page_is_served_with_no_runtime_and_no_database() -> None:
+def test_a_page_is_served_with_no_runtime_present() -> None:
     """7.1: constructed from stubs and an in-memory account store, requested
     in-process by a signed-in client, nothing running."""
     state = stub_state()
-    assert state.persistence is None
 
     with signed_client(create_app(state, auth=authenticator())) as client:
         response = client.get("/")
@@ -188,180 +181,6 @@ async def _fetch(host: str, port: int, path: str) -> str:
 # --- 7.3 The flags ----------------------------------------------------------
 
 
-def test_the_flags_default_to_loopback_and_off() -> None:
-    """7.3: the address defaults to loopback and the interface to absent."""
-    from sighop.cli import build_parser
-
-    args = build_parser().parse_args(["run", "--replay", str(CAPTURE)])
-    assert args.web is False
-    assert args.web_host == DEFAULT_WEB_HOST
-    assert args.web_port == DEFAULT_WEB_PORT
-    assert DEFAULT_WEB_HOST == "127.0.0.1"
-
-
-def test_a_run_without_the_flag_listens_on_nothing_and_says_nothing(capsys, monkeypatch) -> None:
-    """7.3, `web-server`: a run not asked for the interface is a run without one.
-
-    Two halves. Nothing binds — asserted by making a bind fail the test outright,
-    rather than by inspecting the process afterwards — and the output says
-    nothing about a web interface.
-    """
-
-    def _refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a run without --web took a listening socket")
-
-    monkeypatch.setattr("sighop.cli.WebInterface.bind", _refuse)
-    code = main(["run", "--replay", str(CAPTURE), "--status-interval", "3600"])
-
-    assert code == 0
-    printed = capsys.readouterr().out
-    # The startup line about webhooks (outbound HTTP, not the interface) is the
-    # one legitimate occurrence of the letters.
-    assert "web" not in printed.lower().replace("webhook", ""), printed
-
-
-def test_a_run_with_the_flag_and_no_database_refuses_before_binding(capsys, monkeypatch) -> None:
-    """9.1: the accounts live in the database, so there is no panel without one.
-
-    Refused before any socket exists and before the replay is consumed: the bind
-    fails the test outright if it is reached, and the output carries no frame.
-    """
-
-    def _refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a run with no database took a listening socket")
-
-    monkeypatch.setattr("sighop.cli.WebInterface.bind", _refuse)
-    code = main(
-        ["run", "--replay", str(CAPTURE), "--status-interval", "3600", "--web", "--web-port", "0"]
-    )
-
-    assert code == 2
-    captured = capsys.readouterr()
-    assert NO_DATABASE_FOR_WEB in captured.err
-    assert "stored in the database" in captured.err
-    assert "DATABASE_URL" in captured.err
-    assert captured.out == "", "something was received before the refusal"
-
-
-def _database_run_argv(url: str, *extra: str) -> list[str]:
-    return [
-        "run",
-        "--replay",
-        str(CAPTURE),
-        "--status-interval",
-        "3600",
-        "--database-url",
-        url,
-        "--web",
-        *extra,
-    ]
-
-
-@pytest.fixture
-def run_database(database_config: DatabaseConfig, monkeypatch) -> str:
-    assert database_config.schema is not None
-    monkeypatch.setenv(DATABASE_SCHEMA_VARIABLE, database_config.schema)
-    return database_config.url
-
-
-@pytest.mark.database
-def test_a_run_whose_accounts_are_all_disabled_refuses_before_binding(
-    database: Database, database_config: DatabaseConfig, run_database: str, capsys, monkeypatch
-) -> None:
-    """9.1, web-first-run-setup D1 row two: nobody could sign in, and setup must
-    not undo a deliberate lockout — so nothing is served and nothing is bound."""
-    _add_account(database_config, enabled=False)
-
-    def _refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a run with only disabled accounts took a listening socket")
-
-    monkeypatch.setattr("sighop.cli.WebInterface.bind", _refuse)
-    code = main(_database_run_argv(run_database, "--web-port", "0"))
-
-    assert code == 2
-    captured = capsys.readouterr()
-    assert NO_ENABLED_ACCOUNT in captured.err
-    assert "sighop web user enable <username>" in captured.err
-    assert "sighop web user add <username>" in captured.err
-    assert "SETUP" not in captured.out
-    assert "frames=" not in captured.out
-
-
-@pytest.mark.database
-def test_a_run_with_no_account_at_all_serves_first_run_setup(
-    database: Database, run_database: str, capsys
-) -> None:
-    """web-first-run-setup D1 row one: served, with the code in the output only."""
-    code = main(_database_run_argv(run_database, "--web-port", "0"))
-
-    assert code == 0
-    printed = capsys.readouterr().out
-    assert "FIRST-RUN SETUP PENDING: no account exists" in printed, printed
-    found = re.search(
-        r"open (http://127\.0\.0\.1:\d+)/setup and enter setup code "
-        r"([0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5})",
-        printed,
-    )
-    assert found is not None, printed
-    assert "reachable from this host only" in printed
-    assert "sign-in required" not in printed
-
-
-def _add_account(config: DatabaseConfig, *, enabled: bool = True) -> None:
-    """One enabled account, written on a loop of its own.
-
-    The run under test installs signal handlers, which only the main thread may
-    do, so these tests are synchronous and cannot share the fixture's loop.
-    """
-
-    async def add() -> None:
-        handle = Database(config=config)
-        await handle.open()
-        try:
-            added = await WebUserRepository(database=handle).add(
-                "dev-operator", password_hash="$argon2id$test$unused", enabled=enabled
-            )
-            assert isinstance(added, Succeeded)
-        finally:
-            await handle.dispose()
-
-    asyncio.run(add())
-
-
-@pytest.mark.database
-def test_a_run_with_the_flag_reports_where_it_is_listening(
-    database: Database, database_config: DatabaseConfig, run_database: str, capsys
-) -> None:
-    """7.3 / 7.4 / 9.3: the address, the port and the account count.
-
-    web-first-run-setup D1 row three: accounts enabled, so no setup at all.
-    """
-    _add_account(database_config)
-    code = main(_database_run_argv(run_database, "--web-port", "0"))
-
-    assert code == 0
-    printed = capsys.readouterr().out
-    assert "web: http://127.0.0.1:" in printed, printed
-    assert "sign-in required; 1 enabled account(s)" in printed
-    assert "SETUP" not in printed and "setup code" not in printed
-
-
-@pytest.mark.database
-def test_the_run_fails_rather_than_continuing_without_the_interface(
-    database: Database, database_config: DatabaseConfig, run_database: str, capsys
-) -> None:
-    """7.5: reported before any traffic is processed, and the run does not start."""
-    _add_account(database_config)
-    with socket.create_server(("127.0.0.1", 0)) as held:
-        port = held.getsockname()[1]
-        code = main(_database_run_argv(run_database, "--web-port", str(port)))
-
-    assert code == 2
-    error = capsys.readouterr().err
-    assert "could not listen" in error
-    assert str(port) in error
-
-
 # --- 7.4 / 9.3 What startup says about the exposure --------------------------
 
 
@@ -401,32 +220,6 @@ def test_a_non_loopback_bind_says_plain_http_and_unencrypted_credentials() -> No
         assert listening[0]["setup_pending"] is False
         assert listening[0]["web_port"] == interface.port
         assert "unencrypted" in str(listening[0]["detail"])
-    finally:
-        interface.close()
-
-
-def test_there_is_no_option_that_serves_a_wide_bind_quietly() -> None:
-    """9.3, `web-server`: the warning is not suppressible.
-
-    Asserted twice over: the parser offers no option that could suppress it, and
-    `startup_lines()` has no argument and no branch that omits it.
-    """
-    import inspect
-
-    from sighop.cli import build_parser
-
-    parser = build_parser()
-    for action in parser._subparsers._group_actions[0].choices["run"]._actions:
-        for option in action.option_strings:
-            assert "quiet" not in option
-            assert "no-warn" not in option
-            assert "insecure" not in option
-            assert "no-auth" not in option
-
-    assert list(inspect.signature(WebInterface.startup_lines).parameters) == ["self"]
-    interface = _bound(host="0.0.0.0")
-    try:
-        assert PLAIN_HTTP_WARNING in "\n".join(interface.startup_lines())
     finally:
         interface.close()
 
@@ -496,7 +289,7 @@ def test_a_port_already_in_use_is_a_startup_failure_naming_why() -> None:
     assert "127.0.0.1" in message
     assert str(port) in message
     assert "already in use" in message
-    assert "--web-port" in message
+    assert "SIGHOP_WEB_PORT" in message
 
 
 # --- 7.6 Bounded shutdown ---------------------------------------------------
@@ -603,30 +396,6 @@ def test_ordinary_allowed_hosts_are_accepted(value: str) -> None:
     assert validate_allowed_hosts([value]) == (value,)
 
 
-def test_a_wildcard_allowed_host_fails_startup_with_no_port_bound(capsys, monkeypatch) -> None:
-    """9.2: refused at startup, before the database is consulted or a socket exists."""
-
-    def _refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("a wildcard allowed host took a listening socket")
-
-    monkeypatch.setattr("sighop.cli.WebInterface.bind", _refuse)
-    code = main(
-        [
-            "run",
-            "--replay",
-            str(CAPTURE),
-            "--status-interval",
-            "3600",
-            "--web",
-            "--web-allowed-host",
-            "*",
-        ]
-    )
-
-    assert code == 2
-    assert "--web-allowed-host '*' is refused" in capsys.readouterr().err
-
-
 def test_bind_refuses_a_wildcard_before_taking_the_socket() -> None:
     with pytest.raises(WebStartupError):
         _bind(stub_state(), host="127.0.0.1", port=0, allowed=["*"])
@@ -635,8 +404,7 @@ def test_bind_refuses_a_wildcard_before_taking_the_socket() -> None:
 def test_bind_refuses_zero_enabled_accounts_before_taking_the_socket() -> None:
     with pytest.raises(WebStartupError) as excinfo:
         _bind(stub_state(), host="127.0.0.1", port=0, accounts_enabled=0)
-    assert "sighop web user add" in str(excinfo.value)
-    assert "sighop web user enable" in str(excinfo.value)
+    assert str(excinfo.value) == NO_ENABLED_ACCOUNT
 
 
 # --- web-first-run-setup 4.2 / 4.4 Setup at startup -------------------------
@@ -717,3 +485,187 @@ async def test_a_restart_prints_a_new_code_and_refuses_the_old_one() -> None:
         assert not accounts.accounts
     finally:
         second.close()
+
+
+# --- The interface is always served (`web-server`, `node-boot`) --------------
+#
+# These drive `boot.attach_web`, the step between a composed runtime and a
+# running one. It is where the interface is bound, and it runs before the radio
+# does, which is what makes every refusal here a startup failure rather than a
+# node running without its only administration surface.
+
+
+def _config(**overrides: object) -> Config:
+    settings: dict[str, object] = {"web_port": 0, **overrides}
+    return Config(
+        database=DatabaseConfig(url="postgresql+asyncpg://r:p@h/d"),
+        secret_key=generate_secret_key(),
+        **settings,  # type: ignore[arg-type]
+    )
+
+
+async def _add_account(*, enabled: bool = True) -> None:
+    added = await the_default_persistence().web_users.add(
+        "dev-operator", password_hash="$argon2id$test$unused", enabled=enabled
+    )
+    assert isinstance(added, Succeeded)
+
+
+def _refuse_bind(monkeypatch: pytest.MonkeyPatch, why: str) -> None:
+    def _refuse(*args: object, **kwargs: object) -> None:
+        raise AssertionError(why)
+
+    monkeypatch.setattr("sighop.boot.WebInterface.bind", _refuse)
+
+
+def test_the_interface_defaults_to_loopback() -> None:
+    """7.3: the address defaults to loopback, and there is no way to turn it off."""
+    config = Config(database=DatabaseConfig(url="postgresql+asyncpg://r:p@h/d"))
+    assert config.web_host == DEFAULT_WEB_HOST == "127.0.0.1"
+    assert config.web_port == DEFAULT_WEB_PORT
+
+
+def test_there_is_no_setting_that_starts_the_node_without_the_interface() -> None:
+    """`web-server`: the interface is how the node is administered, so it cannot
+    be declined. Asserted against the configuration surface itself."""
+    import dataclasses
+
+    names = {field.name for field in dataclasses.fields(Config)}
+    assert not {name for name in names if name in {"web", "web_enabled", "serve_web", "no_web"}}
+
+
+async def test_a_node_whose_accounts_are_all_disabled_refuses_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """9.1, web-first-run-setup D1 row two: nobody could sign in, and setup must
+    not undo a deliberate lockout — so nothing is served and nothing is bound."""
+    await _add_account(enabled=False)
+    _refuse_bind(monkeypatch, "a node with only disabled accounts took a listening socket")
+
+    with pytest.raises(WebStartupError) as excinfo:
+        await attach_web(_config(), _runtime(), io.StringIO())
+    assert str(excinfo.value) == NO_ENABLED_ACCOUNT
+    assert "UPDATE web_user SET enabled = true" in NO_ENABLED_ACCOUNT
+
+
+async def test_a_node_with_no_account_at_all_serves_first_run_setup() -> None:
+    """web-first-run-setup D1 row one: served, with the code in the output only."""
+    out = io.StringIO()
+    interface = await attach_web(_config(), _runtime(), out)
+    try:
+        printed = out.getvalue()
+        assert "FIRST-RUN SETUP PENDING: no account exists" in printed, printed
+        found = re.search(
+            r"open (http://127\.0\.0\.1:\d+)/setup and enter setup code "
+            r"([0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5}-[0-9A-Z]{5})",
+            printed,
+        )
+        assert found is not None, printed
+        assert "reachable from this host only" in printed
+        assert "sign-in required" not in printed
+    finally:
+        interface.close()
+
+
+async def test_a_node_reports_where_it_is_listening() -> None:
+    """7.3 / 7.4 / 9.3: the address, the port and the account count.
+
+    web-first-run-setup D1 row three: accounts enabled, so no setup at all.
+    """
+    await _add_account()
+    out = io.StringIO()
+    interface = await attach_web(_config(), _runtime(), out)
+    try:
+        printed = out.getvalue()
+        assert "web: http://127.0.0.1:" in printed, printed
+        assert "sign-in required; 1 enabled account(s)" in printed
+        assert "SETUP" not in printed and "setup code" not in printed
+    finally:
+        interface.close()
+
+
+async def test_a_port_that_cannot_be_bound_fails_the_start() -> None:
+    """7.5: reported before any traffic is processed."""
+    await _add_account()
+    with socket.create_server(("127.0.0.1", 0)) as held:
+        port = held.getsockname()[1]
+        with pytest.raises(WebBindError) as excinfo:
+            await attach_web(_config(web_port=port), _runtime(), io.StringIO())
+    assert "could not listen" in str(excinfo.value)
+    assert str(port) in str(excinfo.value)
+
+
+async def test_a_bind_failure_stops_the_node_before_the_radio_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """5.1, `web-server`: the node does not continue without its interface.
+
+    Everything around the bind is replaced with the smallest stand-in that lets
+    `boot.run` reach it, and `Runtime.run` fails the test if it is ever called.
+    """
+    from sighop import boot
+
+    class _Modem:
+        radio_params = None
+        probe_result = None
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.probe_ready = asyncio.Event()
+
+        def events(self) -> AsyncIterator[object]:
+            return _empty_source()
+
+    async def _nothing(*args: object) -> None:
+        return None
+
+    async def _persistence(*args: object) -> tuple[object, tuple[()]]:
+        return the_default_persistence(), ()
+
+    async def _cannot_bind(*args: object) -> None:
+        raise WebBindError("could not listen on 127.0.0.1:8080: address in use")
+
+    def _ran(self: Runtime) -> None:
+        raise AssertionError("the radio ran without its interface")
+
+    monkeypatch.setattr(boot, "KissTransport", lambda *args: None)
+    monkeypatch.setattr(boot, "serial_connector", lambda *args: None)
+    monkeypatch.setattr(boot, "Modem", _Modem)
+    monkeypatch.setattr(boot, "migrate_on_start", _nothing)
+    monkeypatch.setattr(boot, "open_persistence", _persistence)
+    monkeypatch.setattr(boot, "attach_web", _cannot_bind)
+    monkeypatch.setattr(Runtime, "run", _ran)
+
+    with pytest.raises(WebBindError):
+        await boot.run(_config(modem="/dev/serial/by-id/usb-modem"), out=io.StringIO())
+
+
+def test_there_is_no_setting_that_serves_a_wide_bind_quietly() -> None:
+    """9.3, `web-server`: the warning is not suppressible.
+
+    Asserted twice over: the configuration surface has no setting that could
+    suppress it, and `startup_lines()` has no argument and no branch that omits it.
+    """
+    import dataclasses
+    import inspect
+
+    for field in dataclasses.fields(Config):
+        for word in ("quiet", "no_warn", "insecure", "no_auth", "warn"):
+            assert word not in field.name, f"{field.name} looks like a way to silence the warning"
+
+    assert list(inspect.signature(WebInterface.startup_lines).parameters) == ["self"]
+    interface = _bound(host="0.0.0.0")
+    try:
+        assert PLAIN_HTTP_WARNING in "\n".join(interface.startup_lines())
+    finally:
+        interface.close()
+
+
+async def test_a_wildcard_allowed_host_fails_the_start_with_no_port_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """9.2: refused at startup, before the database is consulted or a socket exists."""
+    _refuse_bind(monkeypatch, "a wildcard allowed host took a listening socket")
+
+    with pytest.raises(WebStartupError) as excinfo:
+        await attach_web(_config(web_allowed_hosts=("*",)), _runtime(), io.StringIO())
+    assert "SIGHOP_WEB_ALLOWED_HOSTS entry '*' is refused" in str(excinfo.value)

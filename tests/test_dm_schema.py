@@ -125,7 +125,6 @@ def test_the_migration_records_the_tenth_table_its_cost_and_its_exposure() -> No
 # --- 2.1 The same shapes against a real server ------------------------------
 
 
-@pytest.mark.database
 async def test_one_identity_may_not_hold_one_ref_twice(database: Database) -> None:
     """2.1: the schema refuses the second row, so the repository must upsert."""
     async with database.sessions() as session:
@@ -138,7 +137,6 @@ async def test_one_identity_may_not_hold_one_ref_twice(database: Database) -> No
             await session.commit()
 
 
-@pytest.mark.database
 async def test_two_identities_may_hold_the_same_ref(database: Database) -> None:
     """2.1: `ref` is scoped to the identity, because a reception's `packet_id`
     can legitimately be told to two identities in one process."""
@@ -157,7 +155,6 @@ async def test_two_identities_may_hold_the_same_ref(database: Database) -> None:
         assert {row.entity_public_key for row in rows} == {ENTITY_KEY, other}
 
 
-@pytest.mark.database
 async def test_message_text_survives_bytes_that_are_not_valid_text(database: Database) -> None:
     """`dm-history`: stored as the bytes that were on the wire, untranscoded."""
     raw = b"\xff\xfe not utf-8 \x00 at all"
@@ -172,7 +169,6 @@ async def test_message_text_survives_bytes_that_are_not_valid_text(database: Dat
         assert stored.text == raw
 
 
-@pytest.mark.database
 async def test_the_wire_clock_column_holds_a_value_no_timestamp_would(
     database: Database, test_schema: str
 ) -> None:
@@ -208,7 +204,6 @@ async def test_the_wire_clock_column_holds_a_value_no_timestamp_would(
 # --- 2.4 A database one revision behind -------------------------------------
 
 
-@pytest.mark.database
 async def test_a_database_at_0003_is_refused_naming_both_revisions_and_the_command(
     database_url: str,
 ) -> None:
@@ -230,7 +225,7 @@ async def test_a_database_at_0003_is_refused_naming_both_revisions_and_the_comma
         # The head moves on (0005 is milestone 9's); where the code expects
         # the database is whatever this checkout's head is.
         assert migrations.expected_revision() in message, "and where the code expects it"
-        assert migrations.UPGRADE_COMMAND in message
+        assert migrations.RESTART_TO_MIGRATE in message
     finally:
         await handle.dispose()
         await _drop_schema(database_url, schema)

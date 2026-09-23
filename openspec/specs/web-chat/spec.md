@@ -9,7 +9,6 @@ semantics — an acknowledgement, a retry, a route that is not known — have to
 actually are.
 
 ## Requirements
-
 ### Requirement: A conversation is between one local identity and one contact
 The system SHALL present conversations keyed by the pair of a local identity and a contact, SHALL
 require the operator to have chosen both before a message can be composed, and SHALL NOT merge the
@@ -122,14 +121,11 @@ presence indication.
 #### Scenario: Opening a conversation
 - **WHEN** a conversation is opened or refreshed repeatedly
 - **THEN** nothing is transmitted
-### Requirement: Chat is usable when history cannot be recorded, and says so
-The system SHALL allow sending and receiving when the configured database is degraded, and SHALL
-state in that case that the conversation is not being recorded from that point and will not
-survive the run.
 
-#### Scenario: No database configured
-- **WHEN** a run with no database configured is asked to serve the interface
-- **THEN** the run refuses to start the interface, so there is no chat surface whose history could silently go unrecorded
+### Requirement: Chat stays usable when history cannot be recorded, and says so
+The system SHALL allow sending and receiving when the configured database is degraded, and SHALL
+state in that case that the conversation is not being recorded from that point and will not survive
+the run.
 
 #### Scenario: The database degrades mid-conversation
 - **WHEN** the database becomes unreachable during a conversation

@@ -12,7 +12,7 @@
 #        DIALOUT_GID=$(stat -c %g /dev/serial/by-id/usb-...)
 #        SIGHOP_MODEM=/dev/serial/by-id/usb-...
 #        DATABASE_URL=...              — the postgresql+asyncpg URL, see .env.example
-#        SIGHOP_SECRET_KEY=...         — `uv run sighop keys secret` prints the line
+#        SIGHOP_SECRET_KEY=...         — `openssl rand -base64 32` prints one
 #      optional:
 #        SIGHOP_IMAGE=...              — default sighop:local
 #        SIGHOP_WEB_BIND=...           — host address the panel is published on, default 127.0.0.1
@@ -21,8 +21,8 @@
 #        SIGHOP_PATH_HASH_SIZE=...     — 1, 2 or 3 bytes per hop hash on our floods, default 3
 #   3. docker compose up -d            — sighop migrates the database on start
 #   4. open http://localhost:8080/setup and enter the setup code printed by
-#      `docker compose logs sighop` — first-run setup creates the first account.
-#      Or, from a terminal: docker compose run --rm -it sighop web user add <name>
+#      `docker compose logs sighop` — first-run setup creates the account. It is
+#      the only one: sighop cannot add another or change its password at present.
 
 services:
   sighop:
@@ -46,31 +46,24 @@ services:
     init: true
     stop_grace_period: 20s
     restart: unless-stopped
-    # The allowed host names carry the published port, which is what a browser
-    # sends. Compose cannot drop an argument whose variable is unset, so the last
-    # one defaults to a name already listed and sighop ignores the duplicate.
-    command:
-      - run
-      - --migrate
-      - --device
-      - /dev/modem
-      - --web
-      - --web-host
-      - 0.0.0.0
-      - --web-port
-      - "8080"
-      - --web-allowed-host
-      - localhost:${SIGHOP_WEB_PORT:-8080}
-      - --web-allowed-host
-      - 127.0.0.1:${SIGHOP_WEB_PORT:-8080}
-      - --web-allowed-host
-      - ${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}
+    # No command and no arguments: sighop takes every setting from the
+    # environment and refuses an argument. Starting it applies outstanding
+    # migrations, so starting the container is the deploy.
     ports:
       - "${SIGHOP_WEB_BIND:-127.0.0.1}:${SIGHOP_WEB_PORT:-8080}:8080"
     environment:
       DATABASE_URL: "${DATABASE_URL:?set DATABASE_URL to the database's postgresql+asyncpg URL}"
-      SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?set SIGHOP_SECRET_KEY, e.g. from sighop keys secret}"
+      SIGHOP_SECRET_KEY: "${SIGHOP_SECRET_KEY:?set SIGHOP_SECRET_KEY, e.g. from openssl rand -base64 32}"
       SIGHOP_PATH_HASH_SIZE: "${SIGHOP_PATH_HASH_SIZE:-}"
+      # Inside the container the modem is always /dev/modem; the host's own path
+      # is SIGHOP_MODEM in ./.env, used by `devices:` above.
+      SIGHOP_MODEM: /dev/modem
+      SIGHOP_WEB_HOST: 0.0.0.0
+      SIGHOP_WEB_PORT: "8080"
+      # The allowed host names carry the published port, which is what a browser
+      # sends. Compose cannot drop an entry whose variable is unset, so the last
+      # one defaults to a name already listed and sighop ignores the duplicate.
+      SIGHOP_WEB_ALLOWED_HOSTS: "localhost:${SIGHOP_WEB_PORT:-8080},127.0.0.1:${SIGHOP_WEB_PORT:-8080},${SIGHOP_WEB_ALLOWED_HOST:-localhost:${SIGHOP_WEB_PORT:-8080}}"
     logging:
       driver: json-file
       options:

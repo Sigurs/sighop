@@ -97,20 +97,18 @@ authenticated: anyone holding a channel's key can claim any name.</p>
 <div class="table-wrap">
   <table>
     <thead>
-      <tr><th>channel</th>{% if not no_database %}<th>kind</th>{% endif %}<th>hash</th><th>key</th>
-          {% if not no_database %}<th class="num">messages</th><th>loaded</th>{% endif %}<th></th></tr>
+      <tr><th>channel</th><th>kind</th><th>hash</th><th>key</th>
+          <th class="num">messages</th><th>loaded</th><th></th></tr>
     </thead>
     <tbody>
       {% for row in channels %}
       <tr{% if row.new %} class="conversation-new"{% endif %}>
         <td>{{ row.name }}</td>
-        {% if not no_database %}<td class="mono">{{ row.kind or '—' }}</td>{% endif %}
+        <td class="mono">{{ row.kind or '—' }}</td>
         <td class="mono">{{ '%02x' % row.channel_hash }}</td>
         <td>{% if row.guessable %}{{ display.status(guessable_status) }}{% else %}pre-shared{% endif %}</td>
-        {% if not no_database %}
         <td class="num">{{ row.messages if row.messages is not none else '—' }}</td>
         <td class="mono">{{ 'yes' if row.loaded else 'not loaded' }}</td>
-        {% endif %}
         <td>
           {% if row.loaded %}
           <a href="/chat/channel/{{ row.id }}">open</a>
@@ -138,9 +136,6 @@ authenticated: anyone holding a channel's key can claim any name.</p>
 <p class="unavailable">Channel {{ name }} is stored but not loaded: its pre-shared key does not open under SIGHOP_SECRET_KEY.</p>
 {% endfor %}
 
-{% if no_database %}
-<p class="unavailable"><strong>No channel administration.</strong> {{ no_database_note }}</p>
-{% else %}
 {# What "guessable" means was stated here as well as on every guessable row's
    own marking, which carries it on hover, and again in the hashtag form where
    it is the thing being decided. Said once per place it matters, rather than
@@ -189,6 +184,7 @@ authenticated: anyone holding a channel's key can claim any name.</p>
       <input class="mono" type="password" name="key" required autocomplete="off">
     </label>
   </p>
+  <p class="note">{{ psk_note }}</p>
   <button type="submit">add pre-shared-key channel</button>
 </form>
 
@@ -205,9 +201,8 @@ authenticated: anyone holding a channel's key can claim any name.</p>
 {% endif %}
 </details>
 
-<h2>channel keys are not shown here</h2>
+<h2>channel keys are never shown</h2>
 <p class="note">{{ keys_note }}</p>
-{% endif %}
 
 {{ identity.verification_legend() }}
 {% endblock %}

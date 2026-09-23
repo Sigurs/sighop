@@ -10,6 +10,7 @@ silent-drop failure DESIGN.md §4.3 rules out.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 import io
 import json
@@ -29,8 +30,11 @@ from sighop.protocol.payloads import NodeType
 from sighop.radio.modem import EU868_NARROW, ModemEvent, TransmitDone
 from sighop.radio.replay import CaptureReplay
 from sighop.runtime import Runtime, RuntimeConfig
+from tests.dbfixtures import the_default_persistence
 from tests.protocol.corpus import CAPTURES_DIR
 from tests.test_tx import ManualClock, RecordingLogger, RecordingSender
+
+pytestmark = pytest.mark.usefixtures("default_persistence")
 
 CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
 
@@ -80,10 +84,9 @@ def runtime(
         clock=clock or ManualClock(),
         out=out or io.StringIO(),
         logger=RecordingLogger(),
-        # None is the milestone-4 shape and stays the default: every existing
-        # test here runs with no database, which is the property the proposal
-        # asked for.
-        persistence=persistence,
+        # A database is required, so a test that brings no rows of its own
+        # runs against the emptied one its module's `default_persistence` gives.
+        persistence=persistence if persistence is not None else the_default_persistence(),
         entity_loader=entity_loader,
         webhook_secret=webhook_secret,
     )
@@ -307,49 +310,6 @@ async def test_without_a_readback_nothing_is_admitted_even_with_transmit_on() ->
 # --- The CLI ---------------------------------------------------------------
 
 
-def test_run_requires_a_source() -> None:
-    from sighop.cli import build_parser
-
-    with pytest.raises(SystemExit):
-        build_parser().parse_args(["run"])
-
-
-def test_transmit_is_off_unless_the_flag_is_given() -> None:
-    from sighop.cli import build_parser
-
-    parser = build_parser()
-    assert parser.parse_args(["run", "--replay", str(CAPTURE)]).enable_transmit is False
-    assert (
-        parser.parse_args(["run", "--replay", str(CAPTURE), "--enable-transmit"]).enable_transmit
-        is True
-    )
-
-
-def test_the_default_ceiling_is_ten_percent() -> None:
-    from sighop.cli import build_parser
-
-    args = build_parser().parse_args(["run", "--replay", str(CAPTURE)])
-    assert args.duty_cycle_ceiling == 0.10
-
-
-def test_the_replay_run_reads_the_radio_from_the_capture_header() -> None:
-    from sighop.cli import _replay_radio
-
-    replay = CaptureReplay.open(CAPTURE)
-    radio = _replay_radio(replay.provenance)
-
-    assert radio is not None
-    assert radio.sf == 8
-    assert radio.bw_hz == 62_500
-
-
-def test_a_headerless_capture_reports_no_radio() -> None:
-    from sighop.cli import _replay_radio
-
-    assert _replay_radio(None) is None
-    assert _replay_radio({}) is None
-
-
 # --- Capture ---------------------------------------------------------------
 
 
@@ -378,6 +338,7 @@ async def test_the_runtime_writes_a_capture_with_its_provenance_header(tmp_path)
     run = Runtime(
         source=_events(),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600),
         radio=PRESET,
         clock=ManualClock(),
@@ -397,49 +358,22 @@ async def test_the_runtime_writes_a_capture_with_its_provenance_header(tmp_path)
     assert writer.rx_count > 0
 
 
-def test_capture_is_refused_for_a_replay_source(capsys) -> None:
-    """A capture is evidence of a session on the air, not a copy of a file."""
-    from sighop.cli import main
+async def test_a_run_reports_the_path_hash_size_from_the_environment() -> None:
+    from sighop.boot import runtime_config
+    from sighop.config import Config, DatabaseConfig
 
-    code = main(["run", "--replay", str(CAPTURE), "--capture", "/tmp/nope.jsonl"])
+    config = Config(
+        database=DatabaseConfig(url="postgresql+asyncpg://r:p@h/d"), path_hash_size_raw="1"
+    )
+    out = io.StringIO()
+    run = runtime(
+        _events(),
+        config=dataclasses.replace(runtime_config(config), status_interval=3600, advert_tick=3600),
+        out=out,
+    )
+    await run.run()
 
-    assert code == 2
-    assert "cannot be combined with --replay" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("value", ["4", "three"])
-def test_an_invalid_path_hash_size_fails_the_run_before_the_pipeline_starts(
-    capsys, monkeypatch, value: str
-) -> None:
-    from sighop.cli import main
-
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("SIGHOP_PATH_HASH_SIZE", value)
-
-    def _refuse(self: Runtime) -> None:
-        raise AssertionError("the pipeline started with an invalid path hash size")
-
-    monkeypatch.setattr(Runtime, "run", _refuse)
-    code = main(["run", "--replay", str(CAPTURE), "--status-interval", "3600"])
-
-    assert code == 2
-    captured = capsys.readouterr()
-    assert "SIGHOP_PATH_HASH_SIZE" in captured.err
-    assert repr(value) in captured.err
-    assert "1, 2, 3" in captured.err
-    assert captured.out == ""
-
-
-def test_a_run_reports_the_path_hash_size_from_the_environment(capsys, monkeypatch) -> None:
-    from sighop.cli import main
-
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setenv("SIGHOP_PATH_HASH_SIZE", "1")
-
-    code = main(["run", "--replay", str(CAPTURE), "--status-interval", "3600"])
-
-    assert code == 0
-    assert "path hash size 1 byte (SIGHOP_PATH_HASH_SIZE)" in capsys.readouterr().out
+    assert "path hash size 1 byte (SIGHOP_PATH_HASH_SIZE)" in out.getvalue()
 
 
 # --- The radio-readiness signal (design D1) --------------------------------
@@ -471,6 +405,7 @@ async def test_the_radio_signal_is_not_the_startup_signal() -> None:
     run = Runtime(
         source=_never_ends(),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600),
         sender=RecordingSender(),
         radio=None,
@@ -535,12 +470,6 @@ async def test_renaming_an_identity_this_run_does_not_hold_reports_so() -> None:
 # --- 3.1 `entity_loader`, mirroring `channel_loader` (design D2) -----------
 
 
-async def test_a_run_with_no_database_gets_no_entity_loader() -> None:
-    run = runtime(_events(CAPTURE))
-
-    assert run.entity_loader is None
-
-
 async def test_a_run_with_a_database_but_no_secret_gets_no_entity_loader() -> None:
     """A missing `SIGHOP_SECRET_KEY` means there is nothing to open; defaulting
     anyway would give reconcile a loader that only ever fails. Never opened —
@@ -560,7 +489,6 @@ async def test_a_run_with_a_database_but_no_secret_gets_no_entity_loader() -> No
     assert run.entity_loader is None
 
 
-@pytest.mark.database
 async def test_a_run_with_a_database_and_a_secret_gets_an_entity_loader(
     database: Database,
 ) -> None:

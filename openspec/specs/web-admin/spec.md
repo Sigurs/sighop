@@ -9,7 +9,6 @@ transmit gate, raising the airtime ceiling — so it is where those actions are 
 recorded.
 
 ## Requirements
-
 ### Requirement: Configuration writes go through the same rules the command line uses
 The system SHALL apply every configuration change made through the interface using the same
 validation, uniqueness and refusal rules that the command line applies for the same change, so that
@@ -326,21 +325,22 @@ sent in this run, and, while one is active, the override's interval and expiry.
 - **WHEN** a flood advert has just been requested for an identity through the interface
 - **THEN** the identities page shows its last flood as that request and its next scheduled flood one interval later
 
-### Requirement: Webhooks are configured through the interface
+### Requirement: Webhooks are configured only through the interface
 The system SHALL list the configured webhooks with their name, format, triggers, hop limit, enabled
 state, target shown as scheme and host only, and last successful and last failed delivery with the
 failure reason; SHALL allow adding one, enabling and disabling it, changing its triggers, format and
 hop limit, replacing its URL, removing it, and sending it a sample event of a chosen trigger with
 the outcome shown. A stored URL SHALL NOT be rendered in full anywhere in the interface, including
-in a form re-shown after a refused change. Removing a webhook SHALL be confirmed explicitly.
+in a form re-shown after a refused change. Removing a webhook SHALL be confirmed explicitly. The
+interface is the only surface through which a webhook is configured.
 
 #### Scenario: Adding a webhook
 - **WHEN** a webhook is added through the interface
-- **THEN** its stored result is indistinguishable from the same webhook added through the command line
+- **THEN** it is stored with the name, format, triggers, hop limit and target submitted, and the running process delivers to it without a restart
 
 #### Scenario: A refused URL
 - **WHEN** a webhook is submitted with a URL whose scheme is not `http` or `https`
-- **THEN** the change is refused for the same reason the command line gives, and nothing is stored
+- **THEN** the change is refused naming the reason, and nothing is stored
 
 #### Scenario: Viewing a stored webhook
 - **WHEN** the webhooks page is opened
@@ -350,22 +350,19 @@ in a form re-shown after a refused change. Removing a webhook SHALL be confirmed
 - **WHEN** an operator sends a sample event to a webhook
 - **THEN** the page shows whether it was delivered, with the HTTP status or the failure reason
 
-#### Scenario: No database configured
-- **WHEN** the webhooks page is opened on a run with no database
-- **THEN** the page states that webhooks require durable storage and offers no controls
-
-### Requirement: Channels are configured through the interface
+### Requirement: Channels are configured only through the interface
 The system SHALL administer channels from the chat page: it SHALL list the stored channels there
 with their name, kind, channel hash, guessable marking and recorded message count, including a
 stored channel this run could not load; SHALL allow adding a channel from a hashtag or from a
 pasted pre-shared key, and re-adding the Public channel if it was removed; and SHALL allow removing
 a channel through an explicit confirmation that states how many messages will be deleted. A write
 to a channel SHALL return the operator to the chat page. A stored pre-shared key SHALL NOT be
-rendered anywhere in the interface, including in a form re-shown after a refused addition.
+rendered anywhere in the interface, including in a form re-shown after a refused addition. The
+interface is the only surface through which a channel is configured.
 
 #### Scenario: Adding a channel
 - **WHEN** a channel is added through the interface
-- **THEN** its stored result is indistinguishable from the same channel added through the command line, and the running process decrypts on it without restart
+- **THEN** it is stored with the kind, key and name submitted, and the running process decrypts on it without a restart
 
 #### Scenario: Adding a hashtag channel
 - **WHEN** a hashtag channel is added through the interface
@@ -373,15 +370,11 @@ rendered anywhere in the interface, including in a form re-shown after a refused
 
 #### Scenario: A refused pre-shared key
 - **WHEN** a pasted pre-shared key is refused
-- **THEN** the chat page is re-shown with the reason the command line gives and with the key field empty
+- **THEN** the chat page is re-shown naming the reason and with the key field empty
 
 #### Scenario: Viewing stored channels
 - **WHEN** the chat page is opened
 - **THEN** no pre-shared key, in any encoding, is present in the page source
-
-#### Scenario: No database configured
-- **WHEN** the chat page is opened on a run with no database
-- **THEN** the page states that channels require durable storage and offers no channel administration controls
 
 ### Requirement: Rooms and bots are deleted through the interface, and the cost is counted first
 The system SHALL allow deleting a room and deleting a bot through the interface. Each SHALL be a

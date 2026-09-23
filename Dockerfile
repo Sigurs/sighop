@@ -89,8 +89,9 @@ ENV SIGHOP_ALEMBIC_DIR=/app/alembic \
 
 WORKDIR /app
 
-# No USER, by design (container-image). The entry point is the command, so the
-# container's arguments are sighop's, and it runs as PID 1's child under
-# compose's `init: true`, which forwards SIGTERM to the platform's own handler.
+# No USER, by design (container-image). The entry point boots the node and takes
+# no arguments — every setting arrives in the environment, and an argument is
+# refused rather than interpreted — so there is no CMD. It runs as PID 1's child
+# under compose's `init: true`, which forwards SIGTERM to the platform's own
+# handler, and it applies outstanding migrations as part of starting.
 ENTRYPOINT ["sighop"]
-CMD ["--help"]

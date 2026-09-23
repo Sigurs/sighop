@@ -80,7 +80,6 @@
 </p>
 {% endif %}
 
-{% if database %}
 <h2>create a room</h2>
 {% if not hosts %}
 <p class="empty">
@@ -136,10 +135,8 @@
   <button type="submit">create room</button>
 </form>
 <p class="note">
-  The passwords are stored as Argon2id hashes and cannot be recovered. This is
-  the call <span class="mono">sighop room create</span> makes, so every rule it
-  applies applies here.
+  The passwords are stored as Argon2id hashes and cannot be recovered. Every
+  rule the room store applies to a new room applies here.
 </p>
-{% endif %}
 {% endif %}
 {% endblock %}

@@ -23,6 +23,7 @@ from sighop.net.contacts import (
 from sighop.protocol.crypto import AdvertVerificationFailure, sign_advert, verify_advert
 from sighop.protocol.identity import LocalIdentity, generate_identity
 from sighop.protocol.payloads import NodeType, build_appdata
+from tests.dbfixtures import the_default_persistence
 
 NOW = dt.datetime(2026, 9, 5, 20, 0, tzinfo=dt.UTC)
 
@@ -249,6 +250,7 @@ def test_an_unknown_reference_says_the_advert_may_not_have_been_heard() -> None:
 # --- The bus ---------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("default_persistence")
 async def test_replaying_a_corpus_file_populates_contacts() -> None:
     """The advert path against real traffic, end to end through the bus."""
     import io
@@ -263,6 +265,7 @@ async def test_replaying_a_corpus_file_populates_contacts() -> None:
     run = Runtime(
         source=_events(CAPTURES_DIR / "2026-09-04-03.jsonl"),
         startup=_startup,
+        persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600),
         radio=EU868_NARROW,
         clock=ManualClock(),
