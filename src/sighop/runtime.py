@@ -78,6 +78,7 @@ from sighop.net.channels import (
     ChannelUndecryptable,
     ChannelUnknown,
 )
+from sighop.net.collect import RepeaterCollector
 from sighop.net.contacts import Contact, ContactError, ContactStore
 from sighop.net.dedup import DedupCache
 from sighop.net.dm import (
@@ -277,6 +278,9 @@ class Runtime:
     channels: ChannelMessenger = field(init=False)
     acks: AckRegistry = field(init=False)
     path_bodies: PathBodyReader = field(init=False)
+    collector: RepeaterCollector | None = field(init=False, default=None)
+    """Repeater collection (repeater-metrics D1). `None` on a replay: a replay
+    never transmits collection traffic, whatever the stored settings say."""
     rooms: list[RoomServer] = field(init=False, default_factory=list)
     _room_messages: dict[str, int] = field(init=False, default_factory=dict)
     _room_subscriptions: dict[uuid.UUID, Subscription] = field(init=False, default_factory=dict)
@@ -424,6 +428,25 @@ class Runtime:
             acks=self.acks,
             logger=self.logger,
         )
+        if not self.config.replay:
+            self.collector = RepeaterCollector(
+                contacts=self.contacts,
+                paths=self.pipeline.paths,
+                submit=self.bus.submit,
+                settings=self.persistence.repeater_collection,
+                targets=self.persistence.repeater_targets,
+                polls=self.persistence.repeater_polls,
+                transmit_enabled=lambda: self.scheduler.transmit_enabled,
+                entities=self.adverts.stubs,
+                clock=self.clock,
+                radio=self.radio,
+                radio_ready=self._radio_ready,
+                path_hash_size=self.config.path_hash_size,
+                logger=self.logger,
+            )
+            # A flooded request is answered inside the path return; the reader
+            # adopts the route and hands the answer on.
+            self.path_bodies.on_bundled_response = self.collector.on_bundled_response
         # Design D1/D2: bots ride on the messenger's reports and the contact
         # store's observations. The host exists before `_restore` so the
         # listener can be wired before the first frame is handled; it holds no
@@ -441,6 +464,8 @@ class Runtime:
         self.channels.subscribe(self.bus)
         self.pipeline.observers.append(self.channels.observe)
         self.path_bodies.subscribe(self.bus)
+        if self.collector is not None:
+            self.collector.subscribe(self.bus)
         AckDispatcher(registry=self.acks).subscribe(self.bus)
         if self.config.advert_override_seconds is not None:
             for stub in self.adverts.stubs:
@@ -564,6 +589,8 @@ class Runtime:
         self._room_messages.pop(server.room.name, None)
         self.messenger.release_from_room(server.entity.entity_id)
         self.path_bodies.release_from_room(server.entity.entity_id)
+        if self.collector is not None:
+            self.collector.release_from_room(server.entity.entity_id)
         return True
 
     async def stop_bot(self, bot_id: uuid.UUID) -> bool:
@@ -898,6 +925,8 @@ class Runtime:
         self.scheduler.set_radio(radio)
         self.pipeline.radio = radio
         self.messenger.set_radio(radio)
+        if self.collector is not None:
+            self.collector.set_radio(radio)
         for room in self.rooms:
             room.radio = radio
             room.radio_ready = self._radio_ready
@@ -931,6 +960,8 @@ class Runtime:
         ]
         if self.webhooks is not None:
             tasks.append(asyncio.create_task(self.webhooks.run(), name="webhooks"))
+        if self.collector is not None:
+            tasks.append(asyncio.create_task(self.collector.run(), name="repeater-collection"))
         if self.channel_loader is not None:
             tasks.append(asyncio.create_task(self._channel_refresh_loop(), name="channels"))
         if self.entity_loader is not None:
@@ -953,6 +984,8 @@ class Runtime:
         finally:
             # Order matters: stop scheduling before tearing down the loop, so
             # every queued packet is resolved and logged rather than abandoned.
+            if self.collector is not None:
+                self.collector.stop()
             await self.scheduler.stop()
             for task in (consume, stopping, *tasks):
                 if not task.done():
@@ -1122,6 +1155,11 @@ class Runtime:
             stored = None if record is None else self._held_entities.get(record.entity_id)
             if stored is None or stored.public_key != server.entity.identity.public_key:
                 await self.stop_serving_room(server.room.id)
+            elif record is not None and record != server.room:
+                # Design D10: access, retention and delivery are read from the
+                # record where they are used, so a served room takes up a
+                # stored change here rather than at the next restart.
+                server.apply_record(record)
 
         served_ids = {server.room.id for server in self.rooms}
         for record in listed.value:
@@ -1297,6 +1335,12 @@ class Runtime:
             return False
         return True
 
+    def _advert_last_heard(self, public_key: bytes) -> dt.datetime | None:
+        """When an advert from this key was last received — a room member's
+        recency counts adverts as well as room activity (design D9)."""
+        contact = self.contacts.get(public_key)
+        return None if contact is None else contact.last_heard
+
     async def _serve_room(self, record: RoomRecord, stored: LoadedEntity) -> None:
         entity = next(
             (stub for stub in self.adverts.stubs if stub.identity.public_key == stored.public_key),
@@ -1321,6 +1365,7 @@ class Runtime:
             on_event=self._on_room_event,
             logger=self.logger,
             path_hash_size=self.config.path_hash_size,
+            last_heard=self._advert_last_heard,
         )
         counted = await self.persistence.messages.count(record.id)
         self._room_messages[record.name] = counted.value if isinstance(counted, Succeeded) else 0
@@ -1330,6 +1375,8 @@ class Runtime:
         # here, at wiring time, which is when the ambiguity is resolvable.
         self.messenger.claim_for_room(entity.entity_id)
         self.path_bodies.claim_for_room(entity.entity_id)
+        if self.collector is not None:
+            self.collector.claim_for_room(entity.entity_id)
         self.rooms.append(server)
 
     # --- Loops -------------------------------------------------------------
@@ -1642,6 +1689,9 @@ class Runtime:
                 refusals=room.throttle.refusals,
                 pruned=room.storage.messages.pruned,
                 pruned_unsynced=room.storage.messages.pruned_unsynced,
+                not_recent=room.members_not_recent(),
+                push_ack_window_seconds=room.room.push_ack_window_seconds,
+                push_recent_days=room.room.push_recent_days,
             )
             for room in self.rooms
         ]

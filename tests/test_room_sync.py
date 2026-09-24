@@ -11,11 +11,17 @@ Two properties carry this group, and both are about what *does not* happen:
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+from dataclasses import replace
 
-from sighop.net.acks import AckRegistry
-from sighop.net.bus import PriorityClass, TxResult
-from sighop.net.paths import PathStore
+import pytest
+
+from sighop.db.repositories import RoomRecord
+from sighop.net.acks import AckRegistry, AckUnowned
+from sighop.net.bus import PriorityClass, TxOutcome, TxResult
+from sighop.net.dm import Route
+from sighop.net.paths import LearnedPath, PathKey, PathStore
 from sighop.net.room import (
     MAX_PUSH_FAILURES,
     POST_SYNC_DELAY_SECS,
@@ -52,14 +58,16 @@ def server_with_members(
     *members: Entity,
     server_entity: Entity,
     storage: MemoryStorage | None = None,
-    submit: RecordingSubmit | None = None,
+    submit: RecordingSubmit | HeldSubmit | None = None,
     events: list | None = None,
     acks: AckRegistry | None = None,
     clock: TickingClock | None = None,
     routes: bool = True,
     sync_since: int = 0,
+    room: RoomRecord | None = None,
+    last_heard=None,
 ) -> RoomServer:
-    room = room_record()
+    room = room or room_record()
     paths = PathStore()
     if routes:
         for member in members:
@@ -90,6 +98,7 @@ def server_with_members(
         radio=EU868_NARROW,
         on_event=events.append if events is not None else None,
         logger=RecordingLogger(),
+        last_heard=last_heard,
     )
 
 
@@ -500,3 +509,568 @@ async def test_a_forced_position_causes_redelivery_from_that_point() -> None:
     assert await server.push_once() is True
     _envelope, plaintext = decrypt_push(server, alice, submit.submissions[0].packet)
     assert plaintext[:4] == first.to_bytes(4, "little")
+
+
+# --- The window starts at the end of transmission ---------------------------
+
+
+class _HeldHandle:
+    def __init__(self, future: asyncio.Future[TxOutcome]) -> None:
+        self.future = future
+
+    def __await__(self):
+        return self.future.__await__()
+
+
+class HeldSubmit:
+    """Stands in for the scheduler, but a handle resolves only when told to —
+    the push is queued or on air until `transmit` is called."""
+
+    def __init__(self) -> None:
+        self.submissions: list = []
+        self.futures: list[asyncio.Future[TxOutcome]] = []
+
+    def __call__(self, submission):
+        self.submissions.append(submission)
+        future: asyncio.Future[TxOutcome] = asyncio.get_running_loop().create_future()
+        self.futures.append(future)
+        return _HeldHandle(future)
+
+    def transmit(self, result: TxResult = TxResult.TRANSMITTED) -> None:
+        self.futures[-1].set_result(
+            TxOutcome(
+                result=result,
+                packet_id=f"pkt{len(self.submissions)}",
+                airtime_ms=1.0,
+                queue_wait_ms=0.0,
+                attempts=1,
+            )
+        )
+
+
+def fixed_attempts(monkeypatch: pytest.MonkeyPatch, *values: int) -> None:
+    """Make the push's random `attempt` a known sequence, so two attempts of
+    one post are known to expect different acknowledgements."""
+    queue = list(values)
+    monkeypatch.setattr(
+        "sighop.net.room.secrets.randbelow", lambda _n: queue.pop(0) if queue else 0
+    )
+
+
+def checksum_of(server: RoomServer, member: Entity, packet: bytes) -> bytes:
+    _envelope, plaintext = decrypt_push(server, member, packet)
+    return ack_checksum(plaintext, member.identity.public_key)
+
+
+def ack(acks: AckRegistry, checksum: bytes, *, at: dt.datetime = START):
+    return acks.deliver(Acknowledgement(checksum=checksum), packet_id="ackpkt", received_at=at)
+
+
+async def test_a_push_held_in_the_queue_past_its_window_is_not_expired() -> None:
+    """A push that waits behind other traffic still gets its full window after
+    transmission, and an acknowledgement within it advances the cursor."""
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = HeldSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    stamp = await seed_post(server, storage, author=Entity("author").identity.public_key)
+    key = alice.identity.public_key
+
+    pushing = asyncio.create_task(server.push_once())
+    await asyncio.sleep(0)
+    assert len(submit.submissions) == 1
+    window = _push_timeout_ms(server._route_to(server.members[key]))
+
+    # Queued for longer than the whole window.
+    clock.advance(window / 1000 + 30)
+    await server.push_once()
+    assert server._state[key].delivery is not None, "a queued push timed out"
+    assert server._state[key].failures == 0
+
+    submit.transmit()
+    assert await pushing is True
+    transmitted_at = clock.now()
+    delivery = server._state[key].delivery
+    assert delivery is not None
+    assert delivery.transmitted_at == transmitted_at
+    assert delivery.deadline == transmitted_at + dt.timedelta(milliseconds=window)
+
+    # Answered just inside the window counted from transmission.
+    clock.advance(window / 1000 - 1)
+    await server.push_once()
+    assert server._state[key].delivery is not None
+    ack(acks, checksum_of(server, alice, submit.submissions[0].packet), at=clock.now())
+
+    assert server.members[key].sync_since == stamp
+    assert len(submit.submissions) == 1, "the push was retried"
+
+
+async def test_a_push_still_awaiting_its_handle_never_counts_as_a_failure() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = HeldSubmit()
+    clock = TickingClock(START)
+    events: list = []
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, clock=clock, events=events
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    pushing = asyncio.create_task(server.push_once())
+    await asyncio.sleep(0)
+    for _ in range(MAX_PUSH_FAILURES + 2):
+        clock.advance(600)
+        await server.push_once()
+
+    state = server._state[alice.identity.public_key]
+    assert state.failures == 0
+    assert state.backed_off is False
+    assert [event for event in events if isinstance(event, MemberBackedOff)] == []
+    assert len(submit.submissions) == 1
+    submit.transmit()
+    await pushing
+
+
+async def test_a_dropped_push_starts_no_window_and_counts_no_failure() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit(TxResult.DROPPED)
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    assert await server.push_once() is False
+    state = server._state[alice.identity.public_key]
+    assert state.delivery is None
+    assert state.prior == {}
+    assert acks.outstanding() == 0
+
+    clock.advance(60)
+    await server.push_once()
+    assert state.failures == 0
+    assert len(submit.submissions) == 2, "the dropped post was not tried again"
+
+
+# --- A late acknowledgement of an earlier attempt still confirms the post ---
+
+
+async def test_an_expired_attempt_stays_registered() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    await server.push_once()
+    first = checksum_of(server, alice, submit.submissions[0].packet)
+    clock.advance(60)
+    server._expire_deliveries()
+
+    assert server._state[alice.identity.public_key].failures == 1
+    assert acks.owner_of(first) == server.subscriber_name
+    assert acks.outstanding() == 1
+
+
+async def test_the_first_attempts_ack_arriving_during_the_retry_confirms_the_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_attempts(monkeypatch, 0, 1)
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    events: list = []
+    server = server_with_members(
+        alice,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        acks=acks,
+        clock=clock,
+        events=events,
+    )
+    stamp = await seed_post(server, storage, author=Entity("author").identity.public_key)
+    key = alice.identity.public_key
+
+    await server.push_once()
+    first = checksum_of(server, alice, submit.submissions[0].packet)
+    clock.advance(60)
+    await server.push_once()  # expires attempt 1, submits the retry
+    assert len(submit.submissions) == 2
+    retry = checksum_of(server, alice, submit.submissions[1].packet)
+    assert retry != first
+
+    matched = ack(acks, first, at=clock.now())
+
+    assert not isinstance(matched, AckUnowned)
+    assert acks.logger.of("ack_unmatched") == []
+    state = server._state[key]
+    assert server.members[key].sync_since == stamp
+    assert state.delivery is None, "the retry is still outstanding"
+    assert state.failures == 0
+    assert acks.owner_of(retry) is None
+    assert acks.owner_of(first) is None
+    acknowledged = next(event for event in events if isinstance(event, DeliveryAcknowledged))
+    assert acknowledged.late is True
+    await asyncio.sleep(0)
+    assert storage.members.of(server.room.id)[0].sync_since == stamp
+
+
+async def test_after_confirmation_another_attempts_ack_moves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_attempts(monkeypatch, 0, 1, 2)
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    author = Entity("author").identity.public_key
+    stamp = await seed_post(server, storage, author=author, at=NOW - 100)
+    await seed_post(server, storage, author=author, at=NOW - 90)
+    key = alice.identity.public_key
+
+    checksums = []
+    for _ in range(3):
+        await server.push_once()
+        checksums.append(checksum_of(server, alice, submit.submissions[-1].packet))
+        clock.advance(60)
+    # Attempts 1 and 2 have expired; attempt 3 is live.
+
+    ack(acks, checksums[0])
+    assert server.members[key].sync_since == stamp
+
+    again = ack(acks, checksums[1])
+    assert isinstance(again, AckUnowned)
+    assert server.members[key].sync_since == stamp
+    assert server.pushes_acknowledged == 1
+
+
+async def test_a_forced_cursor_change_releases_earlier_attempts() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    stamp = await seed_post(server, storage, author=Entity("author").identity.public_key)
+    key = alice.identity.public_key
+
+    await server.push_once()
+    first = checksum_of(server, alice, submit.submissions[0].packet)
+    clock.advance(60)
+    server._expire_deliveries()
+    assert acks.owner_of(first) == server.subscriber_name
+
+    server._set_cursor(server.members[key], stamp + 10)
+
+    assert acks.owner_of(first) is None
+    assert server._state[key].prior == {}
+
+
+async def test_composing_a_different_post_releases_earlier_attempts() -> None:
+    """Retention removed the pending post, so the next push is another one."""
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    author = Entity("author").identity.public_key
+    await seed_post(server, storage, author=author, at=NOW - 100)
+    second = await seed_post(server, storage, author=author, at=NOW - 90)
+
+    await server.push_once()
+    first = checksum_of(server, alice, submit.submissions[0].packet)
+    clock.advance(60)
+    await storage.messages.prune(server.room.id, retention_days=None, retention_messages=1)
+    await server.push_once()
+
+    _envelope, plaintext = decrypt_push(server, alice, submit.submissions[1].packet)
+    assert plaintext[:4] == second.to_bytes(4, "little")
+    assert acks.owner_of(first) is None
+
+
+async def test_revoking_a_member_releases_its_attempts() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    await server.push_once()
+    clock.advance(60)
+    await server.push_once()  # one expired attempt, one live
+    assert acks.outstanding() >= 1
+
+    await server.revoke(alice.identity.public_key)
+
+    assert acks.outstanding() == 0
+
+
+async def test_a_backed_off_member_resumes_when_an_earlier_ack_arrives_late(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_attempts(monkeypatch, 0, 1, 2)
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    author = Entity("author").identity.public_key
+    stamp = await seed_post(server, storage, author=author, at=NOW - 100)
+    await seed_post(server, storage, author=author, at=NOW - 90)
+    key = alice.identity.public_key
+
+    for _ in range(MAX_PUSH_FAILURES):
+        await server.push_once()
+        clock.advance(60)
+    await server.push_once()
+    state = server._state[key]
+    assert state.backed_off is True
+
+    ack(acks, checksum_of(server, alice, submit.submissions[1].packet))
+
+    assert state.failures == 0
+    assert state.backed_off is False
+    assert server.members[key].sync_since == stamp
+    assert await server.push_once() is True, "delivery did not resume"
+    assert len(submit.submissions) == MAX_PUSH_FAILURES + 1
+
+
+async def test_delivery_reports_carry_the_window_and_the_time_after_transmission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_attempts(monkeypatch, 0, 1, 2)
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    acks = AckRegistry(logger=RecordingLogger())
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, acks=acks, clock=clock
+    )
+    author = Entity("author").identity.public_key
+    await seed_post(server, storage, author=author, at=NOW - 100)
+    await seed_post(server, storage, author=author, at=NOW - 90)
+    logger = server._log
+    assert isinstance(logger, RecordingLogger)
+
+    await server.push_once()
+    window = _push_timeout_ms(server._route_to(server.members[alice.identity.public_key]))
+    assert logger.of("room_push_sent")[0]["ack_window_ms"] == window
+
+    # On time: 2.5 s after transmission, matching the live attempt.
+    ack(
+        acks,
+        checksum_of(server, alice, submit.submissions[0].packet),
+        at=clock.now() + dt.timedelta(seconds=2.5),
+    )
+    on_time = logger.of("room_delivery_acknowledged")[0]
+    assert on_time["ack_after_tx_ms"] == 2500.0
+    assert on_time["late"] is False
+
+    # Late: the next post's first attempt expires, a retry goes out, and the
+    # first attempt's acknowledgement arrives 70 s after it was transmitted.
+    await server.push_once()
+    first_at = clock.now()
+    clock.advance(60)
+    await server.push_once()
+    ack(
+        acks,
+        checksum_of(server, alice, submit.submissions[1].packet),
+        at=first_at + dt.timedelta(seconds=70),
+    )
+    late = logger.of("room_delivery_acknowledged")[1]
+    assert late["ack_after_tx_ms"] == 70_000.0
+    assert late["late"] is True
+
+
+# --- The room's own window --------------------------------------------------
+
+
+def multi_hop_route_to(paths: PathStore, public_key: bytes, hops: int) -> None:
+    paths._insert(
+        PathKey.for_public_key(public_key),
+        LearnedPath(
+            path=bytes(range(1, hops + 1)),
+            hash_size=1,
+            hop_count=hops,
+            snr_db=8.0,
+            confirmed_at=START,
+            packet_id="seed",
+        ),
+    )
+
+
+def test_a_room_window_replaces_the_firmware_formula_for_every_route() -> None:
+    for route in (Route(flood=True), Route(flood=False), Route(flood=False, hop_count=5)):
+        assert _push_timeout_ms(route, 30) == 30_000.0
+    assert _push_timeout_ms(Route(flood=True)) == 12_000.0
+    assert _push_timeout_ms(Route(flood=False, hop_count=2)) == 4_000.0 + 2_000.0 * 3
+
+
+@pytest.mark.parametrize("routing", ["flood", "direct"])
+async def test_a_room_with_a_30_second_window_waits_30_seconds_after_transmission(
+    routing: str,
+) -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        clock=clock,
+        routes=False,
+        room=room_record(push_ack_window_seconds=30),
+    )
+    if routing == "direct":
+        multi_hop_route_to(server.paths, alice.identity.public_key, 4)
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    await server.push_once()
+
+    decoded = decode_packet(submit.submissions[0].packet)
+    expected_type = RouteType.FLOOD if routing == "flood" else RouteType.DIRECT
+    assert decoded.route_type is expected_type
+    delivery = server._state[alice.identity.public_key].delivery
+    assert delivery is not None
+    assert delivery.deadline == clock.now() + dt.timedelta(seconds=30)
+
+
+# --- Only members heard recently --------------------------------------------
+
+
+async def test_a_member_not_heard_within_the_limit_is_skipped_and_resumes_when_heard() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    # The member was last active on 2026-09-05; ten days later it is stale.
+    clock = TickingClock(START + dt.timedelta(days=10))
+    server = server_with_members(
+        alice,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        clock=clock,
+        room=room_record(push_recent_days=7),
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+    key = alice.identity.public_key
+
+    for _ in range(3):
+        assert await server.push_once() is False
+    assert submit.submissions == []
+    assert server._state[key].failures == 0
+    assert server.members[key].sync_since == 0
+    assert server.members_not_recent() == 1
+    assert server.as_json()["members_not_recent"] == 1
+    assert server.as_json()["push_recent_days"] == 7
+
+    server._note_activity(server.members[key])
+    assert server.members_not_recent() == 0
+    assert await server.push_once() is True
+
+
+async def test_a_member_heard_only_by_advert_is_eligible() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    clock = TickingClock(START + dt.timedelta(days=10))
+    adverts: dict[bytes, dt.datetime] = {}
+    server = server_with_members(
+        alice,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        clock=clock,
+        room=room_record(push_recent_days=7),
+        last_heard=adverts.get,
+    )
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    assert await server.push_once() is False
+    adverts[alice.identity.public_key] = clock.now() - dt.timedelta(days=1)
+    assert await server.push_once() is True
+
+
+async def test_with_no_limit_every_member_is_pushed_to_however_long_ago_it_was_heard() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    clock = TickingClock(START + dt.timedelta(days=400))
+    server = server_with_members(alice, server_entity=lounge, storage=storage, clock=clock)
+    await seed_post(server, storage, author=Entity("author").identity.public_key)
+
+    assert await server.push_once() is True
+    assert server.members_not_recent() == 0
+    assert server.as_json()["push_ack_window_seconds"] is None
+
+
+# --- Settings applied to a running room --------------------------------------
+
+
+async def test_a_new_window_applies_to_the_next_push_only() -> None:
+    alice, lounge = Entity("alice"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    clock = TickingClock(START)
+    server = server_with_members(
+        alice, server_entity=lounge, storage=storage, submit=submit, clock=clock
+    )
+    author = Entity("author").identity.public_key
+    stamp = await seed_post(server, storage, author=author, at=NOW - 100)
+    await seed_post(server, storage, author=author, at=NOW - 90)
+    key = alice.identity.public_key
+
+    await server.push_once()
+    outstanding = server._state[key].delivery
+    assert outstanding is not None
+    deadline = outstanding.deadline
+
+    changed = server.apply_record(replace(server.room, push_ack_window_seconds=120))
+
+    assert changed == ["push_ack_window_seconds"]
+    assert server.room.push_ack_window_seconds == 120
+    assert server._state[key].delivery is outstanding
+    assert outstanding.deadline == deadline, "the outstanding push's window moved"
+    logger = server._log
+    assert isinstance(logger, RecordingLogger)
+    assert logger.of("room_settings_applied")[0]["changed"] == ["push_ack_window_seconds"]
+
+    server._clear_delivery(key, advance=True)
+    server._set_cursor(server.members[key], stamp)
+    await server.push_once()
+    following = server._state[key].delivery
+    assert following is not None
+    assert following.deadline == clock.now() + dt.timedelta(seconds=120)
+
+    assert server.apply_record(server.room) == [], "an unchanged record reported a change"

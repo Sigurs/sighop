@@ -24,6 +24,7 @@ import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from sqlalchemy import delete, func, literal, select, tuple_, update
 from sqlalchemy import text as sql_text
@@ -40,6 +41,12 @@ from sighop.db.models import Entity as EntityRow
 from sighop.db.models import Message as MessageRow
 from sighop.db.models import PacketLog as PacketLogRowModel
 from sighop.db.models import Path as PathRow
+from sighop.db.models import (
+    RepeaterCollectionRow,
+    RepeaterNeighbourRow,
+    RepeaterPollRow,
+    RepeaterTargetRow,
+)
 from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
 from sighop.db.models import Webhook as WebhookRow
@@ -69,8 +76,11 @@ from sighop.protocol.payloads import (
     GROUP_NAME_SEPARATOR,
     MAX_ADVERT_DATA_SIZE,
     PERMISSION_ROLE_MASK,
+    REPEATER_STATS_OFFSETS,
+    NeighbourEntry,
     NodeType,
     Permission,
+    RepeaterStats,
     WireText,
 )
 from sighop.webhooks.config import (
@@ -1093,6 +1103,11 @@ class RoomRecord:
     retention_days: int | None
     retention_messages: int | None
     created_at: dt.datetime
+    push_ack_window_seconds: int | None = None
+    """How long a push waits for its acknowledgement after transmission, or
+    `None` for the firmware's flooded and per-hop direct windows."""
+    push_recent_days: int | None = None
+    """Push only to members heard within this many days, or `None` for all."""
 
     @property
     def guest_access(self) -> str:
@@ -1111,6 +1126,20 @@ class RoomRecord:
             bounds.append(f"{self.retention_messages} messages")
         return " and ".join(bounds) if bounds else "unlimited"
 
+    @property
+    def push_ack_window(self) -> str:
+        """ "firmware" said plainly when the room keeps the firmware's windows."""
+        if self.push_ack_window_seconds is None:
+            return "firmware"
+        return f"{self.push_ack_window_seconds} s"
+
+    @property
+    def push_recency(self) -> str:
+        """ "all members" said plainly when no recency limit is set."""
+        if self.push_recent_days is None:
+            return "all members"
+        return f"heard ≤ {self.push_recent_days} d"
+
     def as_json(self) -> dict[str, object]:
         return {
             "room_id": str(self.id),
@@ -1119,6 +1148,8 @@ class RoomRecord:
             "guest_access": self.guest_access,
             "allow_read_only": self.allow_read_only,
             "retention": self.retention,
+            "push_ack_window_seconds": self.push_ack_window_seconds,
+            "push_recent_days": self.push_recent_days,
         }
 
 
@@ -1203,6 +1234,9 @@ class RoomRepository:
             # unknown by accident.
             retention_days=None,
             retention_messages=None,
+            # Both unset: the firmware's windows, and every member is pushed to.
+            push_ack_window_seconds=None,
+            push_recent_days=None,
             created_at=ensure_utc(created_at or dt.datetime.now(dt.UTC), field="room.created_at"),
         )
 
@@ -1333,6 +1367,29 @@ class RoomRepository:
 
         return await self.database.run("set_room_retention", work)
 
+    async def set_delivery(
+        self,
+        room_id: uuid.UUID,
+        *,
+        push_ack_window_seconds: int | None,
+        push_recent_days: int | None,
+    ) -> Outcome[bool]:
+        """Set or clear both delivery settings. `None` for either is its default:
+        the firmware's windows, or pushing to every member."""
+
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                update(RoomRow)
+                .where(RoomRow.id == room_id)
+                .values(
+                    push_ack_window_seconds=push_ack_window_seconds,
+                    push_recent_days=push_recent_days,
+                )
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("set_room_delivery", work)
+
     async def rename(self, room_id: uuid.UUID, name: str) -> Outcome[str | None]:
         """Change one room's name, returning the name it had, or `None`.
 
@@ -1414,6 +1471,8 @@ def _room(row: RoomRow) -> RoomRecord:
         retention_days=row.retention_days,
         retention_messages=row.retention_messages,
         created_at=row.created_at,
+        push_ack_window_seconds=row.push_ack_window_seconds,
+        push_recent_days=row.push_recent_days,
     )
 
 
@@ -3578,4 +3637,413 @@ def _channel_message(row: ChannelMessageRow) -> ChannelMessageRecord:
         repeats_heard=int(row.repeats_heard),
         outcome_reason=row.outcome_reason,
         row_id=int(row.id),
+    )
+
+
+# --- Repeater collection (repeater-metrics) ---------------------------------
+#
+# Settings read by the collector at every tick and written by the system page;
+# the selection written by the contacts page; the poll history written by the
+# collector and read by the metrics page (design D7, D8).
+
+DEFAULT_COLLECTION_INTERVAL_MINUTES = 60
+DEFAULT_COLLECTION_RECENT_DAYS = 3
+DEFAULT_COLLECTION_RETENTION_DAYS = 30
+COLLECTION_INTERVAL_RANGE = (5, 1440)
+COLLECTION_RECENT_DAYS_RANGE = (1, 365)
+COLLECTION_RETENTION_DAYS_RANGE = (1, 365)
+DEFAULT_POLL_HISTORY = 200
+
+
+class CollectionSettingsError(ValueError):
+    """A collection setting refused, with the reason an operator is shown."""
+
+
+@dataclass(frozen=True, slots=True)
+class CollectionSettings:
+    """The station's repeater collection settings, and its last cycle.
+
+    The defaults are what a database that never stored a row reads back as.
+    """
+
+    enabled: bool = False
+    entity_id: uuid.UUID | None = None
+    interval_minutes: int = DEFAULT_COLLECTION_INTERVAL_MINUTES
+    recent_days: int = DEFAULT_COLLECTION_RECENT_DAYS
+    retention_days: int = DEFAULT_COLLECTION_RETENTION_DAYS
+    last_cycle_started_at: dt.datetime | None = None
+    last_cycle_finished_at: dt.datetime | None = None
+    last_cycle_polled: int | None = None
+    last_cycle_succeeded: int | None = None
+    last_cycle_note: str | None = None
+
+    def validate(self) -> None:
+        for label, value, (low, high), unit in (
+            ("interval", self.interval_minutes, COLLECTION_INTERVAL_RANGE, "minutes"),
+            ("recency window", self.recent_days, COLLECTION_RECENT_DAYS_RANGE, "days"),
+            ("retention window", self.retention_days, COLLECTION_RETENTION_DAYS_RANGE, "days"),
+        ):
+            if not low <= value <= high:
+                raise CollectionSettingsError(
+                    f"the {label} must be from {low} to {high} {unit}; {value} was given"
+                )
+        if self.enabled and self.entity_id is None:
+            raise CollectionSettingsError(
+                "collection cannot be enabled without a login identity; choose one first"
+            )
+
+
+class PollOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    NOT_SENT = "not_sent"
+    LOGIN_UNANSWERED = "login_unanswered"
+    STATUS_UNANSWERED = "status_unanswered"
+    NEIGHBOURS_INCOMPLETE = "neighbours_incomplete"
+
+    @property
+    def label(self) -> str:
+        return self.value.replace("_", " ")
+
+
+@dataclass(frozen=True, slots=True)
+class PollRecord:
+    """One poll of one repeater. `stats` is None unless status was answered."""
+
+    public_key: bytes
+    started_at: dt.datetime
+    outcome: PollOutcome
+    route: str
+    entity_id: uuid.UUID | None = None
+    reason: str | None = None
+    stats: RepeaterStats | None = None
+    neighbours_total: int | None = None
+    neighbours: tuple[NeighbourEntry, ...] = ()
+    id: int | None = None
+
+
+_STATS_COLUMNS = tuple(name for name in REPEATER_STATS_OFFSETS if name != "last_snr")
+"""Every `RepeaterStats` field stored under its own name; `last_snr` is stored
+in decibels as `last_snr_db`."""
+
+
+class RepeaterCollectionRepository:
+    def __init__(self, *, database: Database) -> None:
+        self.database = database
+
+    async def get(self) -> Outcome[CollectionSettings]:
+        async def work(session: object) -> CollectionSettings:
+            row = await session.get(RepeaterCollectionRow, 1)  # type: ignore[attr-defined]
+            return CollectionSettings() if row is None else _collection(row)
+
+        return await self.database.run("get_repeater_collection", work)
+
+    async def save(
+        self,
+        *,
+        enabled: bool,
+        entity_id: uuid.UUID | None,
+        interval_minutes: int,
+        recent_days: int,
+        retention_days: int,
+    ) -> Outcome[CollectionSettings]:
+        """Validate, then store. Raises `CollectionSettingsError` (nothing stored)
+        for a value out of range, enabling without an identity, or an identity
+        serving a room; `UnknownIdentityError` for an identity not stored."""
+        CollectionSettings(
+            enabled=enabled,
+            entity_id=entity_id,
+            interval_minutes=interval_minutes,
+            recent_days=recent_days,
+            retention_days=retention_days,
+        ).validate()
+        if entity_id is not None:
+            checked = await self._identity_refusal(entity_id)
+            if isinstance(checked, Failed):
+                return checked
+            if checked.value is not None:
+                if checked.value == "missing":
+                    raise UnknownIdentityError(
+                        f"no identity {entity_id} is stored; the stored settings are unchanged"
+                    )
+                raise CollectionSettingsError(
+                    f"that identity is serving the room {checked.value!r}, and its traffic "
+                    "belongs to the room; choose another identity"
+                )
+        values = {
+            "enabled": enabled,
+            "entity_id": entity_id,
+            "interval_minutes": interval_minutes,
+            "recent_days": recent_days,
+            "retention_days": retention_days,
+        }
+
+        async def work(session: object) -> CollectionSettings:
+            statement = (
+                insert(RepeaterCollectionRow)
+                .values(id=1, **values)
+                .on_conflict_do_update(index_elements=["id"], set_=values)
+                .returning(RepeaterCollectionRow)
+            )
+            row = (await session.execute(statement)).scalar_one()  # type: ignore[attr-defined]
+            return _collection(row)
+
+        return await self.database.run("save_repeater_collection", work)
+
+    async def record_cycle(
+        self,
+        *,
+        started_at: dt.datetime,
+        finished_at: dt.datetime | None,
+        polled: int | None,
+        succeeded: int | None,
+        note: str | None = None,
+    ) -> Outcome[bool]:
+        values = {
+            "last_cycle_started_at": ensure_utc(started_at, field="last_cycle_started_at"),
+            "last_cycle_finished_at": None
+            if finished_at is None
+            else ensure_utc(finished_at, field="last_cycle_finished_at"),
+            "last_cycle_polled": polled,
+            "last_cycle_succeeded": succeeded,
+            "last_cycle_note": note,
+        }
+
+        async def work(session: object) -> bool:
+            await session.execute(  # type: ignore[attr-defined]
+                insert(RepeaterCollectionRow)
+                .values(
+                    id=1,
+                    enabled=False,
+                    interval_minutes=DEFAULT_COLLECTION_INTERVAL_MINUTES,
+                    recent_days=DEFAULT_COLLECTION_RECENT_DAYS,
+                    retention_days=DEFAULT_COLLECTION_RETENTION_DAYS,
+                    **values,
+                )
+                .on_conflict_do_update(index_elements=["id"], set_=values)
+            )
+            return True
+
+        return await self.database.run("record_repeater_cycle", work)
+
+    async def _identity_refusal(self, entity_id: uuid.UUID) -> Outcome[str | None]:
+        """None when the identity may log in; "missing", or the room's name."""
+
+        async def work(session: object) -> str | None:
+            found = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(EntityRow.id).where(EntityRow.id == entity_id)
+                )
+            ).scalar_one_or_none()
+            if found is None:
+                return "missing"
+            room = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RoomRow.name).where(RoomRow.entity_id == entity_id)
+                )
+            ).scalar_one_or_none()
+            return None if room is None else str(room)
+
+        return await self.database.run("check_repeater_collection_identity", work)
+
+
+def _collection(row: RepeaterCollectionRow) -> CollectionSettings:
+    return CollectionSettings(
+        enabled=row.enabled,
+        entity_id=row.entity_id,
+        interval_minutes=row.interval_minutes,
+        recent_days=row.recent_days,
+        retention_days=row.retention_days,
+        last_cycle_started_at=row.last_cycle_started_at,
+        last_cycle_finished_at=row.last_cycle_finished_at,
+        last_cycle_polled=row.last_cycle_polled,
+        last_cycle_succeeded=row.last_cycle_succeeded,
+        last_cycle_note=row.last_cycle_note,
+    )
+
+
+class RepeaterTargetRepository:
+    """Which repeaters are selected. Knows keys only; that a key is a
+    repeater's is the caller's to check, against the contact it came from."""
+
+    def __init__(self, *, database: Database) -> None:
+        self.database = database
+
+    async def select(self, public_key: bytes, *, at: dt.datetime) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                insert(RepeaterTargetRow)
+                .values(public_key=public_key, selected_at=ensure_utc(at, field="selected_at"))
+                .on_conflict_do_nothing(index_elements=["public_key"])
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("select_repeater_target", work)
+
+    async def deselect(self, public_key: bytes) -> Outcome[bool]:
+        async def work(session: object) -> bool:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(RepeaterTargetRow).where(RepeaterTargetRow.public_key == public_key)
+            )
+            return bool(result.rowcount)
+
+        return await self.database.run("deselect_repeater_target", work)
+
+    async def list_keys(self) -> Outcome[frozenset[bytes]]:
+        async def work(session: object) -> frozenset[bytes]:
+            keys = (
+                await session.execute(select(RepeaterTargetRow.public_key))  # type: ignore[attr-defined]
+            ).scalars()
+            return frozenset(bytes(key) for key in keys)
+
+        return await self.database.run("list_repeater_targets", work)
+
+
+class RepeaterPollRepository:
+    def __init__(self, *, database: Database) -> None:
+        self.database = database
+
+    async def record(self, poll: PollRecord) -> Outcome[int]:
+        """Store a poll and its neighbours; returns the poll's id."""
+        values: dict[str, object] = {
+            "public_key": poll.public_key,
+            "entity_id": poll.entity_id,
+            "started_at": ensure_utc(poll.started_at, field="repeater_poll.started_at"),
+            "outcome": str(poll.outcome),
+            "reason": poll.reason,
+            "route": poll.route,
+            "neighbours_total": poll.neighbours_total,
+        }
+        if poll.stats is not None:
+            values.update({name: getattr(poll.stats, name) for name in _STATS_COLUMNS})
+            values["last_snr_db"] = poll.stats.last_snr_db
+
+        async def work(session: object) -> int:
+            poll_id = (
+                await session.execute(  # type: ignore[attr-defined]
+                    insert(RepeaterPollRow).values(**values).returning(RepeaterPollRow.id)
+                )
+            ).scalar_one()
+            if poll.neighbours:
+                await session.execute(  # type: ignore[attr-defined]
+                    insert(RepeaterNeighbourRow),
+                    [
+                        {
+                            "poll_id": poll_id,
+                            "prefix": entry.prefix,
+                            "heard_seconds_ago": entry.heard_seconds_ago,
+                            "snr_db": entry.snr_db,
+                        }
+                        for entry in poll.neighbours
+                    ],
+                )
+            return int(poll_id)
+
+        return await self.database.run("record_repeater_poll", work)
+
+    async def latest_for(self, keys: Iterable[bytes]) -> Outcome[dict[bytes, PollRecord]]:
+        """The newest poll of each key, without neighbours. One query."""
+        wanted = list(keys)
+
+        async def work(session: object) -> dict[bytes, PollRecord]:
+            if not wanted:
+                return {}
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RepeaterPollRow)
+                    .where(RepeaterPollRow.public_key.in_(wanted))
+                    .distinct(RepeaterPollRow.public_key)
+                    .order_by(
+                        RepeaterPollRow.public_key,
+                        RepeaterPollRow.started_at.desc(),
+                        RepeaterPollRow.id.desc(),
+                    )
+                )
+            ).scalars()
+            return {bytes(row.public_key): _poll(row) for row in rows}
+
+        return await self.database.run("latest_repeater_polls", work)
+
+    async def latest_with_status(self, public_key: bytes) -> Outcome[PollRecord | None]:
+        """The newest poll that returned a status, with its neighbours."""
+
+        async def work(session: object) -> PollRecord | None:
+            row = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RepeaterPollRow)
+                    .where(
+                        RepeaterPollRow.public_key == public_key,
+                        RepeaterPollRow.batt_milli_volts.is_not(None),
+                    )
+                    .order_by(RepeaterPollRow.started_at.desc(), RepeaterPollRow.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            neighbours = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RepeaterNeighbourRow)
+                    .where(RepeaterNeighbourRow.poll_id == row.id)
+                    .order_by(RepeaterNeighbourRow.id)
+                )
+            ).scalars()
+            return _poll(row, tuple(_neighbour(n) for n in neighbours))
+
+        return await self.database.run("latest_repeater_status", work)
+
+    async def history(
+        self, public_key: bytes, *, limit: int = DEFAULT_POLL_HISTORY
+    ) -> Outcome[list[PollRecord]]:
+        """Polls of one repeater, newest first, without neighbours."""
+
+        async def work(session: object) -> list[PollRecord]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RepeaterPollRow)
+                    .where(RepeaterPollRow.public_key == public_key)
+                    .order_by(RepeaterPollRow.started_at.desc(), RepeaterPollRow.id.desc())
+                    .limit(limit)
+                )
+            ).scalars()
+            return [_poll(row) for row in rows]
+
+        return await self.database.run("repeater_poll_history", work)
+
+    async def prune_older_than(self, cutoff: dt.datetime) -> Outcome[int]:
+        """Delete polls started before `cutoff`; their neighbours go by cascade."""
+        cutoff = ensure_utc(cutoff, field="cutoff")
+
+        async def work(session: object) -> int:
+            result = await session.execute(  # type: ignore[attr-defined]
+                delete(RepeaterPollRow).where(RepeaterPollRow.started_at < cutoff)
+            )
+            return int(result.rowcount or 0)
+
+        return await self.database.run("prune_repeater_polls", work)
+
+
+def _poll(row: RepeaterPollRow, neighbours: tuple[NeighbourEntry, ...] = ()) -> PollRecord:
+    stats: RepeaterStats | None = None
+    if row.batt_milli_volts is not None and row.last_snr_db is not None:
+        values = {name: getattr(row, name) for name in _STATS_COLUMNS}
+        stats = RepeaterStats(last_snr=round(row.last_snr_db * 4), **values)
+    return PollRecord(
+        id=row.id,
+        public_key=bytes(row.public_key),
+        entity_id=row.entity_id,
+        started_at=row.started_at,
+        outcome=PollOutcome(row.outcome),
+        reason=row.reason,
+        route=row.route,
+        stats=stats,
+        neighbours_total=row.neighbours_total,
+        neighbours=neighbours,
+    )
+
+
+def _neighbour(row: RepeaterNeighbourRow) -> NeighbourEntry:
+    return NeighbourEntry(
+        prefix=bytes(row.prefix),
+        heard_seconds_ago=row.heard_seconds_ago,
+        snr=round(row.snr_db * 4),
     )

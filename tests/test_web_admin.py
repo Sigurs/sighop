@@ -25,11 +25,15 @@ from fastapi.testclient import TestClient
 from sighop.config import generate_secret_key
 from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
+from sighop.db.repositories import CollectionSettings
+from sighop.net.acks import AckRegistry
+from sighop.net.paths import PathStore
+from sighop.net.room import RoomServer
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType
 from sighop.web.app import allowed_hosts, create_app
-from sighop.web.guard import TOKEN_FIELD
+from sighop.web.guard import TOKEN_FIELD, TOKEN_HEADER
 from sighop.web.guarded import (
     ACTION_DESCRIPTIONS,
     ENABLE_TRANSMIT,
@@ -42,6 +46,9 @@ from sighop.web.guarded import (
     REVEAL_KEY,
     NonceStore,
 )
+from tests.roomfixtures import MemoryStorage
+from tests.test_dm import Entity, RecordingSubmit
+from tests.test_tx import RecordingLogger as TxRecordingLogger
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
     OPERATOR,
@@ -1684,3 +1691,369 @@ async def test_the_identities_page_reflects_a_write_at_once(database: Database) 
     assert "shows-up" in loaded_section, (
         "the newly held identity must appear in the live, not the stored, section"
     )
+
+
+# --- Room delivery settings (change push-ack-window-from-transmit) ----------
+
+
+def _served(room) -> RoomServer:
+    """A served room over the stored record, as the run would hold it."""
+    return RoomServer(
+        entity=Entity("lounge-host"),
+        room=room,
+        storage=MemoryStorage(),
+        paths=PathStore(),
+        submit=RecordingSubmit(),
+        acks=AckRegistry(logger=TxRecordingLogger()),
+        logger=TxRecordingLogger(),
+    )
+
+
+async def _delivery_of(persistence: Persistence):
+    listed = await persistence.rooms.list_all()
+    assert isinstance(listed, Succeeded)
+    return listed.value[0].push_ack_window_seconds, listed.value[0].push_recent_days
+
+
+async def test_the_delivery_page_states_the_firmware_windows_and_the_recency_rule(
+    database: Database,
+) -> None:
+    persistence, room = await _room(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await client.get(f"/admin/rooms/{room.id}/delivery")
+
+    assert response.status_code == 200
+    body = response.text
+    assert 'name="push_ack_window_seconds"' in body
+    assert 'name="push_recent_days"' in body
+    assert "12 s" in body and "4 s +" in body and "2 s</span> per hop" in body
+    assert "keeps its position" in body
+    assert "resumes when heard" in body
+
+
+async def test_setting_delivery_stores_it_and_reaches_the_served_room(
+    database: Database,
+) -> None:
+    persistence, room = await _room(database)
+    state = stub_state(persistence=persistence)
+    server = _served(room)
+    state.rooms.append(server)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            f"/admin/rooms/{room.id}/delivery",
+            push_ack_window_seconds="30",
+            push_recent_days="7",
+        )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/rooms"
+    assert await _delivery_of(persistence) == (30, 7)
+    assert server.room.push_ack_window_seconds == 30
+    assert server.room.push_recent_days == 7
+
+    async with _live(app) as client:
+        cleared = await _apost(
+            client,
+            app,
+            f"/admin/rooms/{room.id}/delivery",
+            push_ack_window_seconds="",
+            push_recent_days=" ",
+        )
+    assert cleared.status_code == 303
+    assert await _delivery_of(persistence) == (None, None)
+    assert server.room.push_ack_window_seconds is None
+    assert server.room.push_recent_days is None
+
+
+@pytest.mark.parametrize(
+    ("window", "days", "reason"),
+    [
+        ("4", "", "from 5 to 300"),
+        ("301", "", "from 5 to 300"),
+        ("12.5", "", "from 5 to 300"),
+        ("soon", "", "from 5 to 300"),
+        ("30", "0", "at least 1"),
+        ("30", "a week", "at least 1"),
+    ],
+)
+async def test_an_invalid_delivery_setting_is_refused_with_the_reason_and_stores_nothing(
+    database: Database, window: str, days: str, reason: str
+) -> None:
+    persistence, room = await _room(database)
+    assert isinstance(
+        await persistence.rooms.set_delivery(
+            room.id, push_ack_window_seconds=60, push_recent_days=3
+        ),
+        Succeeded,
+    )
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            f"/admin/rooms/{room.id}/delivery",
+            push_ack_window_seconds=window,
+            push_recent_days=days,
+        )
+
+    assert response.status_code == 400
+    assert reason in response.text
+    assert "nothing was changed" in response.text
+    assert await _delivery_of(persistence) == (60, 3), "a refused form changed a setting"
+
+
+async def test_the_delivery_page_of_an_unknown_room_is_not_found(database: Database) -> None:
+    import uuid
+
+    persistence, _room_record = await _room(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+    missing = uuid.uuid4()
+
+    async with _live(app) as client:
+        page = await client.get(f"/admin/rooms/{missing}/delivery")
+        post = await _apost(
+            client, app, f"/admin/rooms/{missing}/delivery", push_ack_window_seconds="30"
+        )
+
+    assert page.status_code == 404
+    assert post.status_code == 404
+    assert await _delivery_of(persistence) == (None, None)
+
+
+async def test_the_delivery_form_requires_the_csrf_token(database: Database) -> None:
+    persistence, room = await _room(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        # Signed in, but without the provenance header a served page would send.
+        del client.headers[TOKEN_HEADER]
+        response = await client.post(
+            f"/admin/rooms/{room.id}/delivery", data={"push_ack_window_seconds": "30"}
+        )
+
+    assert response.status_code == 403
+    assert await _delivery_of(persistence) == (None, None)
+
+
+async def test_access_and_retention_writes_reach_the_served_room(database: Database) -> None:
+    """Design D10: previously these waited for a restart."""
+    persistence, room = await _room(database)
+    state = stub_state(persistence=persistence)
+    server = _served(room)
+    state.rooms.append(server)
+    app, _state, _log = _built(state)
+    assert server.policy.allow_read_only is False
+
+    async with _live(app) as client:
+        access = await _apost(
+            client, app, f"/admin/rooms/{room.id}/password", allow_read_only="true"
+        )
+        retention = await _apost(
+            client,
+            app,
+            f"/admin/rooms/{room.id}/retention",
+            retention_days="14",
+            retention_messages="",
+        )
+
+    assert access.status_code == 303 and retention.status_code == 303
+    assert state.room_reconciles == 2
+    assert server.policy.allow_read_only is True, "logins still use the old access settings"
+    assert server.room.retention_days == 14
+
+
+# --- Repeater collection settings (change repeater-metrics-collection) ------
+
+
+async def _collector_identity(database: Database, name: str = "collector"):
+    persistence = Persistence(database=database)
+    stored = await persistence.entities.store(
+        name=name, identity=generate_identity(), secret=SECRET, node_type=NodeType.CHAT
+    )
+    assert isinstance(stored, Succeeded)
+    return persistence, stored.value
+
+
+async def _collection_of(persistence: Persistence):
+    settings = await persistence.repeater_collection.get()
+    assert isinstance(settings, Succeeded)
+    return settings.value
+
+
+def _collection_form(entity_id: object = "", **overrides: str) -> dict[str, str]:
+    form = {
+        "enabled": "true",
+        "entity_id": str(entity_id),
+        "interval_minutes": "30",
+        "recent_days": "2",
+        "retention_days": "14",
+    }
+    form.update(overrides)
+    return form
+
+
+async def test_the_system_page_offers_collection_and_states_the_blank_guest_password(
+    database: Database,
+) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert 'action="/system/collection"' in body
+    assert "blank guest" in body and "password</strong>" in body
+    assert f'value="{identity.id}"' in body
+    assert 'name="interval_minutes" value="60"' in body
+    assert 'name="recent_days" value="3"' in body
+    assert 'name="retention_days" value="30"' in body
+    assert '<span class="mono">0</span> selected' in body
+
+
+async def test_saving_valid_collection_settings_stores_them_and_shows_them(
+    database: Database,
+) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence, transmit_enabled=True))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/system/collection", **_collection_form(identity.id))
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/system"
+    settings = await _collection_of(persistence)
+    assert (settings.enabled, settings.entity_id) == (True, identity.id)
+    assert (settings.interval_minutes, settings.recent_days, settings.retention_days) == (30, 2, 14)
+    assert 'name="interval_minutes" value="30"' in body
+    assert "no poll\n  will be sent" not in body
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("interval_minutes", "2", "from 5 to 1440"),
+        ("interval_minutes", "1441", "from 5 to 1440"),
+        ("recent_days", "abc", "from 1 to 365"),
+        ("retention_days", "", "from 1 to 365"),
+        ("retention_days", "12.5", "from 1 to 365"),
+    ],
+)
+async def test_an_invalid_collection_setting_is_refused_and_stores_nothing(
+    database: Database, field: str, value: str, reason: str
+) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/collection", **_collection_form(identity.id, **{field: value})
+        )
+
+    assert response.status_code == 400
+    assert reason in response.text
+    assert "nothing was changed" in response.text
+    assert await _collection_of(persistence) == CollectionSettings()
+
+
+async def test_enabling_collection_without_an_identity_is_refused(database: Database) -> None:
+    persistence, _identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/system/collection", **_collection_form(""))
+
+    assert response.status_code == 400
+    assert "without a login identity" in response.text
+    assert await _collection_of(persistence) == CollectionSettings()
+
+
+async def test_a_room_identity_is_not_offered_and_is_refused(database: Database) -> None:
+    persistence, room = await _room(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+        response = await _apost(
+            client, app, "/system/collection", **_collection_form(room.entity_id)
+        )
+
+    assert f'value="{room.entity_id}"' not in body
+    assert response.status_code == 400
+    assert "serving the room" in response.text
+    assert await _collection_of(persistence) == CollectionSettings()
+
+
+async def test_enabled_collection_with_transmission_off_says_no_poll_will_be_sent(
+    database: Database,
+) -> None:
+    persistence, identity = await _collector_identity(database)
+    await persistence.repeater_collection.save(
+        enabled=True, entity_id=identity.id, interval_minutes=60, recent_days=3, retention_days=30
+    )
+    app, _state, _log = _built(stub_state(persistence=persistence, transmit_enabled=False))
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert "Transmission is disabled." in body
+    assert "no poll\n  will be sent until transmission is enabled" in body
+
+
+async def test_the_last_cycle_is_shown(database: Database) -> None:
+    persistence, _identity = await _collector_identity(database)
+    await persistence.repeater_collection.record_cycle(
+        started_at=NOW, finished_at=NOW + dt.timedelta(seconds=90), polled=4, succeeded=3
+    )
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert "last cycle started" in body
+    assert NOW.isoformat().replace("+00:00", "Z")[:16] in body or "2026-09-06" in body
+    assert "4 / 3" in body
+
+
+async def test_the_counts_show_selected_and_in_window_repeaters(database: Database) -> None:
+    from sighop.net.contacts import Contact
+
+    persistence, _identity = await _collector_identity(database)
+    state = stub_state(persistence=persistence)
+    now = dt.datetime.now(dt.UTC)
+    for byte, days in ((0x51, 1), (0x52, 30)):
+        key = bytes([byte]) * 32
+        state.contacts._insert(
+            Contact(
+                public_key=key,
+                node_type=NodeType.REPEATER,
+                last_heard=now - dt.timedelta(days=days),
+                advert_verified=True,
+            )
+        )
+        await persistence.repeater_targets.select(key, at=now)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert '<span class="mono">2</span> selected' in body
+    assert '<span class="mono">1</span> were heard within the recency window' in body
+
+
+async def test_the_collection_form_requires_the_csrf_token(database: Database) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        client.headers.pop(TOKEN_HEADER, None)
+        response = await client.post("/system/collection", data=_collection_form(identity.id))
+
+    assert response.status_code == 403
+    assert await _collection_of(persistence) == CollectionSettings()

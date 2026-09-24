@@ -1209,12 +1209,17 @@ def build_room_login_response_body(response: RoomLoginResponseBody) -> bytes:
 
 
 class RequestType(IntEnum):
-    """`MyMesh.cpp:15-18`. `GET_ACCESS_LIST` is named and not implemented."""
+    """`MyMesh.cpp:15-18`. `GET_ACCESS_LIST` is named and not implemented.
+
+    `GET_NEIGHBOURS` is a repeater's (`simple_repeater/MyMesh.cpp:50`); sighop
+    only sends it, as a collection client.
+    """
 
     GET_STATUS = 0x01
     KEEP_ALIVE = 0x02
     GET_TELEMETRY_DATA = 0x03
     GET_ACCESS_LIST = 0x05
+    GET_NEIGHBOURS = 0x06
 
 
 @dataclass(frozen=True, slots=True)
@@ -1395,6 +1400,290 @@ def parse_status_body(body: bytes) -> DecodeResult[StatusBody]:
         values[name] = int.from_bytes(body[offset : offset + size], "little", signed=signed)
         offset += size
     return StatusBody(tag=int.from_bytes(body[:4], "little"), stats=ServerStats(**values))
+
+
+# --- What sighop asks a repeater, as its client -----------------------------
+
+
+_REPEATER_STATS_FIELDS: tuple[tuple[str, int, bool], ...] = (
+    *_SERVER_STATS_FIELDS[:-2],
+    ("total_rx_air_time_secs", 4, False),
+    ("n_recv_errors", 4, False),
+)
+"""`RepeaterStats` at `simple_repeater/MyMesh.h:44-60`: the room layout up to
+`n_flood_dups`, then two 32-bit receive counters where a room server puts its
+two 16-bit post counters (`ROOM_SERVER_DIVERGENT_OFFSETS`)."""
+
+REPEATER_STATS_OFFSETS = {
+    name: sum(size for _, size, _ in _REPEATER_STATS_FIELDS[:index])
+    for index, (name, _, _) in enumerate(_REPEATER_STATS_FIELDS)
+}
+
+REPEATER_STATS_SIZE = 56
+"""`sizeof(RepeaterStats)`; the answer is the echoed tag plus this (`MyMesh.cpp:238`)."""
+
+REPEATER_STATS_MIN_SIZE = REPEATER_STATS_OFFSETS["total_rx_air_time_secs"]
+"""48: firmware that predates the receive counters ends after `n_flood_dups`."""
+
+REPEATER_STATUS_BODY_SIZE = 4 + REPEATER_STATS_SIZE
+REPEATER_STATUS_BODY_MIN_SIZE = 4 + REPEATER_STATS_MIN_SIZE
+
+
+@dataclass(frozen=True, slots=True)
+class RepeaterStats:
+    """A repeater's statistics as it reported them.
+
+    The two receive counters are None when the answer ended before them. Note
+    that a decrypted body is padded to the cipher block, so a caller that does
+    not know the plaintext length reads zeros there rather than None.
+    """
+
+    batt_milli_volts: int
+    curr_tx_queue_len: int
+    noise_floor: int
+    last_rssi: int
+    n_packets_recv: int
+    n_packets_sent: int
+    total_air_time_secs: int
+    total_up_time_secs: int
+    n_sent_flood: int
+    n_sent_direct: int
+    n_recv_flood: int
+    n_recv_direct: int
+    err_events: int
+    last_snr: int
+    """Signed quarter-decibels, as sent (`MyMesh.cpp:230`); see `last_snr_db`."""
+
+    n_direct_dups: int
+    n_flood_dups: int
+    total_rx_air_time_secs: int | None = None
+    n_recv_errors: int | None = None
+
+    @property
+    def last_snr_db(self) -> float:
+        return self.last_snr / 4
+
+
+@dataclass(frozen=True, slots=True)
+class RepeaterStatusBody:
+    """A repeater's status answer: the echoed request timestamp, then its stats."""
+
+    tag: int
+    stats: RepeaterStats
+
+
+def parse_repeater_status_body(body: bytes) -> DecodeResult[RepeaterStatusBody]:
+    """Parse by length: every field that fits whole is read, and a body that
+    ends inside a field, or before `n_flood_dups` is complete, is refused."""
+    if len(body) < REPEATER_STATUS_BODY_MIN_SIZE:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail=(
+                f"a repeater status body is at least {REPEATER_STATUS_BODY_MIN_SIZE} bytes "
+                f"and {len(body)} arrived"
+            ),
+        )
+    values: dict[str, int] = {}
+    offset = 4
+    for name, size, signed in _REPEATER_STATS_FIELDS:
+        if offset == len(body):
+            break
+        if len(body) - offset < size:
+            return DecodeFailure(
+                reason=FailureReason.TRUNCATED,
+                offset=len(body),
+                raw=body,
+                detail=f"repeater status body ends inside {name}",
+            )
+        values[name] = int.from_bytes(body[offset : offset + size], "little", signed=signed)
+        offset += size
+    return RepeaterStatusBody(tag=int.from_bytes(body[:4], "little"), stats=RepeaterStats(**values))
+
+
+def build_repeater_status_body(status: RepeaterStatusBody) -> bytes:
+    """The inverse, for tests and fakes standing in for a repeater."""
+    out = bytearray(status.tag.to_bytes(4, "little"))
+    for name, size, signed in _REPEATER_STATS_FIELDS:
+        value = getattr(status.stats, name)
+        if value is None:
+            break
+        try:
+            out += int(value).to_bytes(size, "little", signed=signed)
+        except OverflowError as error:
+            raise EncodeError(f"repeater stats {name}={value} does not fit") from error
+    return bytes(out)
+
+
+@dataclass(frozen=True, slots=True)
+class RepeaterLoginBody:
+    """A login to a repeater: a timestamp and the password, no sync timestamp
+    (`simple_repeater/MyMesh.cpp:571-583`). An empty password relies on the
+    cipher padding for its terminator: the byte after the timestamp is zero."""
+
+    timestamp: int
+    password: bytes = b""
+
+
+def build_repeater_login_body(login: RepeaterLoginBody) -> bytes:
+    return login.timestamp.to_bytes(4, "little") + login.password
+
+
+LOGIN_ANSWER_MIN_SIZE = ROOM_LOGIN_RESPONSE_SIZE - 1
+"""Twelve: firmware older than the protocol-level byte stops before it."""
+
+
+@dataclass(frozen=True, slots=True)
+class LoginAnswerBody:
+    """A login answer as a client reads it, from a repeater or a room server.
+
+    Same layout as `RoomLoginResponseBody`; the server timestamp is the
+    server's clock, not an echo, so it cannot tag the answer to a request.
+    """
+
+    server_timestamp: int
+    result: int
+    permissions: int
+    blob: bytes
+    protocol_level: int | None
+
+
+def parse_login_answer_body(body: bytes) -> DecodeResult[LoginAnswerBody]:
+    if len(body) < LOGIN_ANSWER_MIN_SIZE:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail=(
+                f"a login answer is at least {LOGIN_ANSWER_MIN_SIZE} bytes and {len(body)} arrived"
+            ),
+        )
+    return LoginAnswerBody(
+        server_timestamp=int.from_bytes(body[:4], "little"),
+        result=body[4],
+        permissions=body[7],
+        blob=body[8:12],
+        protocol_level=body[12] if len(body) > LOGIN_ANSWER_MIN_SIZE else None,
+    )
+
+
+class NeighbourOrder(IntEnum):
+    """`simple_repeater/MyMesh.cpp:283`."""
+
+    NEWEST_FIRST = 0
+    OLDEST_FIRST = 1
+    STRONGEST_FIRST = 2
+    WEAKEST_FIRST = 3
+
+
+NEIGHBOURS_REQUEST_VERSION = 0
+
+
+@dataclass(frozen=True, slots=True)
+class NeighboursRequest:
+    """A `GET_NEIGHBOURS` request's arguments (`MyMesh.cpp:276-287`)."""
+
+    count: int
+    offset: int = 0
+    order: NeighbourOrder = NeighbourOrder.NEWEST_FIRST
+    prefix_length: int = 6
+    blob: bytes = b"\x00\x00\x00\x00"
+    """Random, for packet-hash uniqueness; the firmware reads nothing from it."""
+
+    def arguments(self) -> bytes:
+        if len(self.blob) != 4:
+            raise EncodeError(f"the neighbours request blob is 4 bytes, not {len(self.blob)}")
+        for name, value, top in (
+            ("count", self.count, 0xFF),
+            ("offset", self.offset, 0xFFFF),
+            ("prefix_length", self.prefix_length, PUB_KEY_SIZE),
+        ):
+            if not 0 <= value <= top:
+                raise EncodeError(f"neighbours request {name} {value} is out of range")
+        return (
+            bytes([NEIGHBOURS_REQUEST_VERSION, self.count])
+            + self.offset.to_bytes(2, "little")
+            + bytes([int(self.order), self.prefix_length])
+            + self.blob
+        )
+
+
+def build_neighbours_request(request: NeighboursRequest) -> bytes:
+    """The request type byte and the arguments, without the timestamp."""
+    return bytes([RequestType.GET_NEIGHBOURS]) + request.arguments()
+
+
+@dataclass(frozen=True, slots=True)
+class NeighbourEntry:
+    prefix: bytes
+    heard_seconds_ago: int
+    snr: int
+    """Signed quarter-decibels, as sent; see `snr_db`."""
+
+    @property
+    def snr_db(self) -> float:
+        return self.snr / 4
+
+
+@dataclass(frozen=True, slots=True)
+class NeighboursBody:
+    tag: int
+    total: int
+    entries: tuple[NeighbourEntry, ...]
+
+
+def parse_neighbours_body(body: bytes, prefix_length: int) -> DecodeResult[NeighboursBody]:
+    """Parse one page. The prefix length is not on the wire: it is the one asked
+    for (clamped to a whole key by the firmware), so the caller supplies it.
+    Bytes past the counted entries are cipher padding and are ignored."""
+    if len(body) < 8:
+        return DecodeFailure(
+            reason=FailureReason.TRUNCATED,
+            offset=len(body),
+            raw=body,
+            detail="a neighbours answer needs a tag and two 16-bit counts",
+        )
+    prefix_length = min(prefix_length, PUB_KEY_SIZE)
+    returned = int.from_bytes(body[6:8], "little")
+    entry_size = prefix_length + 5
+    if len(body) < 8 + returned * entry_size:
+        return DecodeFailure(
+            reason=FailureReason.BAD_PAYLOAD_LENGTH,
+            offset=len(body),
+            raw=body,
+            detail=f"{returned} neighbour entries of {entry_size} bytes do not fit",
+        )
+    entries: list[NeighbourEntry] = []
+    offset = 8
+    for _ in range(returned):
+        entries.append(
+            NeighbourEntry(
+                prefix=body[offset : offset + prefix_length],
+                heard_seconds_ago=int.from_bytes(
+                    body[offset + prefix_length : offset + prefix_length + 4], "little"
+                ),
+                snr=int.from_bytes(
+                    body[offset + entry_size - 1 : offset + entry_size], "little", signed=True
+                ),
+            )
+        )
+        offset += entry_size
+    return NeighboursBody(
+        tag=int.from_bytes(body[:4], "little"),
+        total=int.from_bytes(body[4:6], "little"),
+        entries=tuple(entries),
+    )
+
+
+def build_neighbours_body(page: NeighboursBody) -> bytes:
+    """The inverse, for tests and fakes standing in for a repeater."""
+    out = bytearray(page.tag.to_bytes(4, "little"))
+    out += page.total.to_bytes(2, "little") + len(page.entries).to_bytes(2, "little")
+    for entry in page.entries:
+        out += entry.prefix + entry.heard_seconds_ago.to_bytes(4, "little")
+        out += entry.snr.to_bytes(1, "little", signed=True)
+    return bytes(out)
 
 
 TELEM_CHANNEL_SELF = 1

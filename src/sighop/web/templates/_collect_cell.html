@@ -1,0 +1,26 @@
+{# The contact table's collection cell for one repeater (repeater-metrics D10).
+   Posted by htmx on change and swapped in place; the CSRF header rides on
+   <body>. An unticked checkbox posts nothing, which is what "deselect" is. #}
+{% import "_display.html" as display %}
+{%- if cell.unavailable -%}
+<span class="absent">selection unavailable</span>
+{%- else -%}
+<label class="collect">
+  <input type="checkbox" name="collect" value="true"{% if cell.selected %} checked{% endif %}
+         hx-post="/contacts/{{ cell.key_hex }}/collect" hx-trigger="change"
+         hx-target="closest td" hx-swap="innerHTML">
+  collect metrics
+</label>
+{%- if cell.selected %}
+<br>
+{%- if cell.skipped_days %}
+<span class="route-ambiguous">skipped — not heard within {{ cell.skipped_days }} {{ 'day' if cell.skipped_days == 1 else 'days' }}</span><br>
+{%- endif %}
+{%- if cell.last_poll %}
+<span class="mono">{{ display.when(cell.last_poll.started_at) }}</span> · {{ cell.last_poll.outcome.label }}
+{%- else %}
+<span class="absent">not polled yet</span>
+{%- endif %}
+· <a href="/contacts/{{ cell.key_hex }}/metrics">metrics</a>
+{%- endif %}
+{%- endif -%}

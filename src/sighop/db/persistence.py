@@ -50,6 +50,9 @@ from sighop.db.repositories import (
     PacketLogRepository,
     PacketLogRow,
     PathRepository,
+    RepeaterCollectionRepository,
+    RepeaterPollRepository,
+    RepeaterTargetRepository,
     RoomMemberRepository,
     RoomRepository,
     WebhookRepository,
@@ -165,6 +168,13 @@ class Persistence:
     channels: ChannelRepository = field(init=False)
     channel_messages: ChannelMessageRepository = field(init=False)
 
+    # Repeater collection has no queue either (repeater-metrics D7): settings
+    # and selection are read per cycle, and a poll is one row written after the
+    # exchange it records, with no radio waiting on it.
+    repeater_collection: RepeaterCollectionRepository = field(init=False)
+    repeater_targets: RepeaterTargetRepository = field(init=False)
+    repeater_polls: RepeaterPollRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -195,6 +205,9 @@ class Persistence:
         self.webhooks = WebhookRepository(database=self.database)
         self.channels = ChannelRepository(database=self.database)
         self.channel_messages = ChannelMessageRepository(database=self.database)
+        self.repeater_collection = RepeaterCollectionRepository(database=self.database)
+        self.repeater_targets = RepeaterTargetRepository(database=self.database)
+        self.repeater_polls = RepeaterPollRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,

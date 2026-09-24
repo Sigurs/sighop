@@ -410,6 +410,64 @@ async def test_an_existing_member_with_an_empty_password_is_answered() -> None:
     assert len(submit.submissions) == 1
 
 
+def _server_with_member(
+    lounge: Entity, client: Entity, storage: MemoryStorage, logger: RecordingLogger
+) -> RoomServer:
+    room = room_record(name="lounge")
+    existing = member_record(
+        room,
+        client.identity.public_key,
+        permission=Permission.READ_WRITE,
+        last_timestamp=1_700_000_500,
+    )
+    return RoomServer(
+        entity=lounge,
+        room=room,
+        storage=storage,
+        paths=PathStore(),
+        submit=RecordingSubmit(),
+        acks=AckRegistry(logger=RecordingLogger()),
+        members=[existing],
+        hasher=PasswordHasher(),
+        clock=TickingClock(START),
+        radio=EU868_NARROW,
+        logger=logger,
+    )
+
+
+async def test_a_blank_password_relogin_leaves_the_recorded_timestamp_alone() -> None:
+    """Design D4, `MyMesh.cpp:335-376`: the short-circuit skips the write too."""
+    lounge, client = Entity("lounge"), Entity("client")
+    storage = MemoryStorage()
+    logger = RecordingLogger()
+    server = _server_with_member(lounge, client, storage, logger)
+
+    await server.handle(
+        _packet_for(
+            login_packet(client=client, server=lounge, password="", timestamp=1_700_000_515)
+        )
+    )
+
+    assert server.members[client.identity.public_key].last_timestamp == 1_700_000_500
+    assert storage.members.of(server.room.id)[0].last_timestamp == 1_700_000_500
+    assert logger.of("room_login_admitted")[0]["empty_password"] is True
+
+
+async def test_a_password_login_raises_the_recorded_timestamp() -> None:
+    lounge, client = Entity("lounge"), Entity("client")
+    storage = MemoryStorage()
+    logger = RecordingLogger()
+    server = _server_with_member(lounge, client, storage, logger)
+
+    await server.handle(
+        _packet_for(login_packet(client=client, server=lounge, timestamp=1_700_000_515))
+    )
+
+    assert server.members[client.identity.public_key].last_timestamp == 1_700_000_515
+    assert storage.members.of(server.room.id)[0].last_timestamp == 1_700_000_515
+    assert logger.of("room_login_admitted")[0]["empty_password"] is False
+
+
 async def test_an_unknown_sender_with_an_empty_password_gets_no_shortcut() -> None:
     """The short-circuit is for *existing* members; a stranger takes the long way."""
     lounge, client = Entity("lounge"), Entity("client")

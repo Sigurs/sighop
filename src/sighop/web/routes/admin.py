@@ -36,6 +36,14 @@ from sighop.db.repositories import (
     RoomNameTakenError,
     RoomRecord,
 )
+from sighop.net.room import (
+    MAX_PUSH_ACK_WINDOW_SECONDS,
+    MIN_PUSH_ACK_WINDOW_SECONDS,
+    MIN_PUSH_RECENT_DAYS,
+    PUSH_ACK_TIMEOUT_FACTOR_MS,
+    PUSH_ACK_TIMEOUT_FLOOD_MS,
+    PUSH_TIMEOUT_BASE_MS,
+)
 from sighop.net.tx import DEFAULT_CEILING_FRACTION
 from sighop.web.deps import Panel, panel
 from sighop.web.guarded import (
@@ -220,6 +228,9 @@ async def rotate_password(
         # done without building.
         allow_read_only=allow_read_only == "true",
     )
+    # Logins are checked against the new access settings from here on, not
+    # from the next restart (design D10).
+    await page.state.reconcile_rooms()
     return RedirectResponse("/rooms", status_code=SEE_OTHER)
 
 
@@ -255,7 +266,112 @@ async def set_retention(
         retention_days=_optional_int(retention_days),
         retention_messages=_optional_int(retention_messages),
     )
+    await page.state.reconcile_rooms()
     return RedirectResponse("/rooms", status_code=SEE_OTHER)
+
+
+@router.get("/rooms/{room_id}/delivery", response_class=HTMLResponse)
+async def delivery_form(room_id: str, request: Request, page: PanelDep) -> HTMLResponse:
+    """The push window and recency limit, with what blank means for each."""
+    room = await _room(page, room_id)
+    return _delivery_page(request, page, room)
+
+
+@router.post("/rooms/{room_id}/delivery", response_model=None)
+async def set_delivery(
+    room_id: str,
+    request: Request,
+    page: PanelDep,
+    push_ack_window_seconds: Annotated[str, Form()] = "",
+    push_recent_days: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Validated, unlike `_optional_int`: junk here is refused with the reason
+    rather than silently read as blank (design D11), and nothing is stored."""
+    room = await _room(page, room_id)
+    if room is None:
+        return _delivery_page(request, page, None)
+    try:
+        window = _bounded_int(
+            push_ack_window_seconds,
+            low=MIN_PUSH_ACK_WINDOW_SECONDS,
+            high=MAX_PUSH_ACK_WINDOW_SECONDS,
+            what="the push acknowledgement window",
+            unit="seconds",
+        )
+        days = _bounded_int(
+            push_recent_days,
+            low=MIN_PUSH_RECENT_DAYS,
+            high=None,
+            what="the recency limit",
+            unit="days",
+        )
+    except ValueError as exc:
+        return _delivery_page(
+            request,
+            page,
+            room,
+            error=str(exc),
+            window=push_ack_window_seconds,
+            days=push_recent_days,
+            status_code=400,
+        )
+    await page.persistence.rooms.set_delivery(
+        room.id, push_ack_window_seconds=window, push_recent_days=days
+    )
+    # Pushes composed from here on use the new settings (design D10).
+    await page.state.reconcile_rooms()
+    return RedirectResponse("/rooms", status_code=SEE_OTHER)
+
+
+def _delivery_page(
+    request: Request,
+    page: Panel,
+    room: RoomRecord | None,
+    *,
+    error: str = "",
+    window: str | None = None,
+    days: str | None = None,
+    status_code: int | None = None,
+) -> HTMLResponse:
+    def shown(value: int | None) -> str:
+        return "" if value is None else str(value)
+
+    return page.page(
+        request,
+        "admin/room_delivery.html",
+        room=room,
+        error=error,
+        window=window
+        if window is not None
+        else shown(None if room is None else room.push_ack_window_seconds),
+        days=days if days is not None else shown(None if room is None else room.push_recent_days),
+        flood_seconds=PUSH_ACK_TIMEOUT_FLOOD_MS / 1000,
+        direct_base_seconds=PUSH_TIMEOUT_BASE_MS / 1000,
+        direct_hop_seconds=PUSH_ACK_TIMEOUT_FACTOR_MS / 1000,
+        min_window=MIN_PUSH_ACK_WINDOW_SECONDS,
+        max_window=MAX_PUSH_ACK_WINDOW_SECONDS,
+        min_days=MIN_PUSH_RECENT_DAYS,
+        status_code=status_code or (200 if room is not None else 404),
+    )
+
+
+def _bounded_int(value: str, *, low: int, high: int | None, what: str, unit: str) -> int | None:
+    """Blank is `None`; anything else must be a whole number in range."""
+    text = value.strip()
+    if not text:
+        return None
+    allowed = (
+        f"a whole number of {unit} from {low} to {high}"
+        if high is not None
+        else f"a whole number of {unit}, at least {low}"
+    )
+    try:
+        number = int(text)
+    except ValueError:
+        raise ValueError(f"{what} must be {allowed}, or blank; nothing was changed") from None
+    if number < low or (high is not None and number > high):
+        raise ValueError(f"{what} must be {allowed}, or blank; nothing was changed")
+    return number
 
 
 def _optional_int(value: str) -> int | None:

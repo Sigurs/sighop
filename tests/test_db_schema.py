@@ -11,12 +11,15 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from sqlalchemy import text
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from sqlalchemy import Connection, text
 
 import sighop
 from sighop.config import DatabaseConfig
 from sighop.db import migrations
 from sighop.db.engine import Database
+from sighop.db.models import Base
 from tests.dbfixtures import SCHEMA_PREFIX, _connect, _create_schema, _drop_schema
 
 TABLES = ("entity", "contact", "path", "packet_log")
@@ -25,6 +28,7 @@ BOT_TABLES = ("bot", "bot_state")
 DM_TABLES = ("direct_message",)
 WEB_TABLES = ("web_user",)
 WEBHOOK_TABLES = ("webhook",)
+REPEATER_TABLES = ("repeater_collection", "repeater_target", "repeater_poll", "repeater_neighbour")
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -52,7 +56,7 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0009"
+    assert migrations.expected_revision() == "0011"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
     assert migrations.knows_revision("0003")
@@ -62,6 +66,8 @@ def test_the_migration_chain_has_one_head_the_code_expects() -> None:
     assert migrations.knows_revision("0007")
     assert migrations.knows_revision("0008")
     assert migrations.knows_revision("0009")
+    assert migrations.knows_revision("0010")
+    assert migrations.knows_revision("0011")
     assert not migrations.knows_revision("beef")
 
 
@@ -108,6 +114,7 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
         assert set(DM_TABLES) <= present
         assert set(WEB_TABLES) <= present
         assert set(WEBHOOK_TABLES) <= present
+        assert set(REPEATER_TABLES) <= present
 
         # Every timestamp column carries a time zone (design D7): the dev server's
         # own TimeZone is Europe/Helsinki, so a naive column would record local
@@ -145,6 +152,30 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
             assert not any("UNIQUE" in definition for definition in indexes)
 
 
+async def test_the_repeater_models_match_what_migration_0011_built(database: Database) -> None:
+    """The models and the migration describe the same four tables.
+
+    Scoped to the tables 0011 adds; the older ones predate this check.
+    """
+
+    def include(
+        obj: object, name: str | None, type_: str, reflected: bool, compare_to: object
+    ) -> bool:
+        if type_ == "table":
+            return name in REPEATER_TABLES
+        table = getattr(obj, "table", None)
+        return table is None or table.name in REPEATER_TABLES
+
+    def diff(connection: Connection) -> list[object]:
+        context = MigrationContext.configure(
+            connection, opts={"include_object": include, "compare_type": True}
+        )
+        return compare_metadata(context, Base.metadata)
+
+    async with database.engine.connect() as connection:
+        assert await connection.run_sync(diff) == []
+
+
 async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     database_url: str,
 ) -> None:
@@ -154,7 +185,14 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
     await _drop_schema(database_url, schema)
     await _create_schema(database_url, schema)
     try:
-        every = set(TABLES) | set(ROOM_TABLES) | set(BOT_TABLES) | set(DM_TABLES) | set(WEB_TABLES)
+        every = (
+            set(TABLES)
+            | set(ROOM_TABLES)
+            | set(BOT_TABLES)
+            | set(DM_TABLES)
+            | set(WEB_TABLES)
+            | set(REPEATER_TABLES)
+        )
 
         await migrations.upgrade_async(config)
         assert await _tables_in(database_url, schema) >= every

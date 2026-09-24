@@ -288,6 +288,37 @@ def test_a_truncated_post_says_so_on_the_line_that_shows_it() -> None:
     assert "TRUNCATED from 156 bytes" in line
 
 
+def test_a_stored_post_names_the_route_its_acknowledgement_took() -> None:
+    line = render_post_stored(
+        PostStored(
+            room_name="lounge",
+            author=MEMBER,
+            post_timestamp=1_700_000_000,
+            text=WireText.from_bytes(b"Qwerty123"),
+            retry=False,
+            acknowledged=True,
+            packet_id="pkt6",
+            ack_route="PATH_RETURN",
+        )
+    )
+    assert line.endswith("'Qwerty123'  ack=PATH_RETURN")
+
+
+def test_an_unacknowledged_post_names_no_route() -> None:
+    line = render_post_stored(
+        PostStored(
+            room_name="lounge",
+            author=MEMBER,
+            post_timestamp=1,
+            text=WireText.from_bytes(b"x"),
+            retry=False,
+            acknowledged=False,
+            packet_id="pkt7",
+        )
+    )
+    assert "ack=" not in line
+
+
 def test_a_delivery_shows_its_route_and_what_it_expects_back() -> None:
     line = render_delivery_sent(
         DeliverySent(

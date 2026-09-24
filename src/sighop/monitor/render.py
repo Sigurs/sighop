@@ -865,6 +865,9 @@ def render_room_status(
     refusals: dict[str, int],
     pruned: int,
     pruned_unsynced: int,
+    not_recent: int = 0,
+    push_ack_window_seconds: int | None = None,
+    push_recent_days: int | None = None,
 ) -> str:
     """The periodic room line.
 
@@ -874,10 +877,14 @@ def render_room_status(
     "six refused" says nothing an operator can act on, and "bad_password=6" says
     what to do about it.
     """
+    window = "firmware" if push_ack_window_seconds is None else f"{push_ack_window_seconds}s"
+    recent = "all" if push_recent_days is None else f"{push_recent_days}d"
     line = (
         f"== room {name!r} members={members} stored={messages_stored} "
         f"outstanding={deliveries_outstanding} behind={members_behind} "
-        f"pruned={pruned} pruned_unsynced={pruned_unsynced}"
+        f"pruned={pruned} pruned_unsynced={pruned_unsynced} "
+        f"not_recent={not_recent} "
+        f"ack_window={window} recent={recent}"
     )
     if not accepting_posts:
         line += "  REFUSING POSTS (storage degraded)"
@@ -917,10 +924,11 @@ def render_post_stored(event: PostStored) -> str:
     if not event.acknowledged:
         marks.append("NOT ACKNOWLEDGED")
     suffix = f"  ({', '.join(marks)})" if marks else ""
+    ack = f"  ack={event.ack_route}" if event.acknowledged and event.ack_route else ""
     return (
         f"{_INDENT}<- room {event.room_name!r}  post @{event.post_timestamp} "
         f"from {CLAIMED_MARK}{event.author.hex()[:16]}  "
-        f"{_render_wire_text(event.text)}{suffix}"
+        f"{_render_wire_text(event.text)}{ack}{suffix}"
     )
 
 

@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+
+{% block title %}room delivery · sighop{% endblock %}
+
+{% block content %}
+{% if room %}
+<h1>delivery: {{ room.name }}</h1>
+
+{% if error %}
+<p class="unavailable" role="alert">{{ error }}</p>
+{% endif %}
+
+<form method="post" action="/admin/rooms/{{ room.id }}/delivery">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>push acknowledgement window, in seconds ({{ min_window }}–{{ max_window }})
+      <input class="mono" type="text" name="push_ack_window_seconds" value="{{ window }}">
+    </label>
+  </p>
+  <p class="note">
+    How long a pushed post waits for the member's acknowledgement, counted from
+    the end of its transmission, before it is tried again. A value applies to
+    flooded and direct pushes alike. Blank keeps the
+    <strong>firmware window</strong>: <span class="mono">{{ '%g' % flood_seconds }} s</span>
+    for a flooded push, and <span class="mono">{{ '%g' % direct_base_seconds }} s +
+    {{ '%g' % direct_hop_seconds }} s</span> per hop (counting the last) for a direct one.
+  </p>
+  <p>
+    <label>push only to members heard within this many days (at least {{ min_days }})
+      <input class="mono" type="text" name="push_recent_days" value="{{ days }}">
+    </label>
+  </p>
+  <p class="note">
+    A member is heard when it logs in, keeps alive, posts or sends any other
+    request to the room, or when an advert from it is received. A member
+    skipped for recency <strong>keeps its position</strong>, counts no failed
+    delivery, and <strong>resumes when heard</strong> on the next round.
+    Blank delivers to <strong>all members</strong>, however long ago they were heard.
+  </p>
+  <p class="note">
+    Changes apply to pushes composed from now on; a push already waiting keeps
+    the window it started with.
+  </p>
+  <button type="submit">apply</button>
+</form>
+<p><a href="/rooms">cancel</a></p>
+{% else %}
+<h1>room not found</h1>
+<p class="unavailable">No room with that identifier is stored.</p>
+{% endif %}
+{% endblock %}

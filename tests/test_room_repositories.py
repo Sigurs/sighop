@@ -280,3 +280,68 @@ async def test_deleting_a_room_that_does_not_exist_reports_so(database: Database
     deleted = await RoomRepository(database=database).delete(uuid.uuid4())
     assert isinstance(deleted, Succeeded)
     assert deleted.value is False
+
+
+# --- A room's delivery settings (change push-ack-window-from-transmit) -------
+
+
+async def test_a_created_room_has_no_delivery_settings_and_says_so(database: Database) -> None:
+    entity_id = await _room_server(database, "roomy")
+    created = await RoomRepository(database=database).create(
+        entity_id=entity_id, name="Lobby", admin_password_hash=hash_password("pw")
+    )
+    assert isinstance(created, Succeeded)
+    room = created.value
+    assert room.push_ack_window_seconds is None
+    assert room.push_recent_days is None
+    assert room.push_ack_window == "firmware"
+    assert room.push_recency == "all members"
+    assert room.as_json()["push_ack_window_seconds"] is None
+    assert room.as_json()["push_recent_days"] is None
+
+
+async def test_delivery_settings_are_set_read_back_and_cleared(database: Database) -> None:
+    entity_id = await _room_server(database, "roomy")
+    rooms = RoomRepository(database=database)
+    created = await rooms.create(
+        entity_id=entity_id, name="Lobby", admin_password_hash=hash_password("pw")
+    )
+    assert isinstance(created, Succeeded)
+
+    stored = await rooms.set_delivery(
+        created.value.id, push_ack_window_seconds=30, push_recent_days=7
+    )
+    assert isinstance(stored, Succeeded)
+    assert stored.value is True
+    after = await rooms.get_for_entity(entity_id)
+    assert isinstance(after, Succeeded)
+    assert after.value is not None
+    assert after.value.push_ack_window_seconds == 30
+    assert after.value.push_recent_days == 7
+    assert after.value.push_ack_window == "30 s"
+    assert after.value.push_recency == "heard ≤ 7 d"
+    assert after.value.as_json()["push_ack_window_seconds"] == 30
+    assert after.value.as_json()["push_recent_days"] == 7
+    # Nothing else moved.
+    assert after.value.retention == created.value.retention
+    assert after.value.name == created.value.name
+
+    cleared = await rooms.set_delivery(
+        created.value.id, push_ack_window_seconds=None, push_recent_days=None
+    )
+    assert isinstance(cleared, Succeeded)
+    after = await rooms.get_for_entity(entity_id)
+    assert isinstance(after, Succeeded)
+    assert after.value is not None
+    assert after.value.push_ack_window_seconds is None
+    assert after.value.push_recent_days is None
+
+
+async def test_setting_delivery_on_a_room_that_does_not_exist_reports_so(
+    database: Database,
+) -> None:
+    outcome = await RoomRepository(database=database).set_delivery(
+        uuid.uuid4(), push_ack_window_seconds=30, push_recent_days=None
+    )
+    assert isinstance(outcome, Succeeded)
+    assert outcome.value is False

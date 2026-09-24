@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_display.html" as display %}
 
 {% block title %}system · sighop{% endblock %}
 
@@ -74,6 +75,95 @@
   your password; following it changes nothing. The regulatory default ceiling is
   {{ '%g'|format(regulatory_default * 100) }}%.
 </p>
+
+<h2 id="collection">repeater collection</h2>
+{% set c = collection %}
+{% if collection_error %}
+<p class="unavailable" role="alert">{{ collection_error }}</p>
+{% endif %}
+{% if not c.readable %}
+<p class="unavailable">
+  <strong>The stored settings cannot be read.</strong> The defaults are shown;
+  saving writes what the form holds.
+</p>
+{% endif %}
+<p class="note">
+  Collection logs in to each selected repeater with a <strong>blank guest
+  password</strong> — no other password is ever sent — then asks for its status
+  and its neighbour list. A repeater whose guest password is set does not answer,
+  which is recorded as <em>login unanswered</em>, the same as one out of range.
+  Only repeaters ticked on the <a href="/contacts">contacts</a> page are polled:
+  <span class="mono">{{ c.selected }}</span> selected, of which
+  <span class="mono">{{ c.in_window }}</span> were heard within the recency window now.
+</p>
+{% if c.settings.enabled and not transmit_enabled %}
+<p class="unavailable">
+  <strong>Transmission is disabled.</strong> Collection is enabled, but no poll
+  will be sent until transmission is enabled.
+</p>
+{% endif %}
+{% if c.identity_missing %}
+<p class="unavailable">
+  <strong>Collection has no identity.</strong> The identity it logged in as was
+  removed; no poll is sent until another is chosen.
+</p>
+{% endif %}
+<form method="post" action="/system/collection">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>
+      <input type="checkbox" name="enabled" value="true"{% if c.form.enabled %} checked{% endif %}>
+      enabled
+    </label>
+  </p>
+  <p>
+    <label>log in as
+      <select name="entity_id">
+        <option value=""{% if not c.form.entity_id %} selected{% endif %}>(none)</option>
+        {% for value, name in c.identities %}
+        <option value="{{ value }}"{% if c.form.entity_id == value %} selected{% endif %}>{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <span class="note">An identity serving a room is not offered: its traffic belongs to the room.</span>
+  </p>
+  <p>
+    <label>interval, in minutes ({{ c.interval_range[0] }}–{{ c.interval_range[1] }})
+      <input class="mono" type="text" name="interval_minutes" value="{{ c.form.interval_minutes }}">
+    </label>
+  </p>
+  <p>
+    <label>poll only repeaters heard within this many days ({{ c.recent_range[0] }}–{{ c.recent_range[1] }})
+      <input class="mono" type="text" name="recent_days" value="{{ c.form.recent_days }}">
+    </label>
+  </p>
+  <p>
+    <label>keep samples for this many days ({{ c.retention_range[0] }}–{{ c.retention_range[1] }})
+      <input class="mono" type="text" name="retention_days" value="{{ c.form.retention_days }}">
+    </label>
+  </p>
+  <button type="submit">save</button>
+</form>
+<p class="note">A saved change applies to the running node within a minute, without a restart.</p>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>last cycle started</td><td class="mono">{{ display.when(c.settings.last_cycle_started_at) }}</td></tr>
+      <tr><td>last cycle finished</td><td class="mono">{{ display.when(c.settings.last_cycle_finished_at) }}</td></tr>
+      <tr>
+        <td>polled / succeeded</td>
+        <td class="mono">
+          {%- if c.settings.last_cycle_polled is not none -%}
+            {{ c.settings.last_cycle_polled }} / {{ c.settings.last_cycle_succeeded }}
+          {%- else -%}<span class="absent">—</span>{%- endif -%}
+        </td>
+      </tr>
+      {% if c.settings.last_cycle_note %}
+      <tr><td>last cycle skipped</td><td>{{ c.settings.last_cycle_note }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
 
 <h2>schema</h2>
 {% if unavailable %}

@@ -200,7 +200,17 @@ class StubState:
         return True
 
     async def reconcile_rooms(self) -> None:
+        """Counts, and refreshes a served room's stored settings the way
+        `Runtime.reconcile_rooms` does (design D10)."""
         self.room_reconciles += 1
+        listed = await self.persistence.rooms.list_all()
+        if not isinstance(listed, Succeeded):
+            return
+        by_id = {record.id: record for record in listed.value}
+        for server in self.rooms:
+            record = by_id.get(server.room.id)
+            if record is not None and record != server.room:
+                server.apply_record(record)
 
     async def reconcile_bots(self) -> None:
         self.bot_reconciles += 1

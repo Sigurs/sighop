@@ -98,6 +98,7 @@ from sighop.protocol.packet import (
 )
 from sighop.protocol.packet import encode as encode_packet
 from sighop.protocol.payloads import (
+    Acknowledgement,
     AnonRequestEnvelope,
     ClientKind,
     DirectEnvelope,
@@ -181,9 +182,27 @@ PUSH_ACK_TIMEOUT_FACTOR_MS = 2_000.0
 direct message's because a push may be the first packet a returning member has
 seen in a week."""
 
+MIN_PUSH_ACK_WINDOW_SECONDS = 5
+MAX_PUSH_ACK_WINDOW_SECONDS = 300
+"""The range a room's own push window may take (design D8): below it a typo
+re-creates the timeouts the window exists to fix, above it one silent member
+holds its own queue for many minutes per attempt."""
+
+MIN_PUSH_RECENT_DAYS = 1
+"""A recency limit is whole days, and zero days would push to nobody."""
+
 MAX_PUSH_FAILURES = 3
 """`:1012`. Consecutive unacknowledged deliveries before a member is left alone
 until it is next heard from."""
+
+POST_CLOCK_SKEW_TOLERANCE_S = 300
+"""How far below the member's recorded timestamp a post may be and still be
+accepted. A companion stamps posts with the phone's clock
+(`companion_radio/MyMesh.cpp:1089-1107`) but logins and keep-alives with the
+radio's (`BaseChatMesh.cpp:577`), so a radio running ahead of the phone puts
+every post below the guard its own login raised. Replays inside the window are
+answered by the retry lookup, not stored twice. Posts only; requests keep the
+firmware's strict check."""
 
 SERVER_RESPONSE_DELAY_MS = 1_500.0
 """`REPLY_DELAY_MILLIS` (`:3`), used as the deadline margin on a reply."""
@@ -256,6 +275,9 @@ class PostStored:
     truncated_from: int | None = None
     """Length of the text as received, when it was longer than the store keeps.
     `None` when nothing was dropped."""
+    ack_route: str | None = None
+    """How the acknowledgement went out: `PATH_RETURN`, or a `Route.label`.
+    `None` when it was not sent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,6 +307,13 @@ class DeliveryAcknowledged:
     post_timestamp: int
     bundled: bool
     packet_id: str
+    ack_after_tx_ms: float | None = None
+    """How long after the matched attempt finished transmitting the
+    acknowledgement arrived. `None` when it arrived before the push loop had
+    recorded the transmission."""
+    late: bool = False
+    """True when it matched an earlier, expired attempt rather than the most
+    recent one."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -476,13 +505,30 @@ class RoomStorage(Protocol):
 
 @dataclass(slots=True)
 class _Delivery:
-    """One push in flight to one member."""
+    """One push in flight to one member.
+
+    The window starts when the push has finished transmitting, not when it was
+    composed: `deadline` and `transmitted_at` stay `None` while it is queued or
+    on air, and a delivery with no deadline cannot time out. Queue wait and the
+    push's own airtime are therefore never taken from the member's time to
+    answer (`MyMesh.cpp:1004` carries the same gap as a TODO).
+    """
 
     member: bytes
     post_timestamp: int
     expected_ack: bytes
     sent_at: dt.datetime
-    deadline: dt.datetime
+    window_ms: float
+    transmitted_at: dt.datetime | None = None
+    deadline: dt.datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _Attempt:
+    """An earlier, expired attempt of the post still pending for a member."""
+
+    post_timestamp: int
+    transmitted_at: dt.datetime
 
 
 @dataclass(slots=True)
@@ -498,6 +544,11 @@ class _MemberState:
     delivery: _Delivery | None = None
     failures: int = 0
     backed_off: bool = False
+    prior: dict[bytes, _Attempt] = field(default_factory=dict)
+    """Expired attempts of the pending post, by expected checksum, still
+    registered so a late acknowledgement confirms the post rather than being
+    lost to the retry that replaced it. `attempt` is two bits, so this holds at
+    most four entries and needs no timer."""
 
 
 class RoomServer:
@@ -524,6 +575,7 @@ class RoomServer:
         on_event: Callable[[RoomEvent], None] | None = None,
         logger: Logger | None = None,
         path_hash_size: int = DEFAULT_PATH_HASH_SIZE,
+        last_heard: Callable[[bytes], dt.datetime | None] | None = None,
     ) -> None:
         self.entity = entity
         self.room = room
@@ -545,6 +597,9 @@ class RoomServer:
         """Width of the floods this room originates; a learned route keeps its own."""
         self.telemetry = list(telemetry)
         self.runtime_stats = runtime_stats
+        self.last_heard = last_heard
+        """When an advert from a public key was last received, or `None`. With
+        room activity, what a member's recency is judged on (design D9)."""
         self._on_event = on_event
         self._log = logger or get_logger(component="room", room=room.name)
 
@@ -595,6 +650,13 @@ class RoomServer:
     def members_behind(self) -> int:
         return sum(1 for state in self._state.values() if state.backed_off)
 
+    def members_not_recent(self) -> int:
+        """Members the recency limit is skipping right now. Computed on demand:
+        recency moves with every request and advert, so a stored count would be
+        stale by the time anyone read it."""
+        now = self.clock.now()
+        return sum(1 for member in self.members.values() if not self._heard_recently(member, now))
+
     def as_json(self) -> dict[str, object]:
         return {
             "room_name": self.room.name,
@@ -606,12 +668,41 @@ class RoomServer:
             "pushes_acknowledged": self.pushes_acknowledged,
             "deliveries_outstanding": self.deliveries_outstanding,
             "members_backed_off": self.members_behind(),
+            "members_not_recent": self.members_not_recent(),
             "accepting_posts": self.accepting_posts,
             "retention": self.room.retention,
+            "push_ack_window_seconds": self.room.push_ack_window_seconds,
+            "push_recent_days": self.room.push_recent_days,
             "messages_pruned": self.storage.messages.pruned,
             "messages_pruned_unsynced": self.storage.messages.pruned_unsynced,
             **self.throttle.as_json(),
         }
+
+    def apply_record(self, record: RoomRecord) -> list[str]:
+        """Take up the room's stored settings without a restart (design D10).
+
+        Access, retention and delivery are all read from `self.room` where they
+        are used, so replacing it is the whole change. A delivery already
+        outstanding keeps the window it started with; the next push composed
+        uses the new one. Returns the names of the fields that changed.
+        """
+        from dataclasses import fields
+
+        changed = [
+            item.name
+            for item in fields(record)
+            if getattr(record, item.name) != getattr(self.room, item.name)
+        ]
+        if not changed:
+            return []
+        self.room = record
+        self._log.info(
+            "room_settings_applied",
+            # Field names only: two of the fields are password hashes.
+            changed=changed,
+            **{key: value for key, value in record.as_json().items() if key != "room_id"},
+        )
+        return changed
 
     def _emit(self, event: RoomEvent) -> None:
         if self._on_event is not None:
@@ -727,7 +818,14 @@ class RoomServer:
             # that has silently left the room. Matched deliberately (design D9);
             # the throttle above is what keeps it from being free.
             permission = existing.permission
-            await self._admit(record, envelope, existing=existing, permission=permission, body=body)
+            await self._admit(
+                record,
+                envelope,
+                existing=existing,
+                permission=permission,
+                body=body,
+                empty_password=True,
+            )
             return
 
         # Once. Each call is an Argon2id run against 64 MiB, so evaluating twice
@@ -780,7 +878,14 @@ class RoomServer:
             )
             return
 
-        await self._admit(record, envelope, existing=existing, permission=admitted, body=body)
+        await self._admit(
+            record,
+            envelope,
+            existing=existing,
+            permission=admitted,
+            body=body,
+            empty_password=empty_password,
+        )
 
     async def _admit(
         self,
@@ -790,6 +895,7 @@ class RoomServer:
         existing: MemberRecord | None,
         permission: Permission,
         body: RoomLoginBody,
+        empty_password: bool,
     ) -> None:
         now = self.clock.now()
         timestamp = body.timestamp
@@ -806,7 +912,7 @@ class RoomServer:
             sync_since=sync_timestamp
             if sync_timestamp
             else (existing.sync_since if existing else 0),
-            last_timestamp=max(timestamp, existing.last_timestamp if existing else 0),
+            last_timestamp=self._admitted_timestamp(timestamp, existing, empty_password),
             first_login=existing.first_login if existing else now,
             last_activity=now,
         )
@@ -835,6 +941,7 @@ class RoomServer:
             new_member=existing is None,
             flooded=flooded,
             sync_since=member.sync_since,
+            empty_password=empty_password,
         )
         self._emit(
             LoginAdmitted(
@@ -850,6 +957,9 @@ class RoomServer:
 
     def _remember(self, member: MemberRecord) -> None:
         first = member.public_key not in self.members
+        previous = self.members.get(member.public_key)
+        if previous is not None and previous.sync_since != member.sync_since:
+            self._drop_prior(member.public_key)
         self.members[member.public_key] = member
         if first:
             self._state[member.public_key] = _MemberState()
@@ -882,26 +992,9 @@ class RoomServer:
             )
         )
         secret = self.secrets.get(self.entity.identity, member.public_key)
-        flooded = record.route_type in (RouteType.FLOOD, RouteType.TRANSPORT_FLOOD)
-
-        if flooded and record.packet is not None:
-            plaintext = build_returned_path_body(
-                ReturnedPathBody(
-                    hop_count=record.packet.hop_count,
-                    hash_size=record.packet.hash_size,
-                    path=record.packet.path,
-                    extra_type=PayloadType.RESPONSE,
-                    extra_raw=response,
-                )
-            )
-            flood = Route(flood=True, hash_size=self.path_hash_size)
-            packet = self._encrypted_packet(
-                PayloadType.PATH,
-                member.node_hash,
-                secret,
-                plaintext,
-                flood,
-            )
+        returned = self._path_return(record, member, secret, response=response)
+        if returned is not None:
+            packet, flood = returned
             await self._submit_reply(record, packet, flood, origin="room_login")
             return
 
@@ -912,6 +1005,22 @@ class RoomServer:
         await self._submit_reply(record, packet, route, origin="room_login")
 
     # --- Posts (task 7.1 - 7.7) --------------------------------------------
+
+    @staticmethod
+    def _admitted_timestamp(
+        timestamp: int, existing: MemberRecord | None, empty_password: bool
+    ) -> int:
+        """The recorded timestamp after a login (design D4).
+
+        `MyMesh.cpp:335-376`: an existing member's blank-password login skips
+        the block that writes `last_timestamp`, so a route re-establishment
+        stamped by a fast radio clock cannot push the member's posts below it.
+        """
+        if existing is None:
+            return timestamp
+        if empty_password:
+            return existing.last_timestamp
+        return max(timestamp, existing.last_timestamp)
 
     async def _handle_text(self, record: RxRecord, envelope: DirectEnvelope) -> None:
         """A `TXT_MSG` from a member is a post (`MyMesh.cpp:441-537`)."""
@@ -954,15 +1063,18 @@ class RoomServer:
             return
 
         self._note_activity(member)
-        if body.timestamp < member.last_timestamp:
+        if body.timestamp < member.last_timestamp - POST_CLOCK_SKEW_TOLERANCE_S:
+            # `:448` is strict; sighop allows the phone/radio clock split
+            # (design D1). A retry is decided by the stored row, not here.
+            gap = member.last_timestamp - body.timestamp
             self._post_refused(
                 record,
                 RefusalReason.REPLAY,
                 member,
-                f"post timestamp {body.timestamp} is below the recorded {member.last_timestamp}",
+                f"post timestamp {body.timestamp} is {gap} s below the recorded "
+                f"{member.last_timestamp} (tolerance {POST_CLOCK_SKEW_TOLERANCE_S} s)",
             )
             return
-        retry = body.timestamp == member.last_timestamp
 
         if not member.permission.may_post:
             # `:479`: refused silently from a `PERM_ACL_GUEST` member — no
@@ -996,7 +1108,7 @@ class RoomServer:
         # sender's own acknowledgement window, and the acknowledgement is
         # submitted only after the row lands.
         await self._store_then_acknowledge(
-            record, member, body, text=text, retry=retry, truncated_from=truncated_from
+            record, member, body, text=text, truncated_from=truncated_from
         )
 
     def _post_refused(
@@ -1032,13 +1144,12 @@ class RoomServer:
         body: TextMessageBody,
         *,
         text: bytes,
-        retry: bool,
         truncated_from: int | None,
     ) -> None:
         window = self._post_ack_window(record)
         try:
-            stored = await asyncio.wait_for(
-                self._store_post(member, body, text=text, retry=retry), timeout=window
+            result = await asyncio.wait_for(
+                self._store_post(member, body, text=text), timeout=window
             )
         except TimeoutError:
             # Nothing is sent, the client retries, and its own UI reports the
@@ -1051,14 +1162,15 @@ class RoomServer:
                 f"the post did not land within the sender's {window:.1f}s window",
             )
             return
-        if stored is None:
+        if result is None:
             self._post_refused(
                 record, RefusalReason.STORAGE_FAILED, member, "the post was not stored"
             )
             return
+        stored, retry = result
 
         self.posts_stored += 1
-        acknowledged = await self._acknowledge_post(record, member, body)
+        acknowledged, ack_route = await self._acknowledge_post(record, member, body)
         self._log.info(
             "room_post_stored",
             packet_id=record.packet_id,
@@ -1067,6 +1179,7 @@ class RoomServer:
             text_bytes=len(stored.text),
             retry=retry,
             acknowledged=acknowledged,
+            ack_route=ack_route,
             truncated_from=truncated_from,
         )
         self._emit(
@@ -1079,13 +1192,17 @@ class RoomServer:
                 acknowledged=acknowledged,
                 packet_id=record.packet_id,
                 truncated_from=truncated_from,
+                ack_route=ack_route if acknowledged else None,
             )
         )
 
     async def _store_post(
-        self, member: MemberRecord, body: TextMessageBody, *, text: bytes, retry: bool
-    ) -> PostRecord | None:
+        self, member: MemberRecord, body: TextMessageBody, *, text: bytes
+    ) -> tuple[PostRecord, bool] | None:
         """Store once, however many times it is sent (`:481`).
+
+        Returns the row and whether it was already stored, which is what
+        `retry` means (design D3).
 
         A retry is recognised by the sender's own timestamp, which is what makes
         the second copy answerable without a second row: the acknowledgement is
@@ -1096,7 +1213,7 @@ class RoomServer:
             self.room.id, member.public_key, body.timestamp
         )
         if isinstance(existing, Succeeded) and existing.value is not None:
-            return existing.value
+            return existing.value, True
         outcome = await self.storage.messages.store(
             room_id=self.room.id,
             author_public_key=member.public_key,
@@ -1105,7 +1222,7 @@ class RoomServer:
             now=int(self.clock.now().timestamp()),
             posted_at=self.clock.now(),
         )
-        return outcome.value if isinstance(outcome, Succeeded) else None
+        return (outcome.value, False) if isinstance(outcome, Succeeded) else None
 
     def _post_ack_window(self, record: RxRecord) -> float:
         """The sender's own acknowledgement window, in seconds (design D6)."""
@@ -1118,20 +1235,35 @@ class RoomServer:
 
     async def _acknowledge_post(
         self, record: RxRecord, member: MemberRecord, body: TextMessageBody
-    ) -> bool:
+    ) -> tuple[bool, str]:
         """`sha256(plaintext ‖ sender pubkey)[:4]`, at class 0 (`:461-463`).
 
         Over `body` as it arrived, never over the possibly-shortened stored text
         (`:461-462` hashes the received buffer). A client that composed past
         `STORED_POST_TEXT_LEN` computed its expectation over what it sent, so
         acknowledging the truncation would not match and it would retry forever.
+
+        A flooded post is answered by a flooded path return bundling the ACK,
+        not by a bare ACK on the route learned from the post itself: a client
+        floods because it has no route to us, and a zero-hop DIRECT ACK goes out
+        once with no one to relay it. The firmware floods a bare ACK instead
+        (`MyMesh.cpp:494-497`); the path return also teaches the client a route.
+        Returns whether it was sent, and the route label it went out on.
         """
         checksum = ack_checksum_for(body, member.public_key)
-        route = self._route_to(member)
-        packet = build_ack_packet(checksum=checksum, route=route)
-        return await self._submit_reply(
+        secret = self.secrets.get(self.entity.identity, member.public_key)
+        returned = self._path_return(record, member, secret, ack=Acknowledgement(checksum))
+        if returned is not None:
+            packet, route = returned
+            label = "PATH_RETURN"
+        else:
+            route = self._route_to(member)
+            packet = build_ack_packet(checksum=checksum, route=route)
+            label = route.label
+        sent = await self._submit_reply(
             record, packet, route, origin="room_post_ack", priority=PriorityClass.ACK
         )
+        return sent, label
 
     # --- Requests (task 9.1 - 9.5) -----------------------------------------
 
@@ -1292,21 +1424,9 @@ class RoomServer:
         body: bytes,
     ) -> None:
         secret = self.secrets.get(self.entity.identity, member.public_key)
-        flooded = record.route_type in (RouteType.FLOOD, RouteType.TRANSPORT_FLOOD)
-        if flooded and record.packet is not None:
-            plaintext = build_returned_path_body(
-                ReturnedPathBody(
-                    hop_count=record.packet.hop_count,
-                    hash_size=record.packet.hash_size,
-                    path=record.packet.path,
-                    extra_type=PayloadType.RESPONSE,
-                    extra_raw=body,
-                )
-            )
-            route = Route(flood=True, hash_size=self.path_hash_size)
-            packet = self._encrypted_packet(
-                PayloadType.PATH, member.node_hash, secret, plaintext, route
-            )
+        returned = self._path_return(record, member, secret, response=body)
+        if returned is not None:
+            packet, route = returned
         else:
             route = self._route_to(member)
             packet = self._encrypted_packet(
@@ -1385,6 +1505,9 @@ class RoomServer:
         self._replace(member, last_timestamp=max(timestamp, member.last_timestamp))
 
     def _set_cursor(self, member: MemberRecord, since: int) -> None:
+        if since != member.sync_since:
+            # The pending post may no longer be the one earlier attempts were of.
+            self._drop_prior(member.public_key)
         self._replace(member, sync_since=since)
 
     def _replace(self, member: MemberRecord, **changes: object) -> MemberRecord:
@@ -1412,6 +1535,8 @@ class RoomServer:
         """
         outcome = await self.storage.members.delete(self.room.id, public_key)
         self.members.pop(public_key, None)
+        self._clear_delivery(public_key, advance=False)
+        self._drop_prior(public_key)
         self._state.pop(public_key, None)
         if public_key in self._order:
             index = self._order.index(public_key)
@@ -1462,6 +1587,10 @@ class RoomServer:
             return False
 
         now = self.clock.now()
+        if not self._heard_recently(member, now):
+            # Not a failure and not backed off: the member keeps its position
+            # and is taken again on the first round after it is heard.
+            return False
         eligible = await self.storage.messages.next_for_member(
             self.room.id,
             since=member.sync_since,
@@ -1473,6 +1602,22 @@ class RoomServer:
         if not isinstance(eligible, Succeeded) or eligible.value is None:
             return False
         return await self.deliver(member, eligible.value)
+
+    def _heard_recently(self, member: MemberRecord, now: dt.datetime) -> bool:
+        """Within the room's recency limit, by room activity or advert (design D9).
+
+        An advert counts because it proves the member is reachable: one in range
+        that has simply not opened the room should still be pushed to.
+        """
+        days = self.room.push_recent_days
+        if days is None:
+            return True
+        heard = member.last_activity
+        if self.last_heard is not None:
+            advert = self.last_heard(member.public_key)
+            if advert is not None and advert > heard:
+                heard = advert
+        return heard >= now - dt.timedelta(days=days)
 
     async def deliver(self, member: MemberRecord, post: PostRecord) -> bool:
         """Push one post to one member and wait for exactly one acknowledgement."""
@@ -1502,15 +1647,22 @@ class RoomServer:
             return False
 
         now = self.clock.now()
-        timeout_ms = _push_timeout_ms(route)
+        timeout_ms = _push_timeout_ms(route, self.room.push_ack_window_seconds)
         state = self._state.setdefault(member.public_key, _MemberState())
-        state.delivery = _Delivery(
+        if any(attempt.post_timestamp != post.post_timestamp for attempt in state.prior.values()):
+            # A different post: earlier attempts can no longer confirm anything.
+            self._drop_prior(member.public_key)
+        # A retry that drew the same attempt as an earlier one expects the same
+        # checksum; the live delivery owns it from here (design D5).
+        state.prior.pop(expected, None)
+        delivery = _Delivery(
             member=member.public_key,
             post_timestamp=post.post_timestamp,
             expected_ack=expected,
             sent_at=now,
-            deadline=now + dt.timedelta(milliseconds=timeout_ms),
+            window_ms=timeout_ms,
         )
+        state.delivery = delivery
         self.acks.register(expected, owner=self.subscriber_name, on_match=self._on_delivery_ack)
 
         handle = self.submit(
@@ -1522,11 +1674,19 @@ class RoomServer:
                 entity_id=self.entity.entity_id,
                 entity_name=self.entity.name,
                 entity_type="room_server",
+                # The queue deadline stays at compose + window (design D2): a
+                # push that cannot get on air in time is dropped, not sent stale.
                 deadline=now + dt.timedelta(milliseconds=timeout_ms),
                 origin="room_push",
             )
         )
         outcome = await handle
+        # The handle resolves at the modem's TX_DONE, so the window starts here.
+        # Only for the delivery this call composed: a late acknowledgement of an
+        # earlier attempt may have confirmed the post while this one was on air.
+        if outcome.sent and state.delivery is delivery:
+            delivery.transmitted_at = self.clock.now()
+            delivery.deadline = delivery.transmitted_at + dt.timedelta(milliseconds=timeout_ms)
         self.pushes_sent += 1
         self._log.info(
             "room_push_sent",
@@ -1534,6 +1694,7 @@ class RoomServer:
             post_timestamp=post.post_timestamp,
             route=route.label,
             expected_ack=expected.hex(),
+            ack_window_ms=round(timeout_ms, 3),
             **outcome.as_json(),
         )
         self._emit(
@@ -1547,9 +1708,10 @@ class RoomServer:
                 packet_id=outcome.packet_id,
             )
         )
-        if not outcome.sent:
+        if not outcome.sent and state.delivery is delivery:
             # Suppressed or dropped: the delivery never happened, so nothing is
-            # outstanding and no cursor moves. It is retried on the next round.
+            # outstanding, no window starts and no cursor moves. It is retried on
+            # the next round.
             self._clear_delivery(member.public_key, advance=False)
         return bool(outcome.sent)
 
@@ -1559,50 +1721,112 @@ class RoomServer:
         Advancing only here is what makes the cursor mean *confirmed delivered*
         rather than *attempted*, which is the difference between a member that
         returns after a week getting what it missed and getting a gap.
+
+        The live delivery is matched first, then an earlier attempt of the
+        member's pending post (design D3, D4): an acknowledgement that arrives
+        after its attempt timed out still proves the member has the post.
         """
         for key, state in self._state.items():
             delivery = state.delivery
             if delivery is None or delivery.expected_ack != match.checksum:
                 continue
-            member = self.members.get(key)
-            if member is None:  # pragma: no cover - revoked mid-flight
-                return
-            self.pushes_acknowledged += 1
-            state.failures = 0
-            state.backed_off = False
-            updated = self._replace(member, sync_since=delivery.post_timestamp)
-            self.acks.release(delivery.expected_ack)
-            state.delivery = None
-            self._log.info(
-                "room_delivery_acknowledged",
-                member=key.hex()[:16],
+            self._confirm(
+                key,
+                state,
+                match,
                 post_timestamp=delivery.post_timestamp,
-                bundled=match.bundled,
+                transmitted_at=delivery.transmitted_at,
+                late=False,
             )
-            self._emit(
-                DeliveryAcknowledged(
-                    room_name=self.room.name,
-                    member=key,
-                    post_timestamp=delivery.post_timestamp,
-                    bundled=match.bundled,
-                    packet_id=match.packet_id,
-                )
+            return
+        for key, state in self._state.items():
+            attempt = state.prior.get(match.checksum)
+            if attempt is None:
+                continue
+            member = self.members.get(key)
+            if member is None or attempt.post_timestamp <= member.sync_since:
+                return
+            self._confirm(
+                key,
+                state,
+                match,
+                post_timestamp=attempt.post_timestamp,
+                transmitted_at=attempt.transmitted_at,
+                late=True,
             )
-            # Persisted after the fact rather than awaited here: this runs from
-            # a bus handler, and a cursor that is right in memory and late to
-            # the database costs a redelivery, while a blocked handler costs a
-            # reception.
-            asyncio.create_task(self._persist(updated))  # noqa: RUF006
             return
 
+    def _confirm(
+        self,
+        key: bytes,
+        state: _MemberState,
+        match: AckMatch,
+        *,
+        post_timestamp: int,
+        transmitted_at: dt.datetime | None,
+        late: bool,
+    ) -> None:
+        member = self.members.get(key)
+        if member is None:  # pragma: no cover - revoked mid-flight
+            return
+        # Whatever is outstanding for this post is answered — the attempt that
+        # matched, or a retry of it still waiting (design D4) — and no earlier
+        # attempt may confirm it again.
+        if state.delivery is not None and state.delivery.post_timestamp == post_timestamp:
+            self._clear_delivery(key, advance=True)
+        self._drop_prior(key)
+        self.pushes_acknowledged += 1
+        state.failures = 0
+        state.backed_off = False
+        updated = self._replace(member, sync_since=post_timestamp)
+        received_at = match.received_at or self.clock.now()
+        ack_after_tx_ms = (
+            None
+            if transmitted_at is None
+            else round((received_at - transmitted_at).total_seconds() * 1000, 3)
+        )
+        self._log.info(
+            "room_delivery_acknowledged",
+            member=key.hex()[:16],
+            post_timestamp=post_timestamp,
+            bundled=match.bundled,
+            ack_after_tx_ms=ack_after_tx_ms,
+            late=late,
+        )
+        self._emit(
+            DeliveryAcknowledged(
+                room_name=self.room.name,
+                member=key,
+                post_timestamp=post_timestamp,
+                bundled=match.bundled,
+                packet_id=match.packet_id,
+                ack_after_tx_ms=ack_after_tx_ms,
+                late=late,
+            )
+        )
+        # Persisted after the fact rather than awaited here: this runs from
+        # a bus handler, and a cursor that is right in memory and late to
+        # the database costs a redelivery, while a blocked handler costs a
+        # reception.
+        asyncio.create_task(self._persist(updated))  # noqa: RUF006
+
     def _expire_deliveries(self) -> None:
-        """Time out what was never answered, and back a member off at the bound."""
+        """Time out what was never answered, and back a member off at the bound.
+
+        A delivery still queued or on air has no deadline and cannot expire. An
+        expired attempt's expectation is kept, not released, so its late
+        acknowledgement still confirms the post (design D3).
+        """
         now = self.clock.now()
         for key, state in self._state.items():
             delivery = state.delivery
-            if delivery is None or now < delivery.deadline:
+            if delivery is None or delivery.deadline is None or now < delivery.deadline:
                 continue
-            self.acks.release(delivery.expected_ack)
+            assert delivery.transmitted_at is not None
+            state.prior[delivery.expected_ack] = _Attempt(
+                post_timestamp=delivery.post_timestamp,
+                transmitted_at=delivery.transmitted_at,
+            )
             state.delivery = None
             state.failures += 1
             if state.failures >= MAX_PUSH_FAILURES and not state.backed_off:
@@ -1625,8 +1849,20 @@ class RoomServer:
         state = self._state.get(public_key)
         if state is None or state.delivery is None:
             return
+        # An earlier attempt that drew the same checksum is the same
+        # expectation; it goes too.
+        state.prior.pop(state.delivery.expected_ack, None)
         self.acks.release(state.delivery.expected_ack)
         state.delivery = None
+
+    def _drop_prior(self, public_key: bytes) -> None:
+        """Stop accepting earlier attempts: confirmed, superseded or revoked."""
+        state = self._state.get(public_key)
+        if state is None or not state.prior:
+            return
+        live = None if state.delivery is None else state.delivery.expected_ack
+        self.acks.release_all(checksum for checksum in state.prior if checksum != live)
+        state.prior.clear()
 
     # --- Retention (task 10.1 - 10.2) --------------------------------------
 
@@ -1696,6 +1932,46 @@ class RoomServer:
             hop_count=learned.hop_count,
             ambiguous=ambiguous,
         )
+
+    def _path_return(
+        self,
+        record: RxRecord,
+        member: MemberRecord,
+        secret: bytes,
+        *,
+        response: bytes | None = None,
+        ack: Acknowledgement | None = None,
+    ) -> tuple[bytes, Route] | None:
+        """A flooded `PATH` carrying the request's path back, bundling `response`
+        or `ack`; `None` when the request did not arrive flooded.
+
+        The body echoes the inbound path at its own hash size, and the flood
+        goes out at ours (`BaseChatMesh.cpp:328-340`, `Mesh.cpp:173-177`).
+        """
+        flooded = record.route_type in (RouteType.FLOOD, RouteType.TRANSPORT_FLOOD)
+        if not flooded or record.packet is None:
+            return None
+        if ack is not None:
+            path_body = ReturnedPathBody(
+                hop_count=record.packet.hop_count,
+                hash_size=record.packet.hash_size,
+                path=record.packet.path,
+                extra_type=PayloadType.ACK,
+                extra_ack=ack,
+            )
+        else:
+            path_body = ReturnedPathBody(
+                hop_count=record.packet.hop_count,
+                hash_size=record.packet.hash_size,
+                path=record.packet.path,
+                extra_type=PayloadType.RESPONSE,
+                extra_raw=response or b"",
+            )
+        flood = Route(flood=True, hash_size=self.path_hash_size)
+        packet = self._encrypted_packet(
+            PayloadType.PATH, member.node_hash, secret, build_returned_path_body(path_body), flood
+        )
+        return packet, flood
 
     def _route_to(self, member: MemberRecord) -> Route:
         """The member's known route, or a flood when it has none.
@@ -1813,8 +2089,14 @@ def _push_body(post: PostRecord) -> TextMessageBody:
     )
 
 
-def _push_timeout_ms(route: Route) -> float:
-    """`MyMesh.cpp:96-103`: flooded is a flat window, direct scales with hops."""
+def _push_timeout_ms(route: Route, override_seconds: int | None = None) -> float:
+    """`MyMesh.cpp:96-103`: flooded is a flat window, direct scales with hops.
+
+    A room's own window, when set, replaces both — an override, not a floor
+    (design D8), so the number an operator types is the number used.
+    """
+    if override_seconds is not None:
+        return override_seconds * 1000.0
     if route.flood:
         return PUSH_ACK_TIMEOUT_FLOOD_MS
     return PUSH_TIMEOUT_BASE_MS + PUSH_ACK_TIMEOUT_FACTOR_MS * (route.hop_count + 1)

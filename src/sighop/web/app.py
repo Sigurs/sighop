@@ -67,7 +67,7 @@ from sighop.web.render import (
     install_display,
     queue_rows,
 )
-from sighop.web.routes import admin, chat, keys, rooms, session, setup, system
+from sighop.web.routes import admin, chat, collect, keys, rooms, session, setup, system
 from sighop.web.serialize import logged_packet
 from sighop.web.state import PanelState
 
@@ -181,6 +181,7 @@ def create_app(
     app.include_router(rooms.router)
     app.include_router(chat.router)
     app.include_router(system.router)
+    app.include_router(collect.router)
 
     def page(request: Request, name: str, **extra: object) -> HTMLResponse:
         return app.state.panel.page(request, name, **extra)  # type: ignore[no-any-return]
@@ -204,8 +205,9 @@ def create_app(
         """Who we have heard, with the route a message to them would take.
 
         Each row links to one conversation — as the identity this operator chats
-        as, or as the only identity this run holds. Resolved from the session,
-        so the page still reads nothing durable.
+        as, or as the only identity this run holds, resolved from the session.
+        Repeater rows carry the collection checkbox and last poll, which are the
+        page's only durable reads (repeater-metrics D10).
         """
         held = list(state.adverts.stubs)
         session = current_session(request)
@@ -218,6 +220,7 @@ def create_app(
             rows=contact_rows(state.contacts, state.pipeline.paths),
             identities=held,
             sending_as=sending_as,
+            collect_cells=await collect.collection_cells(state.persistence, state.contacts),
         )
 
     @app.websocket("/feed")

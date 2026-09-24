@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% import "_display.html" as display %}
+{% import "_identity.html" as ident %}
+
+{% block title %}metrics · sighop{% endblock %}
+
+{% block content %}
+{% if contact %}
+<h1>metrics: {{ ident.identity(identity) }}</h1>
+
+{% if unavailable %}
+<p class="unavailable">
+  <strong>The collected history cannot be read.</strong> What follows may be incomplete.
+</p>
+{% endif %}
+{% if not selected %}
+<p class="note">
+  This repeater is not selected for collection; tick <strong>collect metrics</strong>
+  on the <a href="/contacts">contacts</a> page to poll it.
+</p>
+{% endif %}
+
+<h2>latest status</h2>
+{% if status_poll %}
+<p class="note">
+  Collected {{ display.when(status_poll.started_at) }}. Counters are shown as the
+  repeater reported them, since its last restart — not as rates. A field the
+  repeater did not return is <strong>not reported</strong>, never zero.
+</p>
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      {% for reading in readings %}
+      <tr>
+        <td>{{ reading.label }}</td>
+        <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<h2>neighbours</h2>
+{% if neighbours %}
+<p class="note">
+  Repeaters this one heard zero-hop, as of that poll
+  {%- if status_poll.neighbours_total is not none %} ({{ status_poll.neighbours_total }} reported){% endif %}.
+  A key prefix is named only when exactly one known contact's key starts with it.
+</p>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>neighbour</th><th class="mono">prefix</th><th class="num">snr</th><th>heard before the poll</th></tr>
+    </thead>
+    <tbody>
+      {% for n in neighbours %}
+      <tr>
+        <td>
+          {%- if n.identity -%}{{ ident.identity(n.identity, key=false) }}
+          {%- elif n.ambiguous -%}<span class="route-ambiguous">ambiguous — matches more than one contact</span>
+          {%- else -%}<span class="absent">unknown</span>{%- endif -%}
+        </td>
+        <td class="mono">{{ n.prefix_hex }}</td>
+        <td class="num">{{ '%+.2f'|format(n.snr_db) }}</td>
+        <td class="mono">{{ n.heard_ago }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">No neighbours were reported by that poll.</p>
+{% endif %}
+{% elif history %}
+<p class="empty">
+  <strong>No poll has returned a status yet.</strong> The history below says why each ended.
+</p>
+{% endif %}
+
+<h2>poll history</h2>
+{% if history %}
+<p class="note">
+  Newest first, within the retention window ({{ settings.retention_days }} days), at
+  most {{ history_cap }} polls. <em>Login unanswered</em> means the repeater did not
+  answer a blank-password guest login: it was out of range, or it has a guest
+  password set.
+</p>
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>started</th><th>outcome</th><th>route</th><th>reason</th></tr>
+    </thead>
+    <tbody>
+      {% for poll in history %}
+      <tr>
+        <td class="mono">{{ display.when(poll.started_at) }}</td>
+        <td>{{ poll.outcome.label }}</td>
+        <td class="mono">{{ poll.route or '—' }}</td>
+        <td>{{ poll.reason or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">
+  <strong>No poll has been recorded</strong> for this repeater.
+  {% if not settings.enabled %}
+  Collection is disabled on the <a href="/system#collection">system</a> page.
+  {% elif next_due %}
+  The next cycle is due {{ display.when(next_due) }}.
+  {% else %}
+  The next cycle is due within a minute.
+  {% endif %}
+</p>
+{% endif %}
+{% else %}
+<h1>repeater not found</h1>
+<p class="unavailable">No repeater contact with that key is known.</p>
+{% endif %}
+{% endblock %}

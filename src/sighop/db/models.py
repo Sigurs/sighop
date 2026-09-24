@@ -1,4 +1,4 @@
-"""The twelve tables (milestone 5 D3, 6 D2, 7 D3, 8 D7, 9 D1, webhook-notifications D5).
+"""The tables (milestone 5 D3, 6 D2, 7 D3, 8 D7, 9 D1, webhook D5, repeater-metrics D8).
 
 DESIGN.md §6 sketches eight tables. Milestone 5 built the four the runtime reads
 and writes on every packet — `entity`, `contact`, `path`, `packet_log` —
@@ -265,6 +265,13 @@ class Room(Base):
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retention_messages: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    push_ack_window_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """How long a push waits for its acknowledgement after transmission. NULL
+    keeps the firmware's flooded and per-hop direct windows (migration 0010)."""
+
+    push_recent_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """Push history only to members heard within this many days. NULL pushes to
+    every member, as before (migration 0010)."""
 
 
 class RoomMember(Base):
@@ -663,3 +670,136 @@ class ChannelMessage(Base):
         ),
         CheckConstraint("repeats_heard >= 0", name="repeats_heard"),
     )
+
+
+REPEATER_POLL_OUTCOMES = (
+    "succeeded",
+    "not_sent",
+    "login_unanswered",
+    "status_unanswered",
+    "neighbours_incomplete",
+)
+
+
+class RepeaterCollectionRow(Base):
+    """Station-wide repeater collection settings (repeater-metrics D8).
+
+    One row, `id = 1`; its absence means the defaults, so a fresh database
+    collects nothing. The last-cycle columns are what the system page shows.
+    `entity_id` is `ON DELETE SET NULL`: removing the login identity stops
+    collection rather than letting it pick another. Enabled-without-identity is
+    refused when saved, not by a constraint, because the removal must succeed
+    while collection is enabled and leaves exactly that state behind.
+    """
+
+    __tablename__ = "repeater_collection"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "entity.id", ondelete="SET NULL", name="fk_repeater_collection_entity_id_entity"
+        ),
+        nullable=True,
+    )
+    interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    recent_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    last_cycle_started_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    last_cycle_finished_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
+    last_cycle_polled: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_cycle_succeeded: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_cycle_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """Why the last due cycle did not poll (no identity, identity serving a
+    room), or NULL when it ran."""
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="single_row"),
+        CheckConstraint("interval_minutes BETWEEN 5 AND 1440", name="interval_minutes"),
+        CheckConstraint("recent_days BETWEEN 1 AND 365", name="recent_days"),
+        CheckConstraint("retention_days BETWEEN 1 AND 365", name="retention_days"),
+    )
+
+
+class RepeaterTargetRow(Base):
+    """A repeater selected for collection, by public key. Not a `contact`
+    column, so an advert upsert can never clear a selection; no foreign key,
+    because an orphan selection is harmless."""
+
+    __tablename__ = "repeater_target"
+
+    public_key: Mapped[bytes] = mapped_column(LargeBinary, primary_key=True)
+    selected_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+
+class RepeaterPollRow(Base):
+    """One poll of one repeater: its outcome and whatever status it returned.
+
+    Status columns are NULL unless the status request was answered; the two
+    receive counters are also NULL when the repeater's firmware predates them.
+    """
+
+    __tablename__ = "repeater_poll"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    public_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("entity.id", ondelete="SET NULL", name="fk_repeater_poll_entity_id_entity"),
+        nullable=True,
+    )
+    started_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+    outcome: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    route: Mapped[str] = mapped_column(Text, nullable=False)
+    batt_milli_volts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    curr_tx_queue_len: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    noise_floor: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_rssi: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_packets_recv: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_packets_sent: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_air_time_secs: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_up_time_secs: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_sent_flood: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_sent_direct: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_recv_flood: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_recv_direct: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    err_events: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_snr_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    n_direct_dups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    n_flood_dups: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_rx_air_time_secs: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    n_recv_errors: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    neighbours_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        Index("ix_repeater_poll_public_key_started_at", "public_key", "started_at"),
+        Index("ix_repeater_poll_started_at", "started_at"),
+        CheckConstraint(
+            "outcome IN (" + ", ".join(f"'{o}'" for o in REPEATER_POLL_OUTCOMES) + ")",
+            name="outcome",
+        ),
+    )
+
+
+class RepeaterNeighbourRow(Base):
+    """One entry of a poll's neighbour list, as received. Goes with its poll."""
+
+    __tablename__ = "repeater_neighbour"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    poll_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "repeater_poll.id",
+            ondelete="CASCADE",
+            name="fk_repeater_neighbour_poll_id_repeater_poll",
+        ),
+        nullable=False,
+    )
+    prefix: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    heard_seconds_ago: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snr_db: Mapped[float] = mapped_column(Float, nullable=False)
+
+    __table_args__ = (Index("ix_repeater_neighbour_poll_id", "poll_id"),)

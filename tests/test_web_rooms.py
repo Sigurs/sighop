@@ -376,3 +376,28 @@ async def test_opening_paging_and_refreshing_transmits_nothing(
     assert listed.value[0].public_key == member
     assert listed.value[0].sync_since == 0, "browsing moved a member's sync cursor"
     assert listed.value[0].last_timestamp == 0
+
+
+# --- Delivery settings in the rooms list (push-ack-window-from-transmit) ----
+
+
+async def test_the_rooms_list_shows_delivery_settings_and_links_the_delivery_page(
+    database: Database,
+) -> None:
+    persistence, room = await _room(database)
+
+    app = _app(stub_state(persistence=persistence))
+    async with _live(app) as client:
+        defaults = (await client.get("/rooms")).text
+        assert isinstance(
+            await persistence.rooms.set_delivery(
+                room.id, push_ack_window_seconds=30, push_recent_days=7
+            ),
+            Succeeded,
+        )
+        tuned = (await client.get("/rooms")).text
+
+    assert "<th>delivery</th>" in defaults
+    assert "firmware window · all members" in defaults
+    assert f'href="/admin/rooms/{room.id}/delivery">delivery…</a>' in defaults
+    assert "30 s window · heard ≤ 7 d" in tuned

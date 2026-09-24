@@ -51,7 +51,7 @@ from sighop.net.room import POST_SYNC_DELAY_SECS, STORED_POST_TEXT_LEN
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType, WireText
 from sighop.web.app import allowed_hosts, create_app
-from sighop.web.guard import TOKEN_FIELD
+from sighop.web.guard import TOKEN_FIELD, TOKEN_HEADER
 from sighop.web.guarded import (
     ACTION_DESCRIPTIONS,
     EXPORT_KEY,
@@ -1906,6 +1906,8 @@ async def _populated(database: Database):
             # Milestone 8's chat pages, so the sweep covers the whole interface
             # rather than only what this change added.
             "entity_key": state.adverts.stubs[0].identity.public_key.hex(),
+            # repeater-metrics: the contact table's collection routes.
+            "key_hex": identity_record.public_key.hex(),
             "peer_key": identity_record.public_key.hex(),
             # web-advert-now's confirmation views: the flood one, the costlier.
             "kind": "flood",
@@ -2042,8 +2044,11 @@ async def test_every_new_write_emits_exactly_one_request_event(
         ("/admin/identities/create", {"name": "one-more"}),
         (f"/admin/identities/{ids['entity_id']}/enabled", {"enabled": "false"}),
         (f"/admin/rooms/{ids['room_id']}/password", {"allow_read_only": "true"}),
+        (f"/admin/rooms/{ids['room_id']}/delivery", {"push_ack_window_seconds": "30"}),
         (f"/admin/bots/{ids['bot_id']}/config", {"key": "burst", "value": "4"}),
         (f"/admin/bots/{ids['bot_id']}/greeted/seed", {}),
+        ("/system/collection", {"interval_minutes": "30"}),
+        (f"/contacts/{ids['key_hex']}/collect", {"collect": "true"}),
     ]
 
     async with _live(app) as client:
@@ -2663,3 +2668,54 @@ async def test_a_stranded_identity_can_be_removed_and_re_imported_from_the_panel
     [entity] = loaded.value.opened
     assert entity.public_key == held.public_key, "the identity did not survive"
     assert not loaded.value.stranded
+
+
+# --- repeater-metrics-collection 6.4: both new writes are guarded ----------
+
+
+async def test_the_collection_writes_need_a_session_and_the_token(database: Database) -> None:
+    """CSRF and sign-in on both new POSTs, and a refused one stores nothing."""
+    persistence, state, _ids = await _populated(database)
+    repeater = generate_identity().public_key
+    state.contacts._insert(
+        Contact(
+            public_key=repeater,
+            node_type=NodeType.REPEATER,
+            last_heard=dt.datetime.now(dt.UTC),
+            advert_verified=True,
+        )
+    )
+    app, _state, _log = _built(state)
+    writes = [
+        (
+            "/system/collection",
+            {"interval_minutes": "30", "recent_days": "2", "retention_days": "14"},
+        ),
+        (f"/contacts/{repeater.hex()}/collect", {"collect": "true"}),
+    ]
+
+    async with _live(app) as client:
+        client.headers.pop(TOKEN_HEADER, None)
+        for path, fields in writes:
+            response = await client.post(path, data=fields)
+            assert response.status_code == 403, f"{path} took a write without the token"
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
+        base_url="http://127.0.0.1:8080",
+        follow_redirects=False,
+    ) as anonymous:
+        for path, fields in writes:
+            response = await anonymous.post(path, data=fields)
+            assert response.status_code in (303, 401, 403), f"{path} took a write signed out"
+
+    settings = await persistence.repeater_collection.get()
+    targets = await persistence.repeater_targets.list_keys()
+    assert isinstance(settings, Succeeded) and settings.value.interval_minutes == 60
+    assert isinstance(targets, Succeeded) and targets.value == frozenset()
+
+    async with _live(app) as client:
+        stored = await _apost(client, app, f"/contacts/{repeater.hex()}/collect", collect="true")
+    assert stored.status_code == 200
+    targets = await persistence.repeater_targets.list_keys()
+    assert isinstance(targets, Succeeded) and targets.value == frozenset({repeater})

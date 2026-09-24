@@ -172,6 +172,11 @@ class PathBodyReader:
     secrets: SharedSecretCache | None = None
     acks: AckRegistry | None = None
     on_event: Callable[[PathBodyEvent], None] | None = None
+    on_bundled_response: Callable[[_PathEntity, Contact, bytes, RxRecord], None] | None = None
+    """Given a bundled `RESPONSE` — the answer to a flooded request — after the
+    route is adopted, so the answer's owner can send the next request direct.
+    The repeater collector's; any other bundled type never reaches it."""
+
     logger: Logger | None = None
     learned: int = field(default=0, init=False)
     undecryptable: int = field(default=0, init=False)
@@ -291,6 +296,8 @@ class PathBodyReader:
         bundled_matched = deliver_bundled_ack(body, record=record, acks=self.acks)
         if body.extra_ack is not None and self.acks is not None:
             self.bundled_acks += 1
+        if body.extra_type is PayloadType.RESPONSE and self.on_bundled_response is not None:
+            self.on_bundled_response(entity, contact, body.extra_raw, record)
         assert self.logger is not None
         self.logger.info(
             "path_body_learned",

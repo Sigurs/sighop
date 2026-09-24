@@ -328,6 +328,62 @@ async def test_a_bundled_type_we_do_not_act_on_is_reported_and_not_interpreted()
     assert subscriber.bundled_acks == 0
 
 
+async def test_a_bundled_response_reaches_its_callback_with_the_route_already_learned() -> None:
+    """repeater-metrics 3.1: a flooded request's answer rides in the path return."""
+    us, them = Entity("us"), Entity("them")
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(them.identity.public_key)
+    acks = AckRegistry(logger=RecordingLogger())
+    subscriber = reader(us, contacts=contacts, acks=acks)
+    seen: list[tuple[str, bytes, bytes, bool]] = []
+
+    def on_response(entity, contact, payload, record) -> None:
+        learned = subscriber.paths.lookup_public_key(contact.public_key)
+        seen.append((entity.name, contact.public_key, payload, learned is not None))
+
+    subscriber.on_bundled_response = on_response
+    body = ReturnedPathBody(
+        hop_count=1,
+        hash_size=1,
+        path=b"\x44",
+        extra_type=PayloadType.RESPONSE,
+        extra_raw=b"\x01\x02\x03\x04",
+    )
+    await subscriber.handle(_packet_for(path_packet(sender=them, recipient=us, body=body)))
+
+    assert len(seen) == 1
+    name, key, payload, route_learned = seen[0]
+    assert (name, key) == ("us", them.identity.public_key)
+    assert payload.startswith(b"\x01\x02\x03\x04"), "padding may follow; the content leads"
+    assert route_learned, "the route is adopted before the callback runs"
+    assert acks.unowned == 0
+
+
+async def test_a_bundled_acknowledgement_never_reaches_the_response_callback() -> None:
+    us, them = Entity("us"), Entity("them")
+    contacts = ContactStore(logger=RecordingLogger())
+    contacts.add_public_key(them.identity.public_key)
+    acks = AckRegistry(logger=RecordingLogger())
+    matched: list[AckMatch] = []
+    checksum = b"\xde\xad\xbe\xef"
+    acks.register(checksum, owner="room:lounge", on_match=matched.append)
+    subscriber = reader(us, contacts=contacts, acks=acks)
+    responses: list[object] = []
+    subscriber.on_bundled_response = lambda *args: responses.append(args)
+
+    body = ReturnedPathBody(
+        hop_count=0,
+        hash_size=1,
+        path=b"",
+        extra_type=PayloadType.ACK,
+        extra_raw=build_ack(Acknowledgement(checksum=checksum)),
+    )
+    await subscriber.handle(_packet_for(path_packet(sender=them, recipient=us, body=body)))
+
+    assert responses == []
+    assert [match.checksum for match in matched] == [checksum]
+
+
 # --- Room-claimed entities (design D10, and the fix to design D5) ----------
 
 

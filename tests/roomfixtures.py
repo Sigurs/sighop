@@ -233,6 +233,8 @@ def room_record(
     allow_read_only: bool = False,
     retention_days: int | None = None,
     retention_messages: int | None = None,
+    push_ack_window_seconds: int | None = None,
+    push_recent_days: int | None = None,
 ) -> RoomRecord:
     return RoomRecord(
         id=uuid.uuid4(),
@@ -245,6 +247,8 @@ def room_record(
         retention_days=retention_days,
         retention_messages=retention_messages,
         created_at=dt.datetime(2026, 9, 5, tzinfo=dt.UTC),
+        push_ack_window_seconds=push_ack_window_seconds,
+        push_recent_days=push_recent_days,
     )
 
 

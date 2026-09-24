@@ -756,3 +756,107 @@ async def test_taking_up_a_room_mid_run_leaves_the_others_undisturbed(
     if run.retention is not None:
         await run.retention.stop()
     await persistence.stop()
+
+
+# --- Room settings reach a served room (change push-ack-window-from-transmit)
+
+
+async def test_changed_room_settings_reach_the_served_room_on_reconcile(
+    database: Database,
+) -> None:
+    """Design D10: access, retention and delivery all without a restart."""
+    persistence, room, loaded = await _stored_room_server(database)
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    await run._restore()
+    server = run.rooms[0]
+    assert server.policy.guest_open is False
+    assert server.room.push_ack_window_seconds is None
+
+    assert isinstance(await persistence.rooms.set_passwords(room.id, guest_open=True), Succeeded)
+    assert isinstance(
+        await persistence.rooms.set_retention(room.id, retention_days=30, retention_messages=None),
+        Succeeded,
+    )
+    assert isinstance(
+        await persistence.rooms.set_delivery(
+            room.id, push_ack_window_seconds=30, push_recent_days=7
+        ),
+        Succeeded,
+    )
+    await run.reconcile_rooms()
+
+    assert run.rooms[0] is server, "the room was restarted rather than refreshed"
+    assert server.policy.guest_open is True, "logins still use the old access settings"
+    assert server.room.retention_days == 30
+    assert server.room.push_ack_window_seconds == 30
+    assert server.room.push_recent_days == 7
+    applied = run.logger.of("room_settings_applied")
+    assert applied
+    assert set(applied[-1]["changed"]) == {
+        "guest_open",
+        "retention_days",
+        "push_ack_window_seconds",
+        "push_recent_days",
+    }
+    (line,) = run._room_status_lines()
+    assert "not_recent=0" in line
+    assert "ack_window=30s" in line
+    assert "recent=7d" in line
+
+    if run.retention is not None:
+        await run.retention.stop()
+    await persistence.stop()
+
+
+async def test_a_member_heard_only_by_advert_is_eligible_for_delivery(
+    database: Database,
+) -> None:
+    """Design D9: the runtime hands the room the contact store's `last_heard`."""
+    persistence, room, loaded = await _stored_room_server(database)
+    assert isinstance(
+        await persistence.rooms.set_delivery(
+            room.id, push_ack_window_seconds=None, push_recent_days=7
+        ),
+        Succeeded,
+    )
+    run = runtime(
+        _events(CAPTURE),
+        out=io.StringIO(),
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, stored_entities=tuple(loaded)),
+        persistence=persistence,
+    )
+    long_ago = ensure_utc(run.clock.now() - dt.timedelta(days=30), field="last_activity")
+    member_key = generate_identity().public_key
+    assert isinstance(
+        await persistence.members.upsert(
+            MemberRecord(
+                room_id=room.id,
+                public_key=member_key,
+                node_hash=member_key[0],
+                permissions=int(Permission.READ_WRITE),
+                sync_since=0,
+                last_timestamp=0,
+                first_login=long_ago,
+                last_activity=long_ago,
+            )
+        ),
+        Succeeded,
+    )
+    await run._restore()
+    server = run.rooms[0]
+    assert server.members_not_recent() == 1
+    assert "not_recent=1" in run._room_status_lines()[0]
+
+    contact = run.contacts.add_public_key(member_key)
+    contact.last_heard = run.clock.now() - dt.timedelta(days=1)
+
+    assert server.members_not_recent() == 0
+
+    if run.retention is not None:
+        await run.retention.stop()
+    await persistence.stop()

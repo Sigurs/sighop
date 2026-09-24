@@ -46,6 +46,16 @@ def test_retention_is_unlimited_by_default_and_says_so_as_null() -> None:
         assert column.server_default is None
 
 
+def test_delivery_settings_default_to_null_which_is_todays_behaviour() -> None:
+    """Migration 0010: NULL is the firmware's windows and every member."""
+    columns = inspect(Room).columns
+    for name in ("push_ack_window_seconds", "push_recent_days"):
+        column = columns[name]
+        assert column.nullable, f"room.{name} must be nullable to mean the default"
+        assert column.default is None, f"room.{name} must not default to a value"
+        assert column.server_default is None
+
+
 def test_one_room_per_identity_is_a_constraint_not_a_convention() -> None:
     """1.1: a node is a room (design D2's Non-Goal), expressed as uniqueness."""
     assert inspect(Room).columns["entity_id"].unique is True
@@ -161,6 +171,8 @@ async def test_a_new_room_keeps_everything_until_a_policy_is_set(database: Datab
         stored = (await session.execute(select(Room).where(Room.id == room.id))).scalar_one()
         assert stored.retention_days is None
         assert stored.retention_messages is None
+        assert stored.push_ack_window_seconds is None
+        assert stored.push_recent_days is None
         assert stored.guest_password_hash is None
         assert stored.guest_open is False
         assert stored.allow_read_only is False
@@ -250,3 +262,63 @@ async def test_removing_a_room_removes_its_members_and_its_history(database: Dat
         assert (
             await session.execute(select(Message).where(Message.room_id == room.id))
         ).scalars().all() == []
+
+
+# --- Migration 0010: the room's delivery settings ----------------------------
+
+
+def test_the_delivery_migration_states_what_a_downgrade_costs() -> None:
+    from sighop.db import migrations
+
+    source = (
+        migrations.migrations_dir() / "versions" / "0010_room_delivery_settings.py"
+    ).read_text()
+    assert "``room.push_ack_window_seconds``" in source
+    assert "``room.push_recent_days``" in source
+    assert "What a downgrade loses" in source
+
+
+async def test_0010_upgrade_downgrade_upgrade_adds_and_drops_both_columns(
+    database_url: str,
+) -> None:
+    from sighop.config import DatabaseConfig
+    from sighop.db import migrations
+    from tests.dbfixtures import SCHEMA_PREFIX, _connect, _create_schema, _drop_schema
+
+    schema = f"{SCHEMA_PREFIX}room_delivery_cycle"
+    config = DatabaseConfig(url=database_url, schema=schema)
+    delivery = {"push_ack_window_seconds", "push_recent_days"}
+
+    async def room_columns() -> set[str]:
+        connection = await _connect(database_url)
+        try:
+            return {
+                row[0]
+                for row in await connection.fetch(
+                    "SELECT column_name FROM information_schema.columns WHERE "
+                    "table_schema = $1 AND table_name = 'room'",
+                    schema,
+                )
+            }
+        finally:
+            await connection.close()
+
+    await _drop_schema(database_url, schema)
+    await _create_schema(database_url, schema)
+    try:
+        await migrations.upgrade_async(config)
+        assert delivery <= await room_columns()
+
+        await migrations.downgrade_async(config, revision="0009")
+        left = await room_columns()
+        assert not (delivery & left), "a downgrade to 0009 must drop both columns"
+        assert "retention_days" in left, "the downgrade dropped more than it added"
+
+        await migrations.upgrade_async(config)
+        handle = Database(config=config)
+        try:
+            assert await handle.read_applied_revision() == migrations.expected_revision()
+        finally:
+            await handle.dispose()
+    finally:
+        await _drop_schema(database_url, schema)

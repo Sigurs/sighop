@@ -81,8 +81,9 @@ its own structured event naming the action, its target, its outcome and the acti
 ### Requirement: Rooms are configured through the interface
 The system SHALL allow creating a room on an identity, listing rooms with their member and message
 counts, setting and rotating the administrator and guest passwords, setting guest access and
-read-only fallback, and setting or clearing the two retention bounds, and SHALL state the
-consequence of a password rotation and of a member revocation before either is applied.
+read-only fallback, setting or clearing the two retention bounds, and setting or clearing the
+room's push acknowledgement window and its delivery recency limit, and SHALL state the consequence
+of a password rotation and of a member revocation before either is applied.
 
 #### Scenario: Rotating a password
 - **WHEN** a room password is rotated
@@ -95,6 +96,18 @@ consequence of a password rotation and of a member revocation before either is a
 #### Scenario: A password is never placed in a URL
 - **WHEN** a password is submitted
 - **THEN** it is not carried in a query string, not reflected in any served page, and not recorded in the request event
+
+#### Scenario: Setting delivery settings
+- **WHEN** the delivery page of a room is opened
+- **THEN** it shows the room's push acknowledgement window and recency limit, states the firmware windows that apply while the window is blank, and states that a member skipped for recency keeps its position and resumes when heard
+
+#### Scenario: Clearing delivery settings
+- **WHEN** either delivery field is submitted blank
+- **THEN** that setting is cleared, restoring the firmware window or delivery to every member respectively
+
+#### Scenario: An invalid delivery setting
+- **WHEN** a delivery field is submitted outside its allowed range or not as a whole number
+- **THEN** the page is shown again with the reason, and neither setting is changed
 
 ### Requirement: Bots are configured through the interface
 The system SHALL present each configured bot on the page of the identity it runs on, with its
@@ -537,14 +550,14 @@ SHALL state that this run does not hold that identity.
 ### Requirement: The station's radio, schema and gate controls are on one system page
 The system SHALL present, on a single system page, the radio parameters in force as the board's
 readback reports them, the schema revision agreement, the capabilities deliberately left to the
-terminal (applying migrations, managing accounts, generating the sealing secret), and a link to the
+terminal (applying migrations, managing accounts, generating the sealing secret), a link to the
 confirmation view for enabling transmission and to the confirmation view for raising the airtime
-ceiling. The board's readback SHALL appear on that page once. No other page SHALL repeat the
-readback table or the schema revision table.
+ceiling, and the repeater collection settings. The board's readback SHALL appear on that page once.
+No other page SHALL repeat the readback table or the schema revision table.
 
 #### Scenario: Opening the system page
 - **WHEN** the system page is opened
-- **THEN** it shows the board's readback, the applied and expected schema revisions and whether they agree, the terminal-only capabilities with their commands, and links to the enable-transmission and raise-ceiling confirmations
+- **THEN** it shows the board's readback, the applied and expected schema revisions and whether they agree, the terminal-only capabilities with their commands, links to the enable-transmission and raise-ceiling confirmations, and the repeater collection settings
 
 #### Scenario: Reaching the gate controls
 - **WHEN** an operator follows the enable-transmission or raise-ceiling link on the system page
@@ -573,9 +586,11 @@ one-byte node hash and so is not the same claim as frames for that identity.
 The system SHALL apply a write made through the interface to the running process that served the
 page, without a restart and without waiting for any periodic re-read, for every write that changes
 what that process holds: creating, importing, enabling, disabling and removing an identity,
-changing an identity's advert configuration, creating a room, and creating, enabling and disabling
-a bot. This is the behaviour the interface already gives for adding a channel and for renaming an
-identity, and it SHALL be the behaviour of these surfaces too.
+changing an identity's advert configuration, creating a room, changing a room's access, retention
+or delivery settings, and creating, enabling and disabling a bot. This is the behaviour the
+interface already gives for adding a channel and for renaming an identity, and it SHALL be the
+behaviour of these surfaces too. A room setting changed by another process SHALL reach a running
+process on its next periodic re-read.
 
 The interface SHALL state the effect on the running process in the result of each such write: that
 the identity is now held by this run and advertising, that it is no longer held, that the room is
@@ -604,6 +619,11 @@ and an operator must be able to tell those apart without reading the event strea
 
 - **WHEN** a room is created through the interface on an identity this run holds
 - **THEN** the running process serves it without a restart, and the result states that the room is now served
+
+#### Scenario: Changing a served room's settings
+
+- **WHEN** a served room's access, retention or delivery settings are changed through the interface
+- **THEN** the running process applies them to that room without a restart — logins are checked against the new access settings, the next retention pass uses the new bounds, and pushes composed afterwards use the new delivery settings
 
 #### Scenario: Creating a bot
 
@@ -645,3 +665,35 @@ survive the disabling and return if the identity is enabled again.
 
 - **WHEN** disabling is offered for an identity an operator holds as their default chat identity
 - **THEN** the interface states that this run will stop holding it and that no identity will be preselected in that operator's composers
+
+### Requirement: Repeater collection is configured on the system page
+The system SHALL offer, on the system page, a form for the repeater collection settings: enabled,
+the login identity (chosen from the stored identities that are not serving a room), the interval
+in minutes, the recency window in days, and the retention window in days. The form SHALL state
+that collection logs in with a blank guest password, that only repeaters selected on the contacts
+page are polled, and how many repeaters are selected and how many of those are within the recency
+window now. The interval SHALL be accepted from 5 to 1440 minutes, the recency window from 1 to 365
+days, and the retention window from 1 to 365 days. A value outside its range or not a whole number
+SHALL be refused with the reason and nothing stored. A saved change SHALL apply to the running
+process without a restart. Collection SHALL NOT be enabled while transmission is disabled without
+the form stating that no poll will be sent until transmission is enabled.
+
+#### Scenario: Saving valid settings
+- **WHEN** an operator enables collection with an identity, a 30-minute interval, a 2-day recency window and a 14-day retention window
+- **THEN** the settings are stored, the next cycle uses them without a restart, and the page shows them
+
+#### Scenario: An out-of-range interval
+- **WHEN** an operator submits an interval of 2 minutes
+- **THEN** the form is refused with the allowed range and the stored settings are unchanged
+
+#### Scenario: Junk in a numeric field
+- **WHEN** an operator submits a recency window of "abc"
+- **THEN** the form is refused with the reason and the stored settings are unchanged, rather than the field being treated as unset
+
+#### Scenario: Enabled with transmission off
+- **WHEN** collection is enabled while transmission is disabled
+- **THEN** the system page states that no poll will be sent until transmission is enabled
+
+#### Scenario: Last cycle shown
+- **WHEN** the system page is opened after a cycle has run
+- **THEN** it shows when the last cycle started, how many repeaters it polled, and how many of those succeeded

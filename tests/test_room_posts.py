@@ -22,13 +22,19 @@ from sighop.net.paths import PathStore
 from sighop.net.room import (
     MAX_POST_TEXT_LEN,
     MAX_PUSHABLE_TEXT_LEN,
+    POST_CLOCK_SKEW_TOLERANCE_S,
     STORED_POST_TEXT_LEN,
     PostRefused,
     PostStored,
     RefusalReason,
     RoomServer,
 )
-from sighop.protocol.crypto import SharedSecretCache, ack_checksum_for, encrypt_then_mac
+from sighop.protocol.crypto import (
+    SharedSecretCache,
+    ack_checksum_for,
+    encrypt_then_mac,
+    mac_then_decrypt,
+)
 from sighop.protocol.packet import (
     PAYLOAD_VERSION_1,
     Packet,
@@ -41,10 +47,13 @@ from sighop.protocol.packet import encode as encode_packet
 from sighop.protocol.payloads import (
     DirectEnvelope,
     Permission,
+    ReturnedPathBody,
     TextType,
     build_direct_envelope,
     build_text_message_body,
     parse_ack,
+    parse_direct_envelope,
+    parse_returned_path_body,
 )
 from sighop.radio.modem import EU868_NARROW
 from tests.roomfixtures import MemoryStorage, member_record, room_record
@@ -56,6 +65,7 @@ from tests.test_dm import (
     compose_body,
     zero_hop_route_to,
 )
+from tests.test_room_login import login_packet
 from tests.test_tx import RecordingLogger
 
 START = dt.datetime(2026, 9, 5, 21, 0, tzinfo=dt.UTC)
@@ -71,6 +81,8 @@ def post_packet(
     attempt: int = 0,
     txt_type: TextType = TextType.PLAIN,
     route_type: RouteType = RouteType.DIRECT,
+    path: bytes = b"",
+    hash_size: int = 1,
 ) -> tuple[bytes, bytes]:
     """A member's post, and the plaintext its acknowledgement is computed over."""
     body = compose_body(timestamp=timestamp, attempt=attempt, text=text, txt_type=txt_type)
@@ -88,9 +100,9 @@ def post_packet(
         Packet(
             header=PacketHeader(route_type, PayloadType.TXT_MSG, PAYLOAD_VERSION_1),
             transport_codes=None,
-            hop_count=0,
-            hash_size=1,
-            path=b"",
+            hop_count=len(path) // hash_size,
+            hash_size=hash_size,
+            path=path,
             payload=build_direct_envelope(envelope),
         )
     )
@@ -108,6 +120,7 @@ def room_with(
     paths: PathStore | None = None,
     clock: TickingClock | None = None,
     last_timestamp: int = 0,
+    logger: RecordingLogger | None = None,
     **room_kwargs: Any,
 ) -> RoomServer:
     room = room_record(**room_kwargs)
@@ -131,7 +144,7 @@ def room_with(
         clock=clock or TickingClock(START),
         radio=EU868_NARROW,
         on_event=events.append if events is not None else None,
-        logger=RecordingLogger(),
+        logger=logger or RecordingLogger(),
     )
 
 
@@ -514,7 +527,7 @@ async def test_a_post_below_the_recorded_timestamp_is_refused_as_a_replay() -> N
         storage=storage,
         submit=submit,
         events=events,
-        last_timestamp=NOW + 100,
+        last_timestamp=NOW + POST_CLOCK_SKEW_TOLERANCE_S + 1,
     )
 
     packet, _ = post_packet(author=author, server=lounge, timestamp=NOW)
@@ -524,6 +537,228 @@ async def test_a_post_below_the_recorded_timestamp_is_refused_as_a_replay() -> N
     assert submit.submissions == []
     refused = next(event for event in events if isinstance(event, PostRefused))
     assert refused.reason is RefusalReason.REPLAY
+    assert "301 s below" in refused.detail, "the refusal must state the gap"
+
+
+# --- Clock skew between the phone and the radio (post-replay-tolerance) -----
+
+
+async def test_a_post_stamped_by_a_clock_behind_the_login_is_stored_and_acknowledged() -> None:
+    """`issue-room-post-2`: the radio stamped the login 15 s ahead of the phone."""
+    author, lounge = Entity("author"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    server = room_with(
+        author=author,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        last_timestamp=NOW + 15,
+    )
+
+    packet, _ = post_packet(author=author, server=lounge, timestamp=NOW)
+    await server.handle(_packet_for(packet))
+
+    assert len(storage.messages.posts) == 1
+    assert len(submit.submissions) == 1
+    member = server.members[author.identity.public_key]
+    assert member.last_timestamp == NOW + 15, "an accepted post lowered the guard"
+
+
+async def test_a_post_exactly_at_the_tolerance_is_accepted() -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    storage = MemoryStorage()
+    server = room_with(
+        author=author,
+        server_entity=lounge,
+        storage=storage,
+        last_timestamp=NOW + POST_CLOCK_SKEW_TOLERANCE_S,
+    )
+
+    packet, _ = post_packet(author=author, server=lounge, timestamp=NOW)
+    await server.handle(_packet_for(packet))
+
+    assert len(storage.messages.posts) == 1
+
+
+async def test_a_retry_of_a_post_below_the_recorded_timestamp_is_reported_as_one() -> None:
+    """D3: `retry` is "already stored", which equality with the guard no longer says."""
+    author, lounge = Entity("author"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    events: list = []
+    server = room_with(
+        author=author,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        events=events,
+        last_timestamp=NOW + 15,
+    )
+
+    for attempt in (0, 1):
+        packet, _ = post_packet(author=author, server=lounge, timestamp=NOW, attempt=attempt)
+        await server.handle(_packet_for(packet))
+
+    assert len(storage.messages.posts) == 1, "a retry created a second row"
+    assert len(submit.submissions) == 2, "a retry went unacknowledged"
+    stored = [event for event in events if isinstance(event, PostStored)]
+    assert [event.retry for event in stored] == [False, True]
+
+
+async def test_a_post_after_a_blank_password_relogin_from_a_fast_radio_is_stored() -> None:
+    """`issue-room-post-2` end to end: the re-login is stamped by the radio, 15 s
+    ahead, and the post written after it by the phone, 9 s older than the login."""
+    author, lounge = Entity("author"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    events: list = []
+    server = room_with(
+        author=author,
+        server_entity=lounge,
+        storage=storage,
+        submit=submit,
+        events=events,
+        last_timestamp=NOW,
+    )
+
+    login = login_packet(client=author, server=lounge, password="", timestamp=NOW + 15)
+    await server.handle(_packet_for(login))
+    packet, _ = post_packet(author=author, server=lounge, timestamp=NOW + 6)
+    await server.handle(_packet_for(packet))
+
+    assert not any(isinstance(event, PostRefused) for event in events)
+    assert len(storage.messages.posts) == 1
+    stored = next(event for event in events if isinstance(event, PostStored))
+    assert stored.acknowledged
+
+
+# --- How the acknowledgement is routed (flooded-post-path-return-ack) ------
+
+
+def _path_return(author: Entity, lounge: Entity, packet: bytes) -> ReturnedPathBody:
+    """Open a submitted reply as the author would, and insist it is a path return."""
+    decoded = decode_packet(packet)
+    envelope = parse_direct_envelope(decoded.payload_type, decoded.payload)
+    assert isinstance(envelope, DirectEnvelope)
+    assert envelope.payload_type is PayloadType.PATH
+    secret = SharedSecretCache().get(author.identity, lounge.identity.public_key)
+    _candidate, plaintext = mac_then_decrypt(secret, envelope.mac, envelope.ciphertext)
+    assert plaintext is not None
+    body = parse_returned_path_body(plaintext)
+    assert isinstance(body, ReturnedPathBody)
+    return body
+
+
+async def test_a_flooded_post_is_acknowledged_by_a_path_return_despite_a_known_route() -> None:
+    """D1: `room_with` gives the author a zero-hop route, and it is not used."""
+    author, lounge = Entity("author"), Entity("lounge")
+    submit = RecordingSubmit()
+    server = room_with(author=author, server_entity=lounge, submit=submit)
+
+    packet, _ = post_packet(
+        author=author, server=lounge, route_type=RouteType.FLOOD, path=b"\xab\xcd"
+    )
+    await server.handle(_packet_for(packet))
+
+    assert len(submit.submissions) == 1
+    assert submit.submissions[0].priority is PriorityClass.ACK
+    assert submit.submissions[0].origin == "room_post_ack"
+    sent = decode_packet(submit.submissions[0].packet)
+    assert sent.route_type is RouteType.FLOOD
+    body = _path_return(author, lounge, submit.submissions[0].packet)
+    assert (body.hop_count, body.hash_size, body.path) == (2, 1, b"\xab\xcd")
+    assert body.extra_type is PayloadType.ACK
+    assert body.extra_ack is not None
+    expected = compose_body(timestamp=NOW, attempt=0, text=b"hello room")
+    assert body.extra_ack.checksum == ack_checksum_for(expected, author.identity.public_key)
+
+
+async def test_a_zero_hop_flooded_post_gets_a_path_return_and_no_direct_ack() -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    submit = RecordingSubmit()
+    server = room_with(author=author, server_entity=lounge, submit=submit)
+
+    packet, _ = post_packet(author=author, server=lounge, route_type=RouteType.FLOOD, hash_size=2)
+    await server.handle(_packet_for(packet))
+
+    assert len(submit.submissions) == 1
+    sent = decode_packet(submit.submissions[0].packet)
+    assert sent.route_type is RouteType.FLOOD, "a zero-hop DIRECT ACK went out"
+    assert sent.payload_type is PayloadType.PATH
+    body = _path_return(author, lounge, submit.submissions[0].packet)
+    assert (body.hop_count, body.hash_size, body.path) == (0, 2, b"")
+    assert body.extra_type is PayloadType.ACK
+
+
+async def test_a_retried_flooded_post_gets_its_own_path_return_and_is_stored_once() -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    storage = MemoryStorage()
+    submit = RecordingSubmit()
+    server = room_with(author=author, server_entity=lounge, storage=storage, submit=submit)
+
+    for attempt in (0, 1):
+        packet, _ = post_packet(
+            author=author, server=lounge, attempt=attempt, route_type=RouteType.FLOOD
+        )
+        await server.handle(_packet_for(packet))
+
+    assert len(storage.messages.posts) == 1, "a retry created a second row"
+    assert len(submit.submissions) == 2, "a retry went unacknowledged"
+    retried = _path_return(author, lounge, submit.submissions[1].packet)
+    expected = compose_body(timestamp=NOW, attempt=1, text=b"hello room")
+    assert retried.extra_ack is not None
+    assert retried.extra_ack.checksum == ack_checksum_for(expected, author.identity.public_key)
+
+
+async def test_a_direct_post_is_acknowledged_with_a_bare_ack_on_the_known_route() -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    submit = RecordingSubmit()
+    server = room_with(author=author, server_entity=lounge, submit=submit)
+
+    packet, _ = post_packet(author=author, server=lounge)
+    await server.handle(_packet_for(packet))
+
+    sent = decode_packet(submit.submissions[0].packet)
+    assert (sent.route_type, sent.payload_type) == (RouteType.DIRECT, PayloadType.ACK)
+
+
+async def test_a_direct_post_with_no_known_route_gets_a_bare_flooded_ack() -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    submit = RecordingSubmit()
+    server = room_with(author=author, server_entity=lounge, submit=submit)
+    server.paths = PathStore()
+
+    packet, _ = post_packet(author=author, server=lounge)
+    await server.handle(_packet_for(packet))
+
+    sent = decode_packet(submit.submissions[0].packet)
+    assert (sent.route_type, sent.payload_type) == (RouteType.FLOOD, PayloadType.ACK)
+    expected = compose_body(timestamp=NOW, attempt=0, text=b"hello room")
+    assert parse_ack(sent.payload).checksum == ack_checksum_for(
+        expected, author.identity.public_key
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_type", "ack_route"),
+    [(RouteType.FLOOD, "PATH_RETURN"), (RouteType.DIRECT, "DIRECT h0")],
+)
+async def test_the_stored_post_names_the_route_its_acknowledgement_took(
+    route_type: RouteType, ack_route: str
+) -> None:
+    author, lounge = Entity("author"), Entity("lounge")
+    logger = RecordingLogger()
+    events: list = []
+    server = room_with(author=author, server_entity=lounge, logger=logger, events=events)
+
+    packet, _ = post_packet(author=author, server=lounge, route_type=route_type)
+    await server.handle(_packet_for(packet))
+
+    [logged] = logger.of("room_post_stored")
+    assert logged["ack_route"] == ack_route
+    stored = next(event for event in events if isinstance(event, PostStored))
+    assert stored.ack_route == ack_route
 
 
 # --- 4.4 Exactly one acknowledgement, with both subscribers wired ------------

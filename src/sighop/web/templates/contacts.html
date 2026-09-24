@@ -23,6 +23,7 @@
         <th class="num">snr</th>
         <th>confirmed</th>
         {% if identities %}<th>message</th>{% endif %}
+        <th>collection</th>
       </tr>
     </thead>
     <tbody>
@@ -61,6 +62,10 @@
           {% endif %}
         </td>
         {% endif %}
+        <td>
+          {%- set cell = collect_cells.get(row.identity.key_hex) -%}
+          {%- if cell %}{% include "_collect_cell.html" %}{% endif -%}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
@@ -85,6 +90,11 @@
   most useful route there is — and is not the same as <strong>no route known</strong>.
   A route marked <strong>ambiguous</strong> was matched by node hash rather than
   by public key, and a node hash is one byte.
+</p>
+<p class="note">
+  <strong>Collect metrics</strong> is offered on repeaters only. A ticked
+  repeater is logged in to with a blank guest password and asked for its status
+  and neighbours, on the schedule set on the <a href="/system#collection">system</a> page.
 </p>
 
 {{ identity.verification_legend() }}

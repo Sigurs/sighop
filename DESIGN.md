@@ -508,8 +508,9 @@ must not render channel sender names in a way that implies verified identity.
 Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original one. As of
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
 them. Milestone 8 adds a tenth, milestone 9 an eleventh that is not about the mesh at
-all, change `webhook-notifications` a twelfth, and change `channel-messaging` a thirteenth and
-fourteenth.
+all, change `webhook-notifications` a twelfth, change `channel-messaging` a thirteenth and
+fourteenth, and change `repeater-metrics-collection` four more for what sighop collects from
+the repeaters around it.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -569,6 +570,31 @@ fourteenth.
   `hop_count`, `snr_db`, `rssi_dbm`, outcome, nullable `outcome_reason` (the scheduler's
   reason for a post not transmitted), `repeats_heard`, unique on (channel id, `ref`),
   indexed on (channel id, `handled_at`)
+
+**Built (change `repeater-metrics-collection`, migration `0011`):**
+
+- **repeater_collection** — one row (`id = 1`, checked): `enabled`, nullable `entity_id`
+  (`ON DELETE SET NULL`), `interval_minutes` (5–1440), `recent_days` (1–365),
+  `retention_days` (1–365), and the last cycle's `started_at`, `finished_at`, polled and
+  succeeded counts and skip note. No row reads as the defaults: disabled, 60 minutes, 3 days,
+  30 days
+- **repeater_target** — the selected repeaters, public key (PK) and `selected_at`
+- **repeater_poll** — id, public key, nullable `entity_id` (`ON DELETE SET NULL`),
+  `started_at`, outcome (`succeeded`|`not_sent`|`login_unanswered`|`status_unanswered`|
+  `neighbours_incomplete`, checked), nullable reason, route, the repeater's eighteen status
+  fields (nullable; SNR stored in dB), nullable `neighbours_total`; indexed on (public key,
+  `started_at`) and on `started_at`
+- **repeater_neighbour** — id, poll id (`ON DELETE CASCADE`), key prefix, seconds since heard,
+  SNR in dB
+
+**Collection settings are not a check constraint away from being stuck.** Removing the login
+identity nulls `entity_id` and leaves `enabled` as it was; a constraint tying the two would
+make the identity impossible to remove. The repository refuses enabling without an identity
+when the settings are saved, and the collector skips every cycle with the reason until another
+is chosen. **Selection is not a `contact` column**, so an advert refreshing a contact can never
+clear it, and it has no foreign key to `contact`. Pruning deletes `repeater_poll` rows older
+than the retention window and the neighbours go by cascade. **A downgrade from `0011` drops all
+four tables**: the settings, every selection and all collected history.
 
 **The thirteenth table holds channels, and it seals by kind** (§7 Channels). A pre-shared key
 is a read-and-post credential, the same class as a webhook URL, so a `psk` row carries it
@@ -874,6 +900,39 @@ about the one property a room server exists to provide. While the database is de
 room accepts nothing and says so — a room is exactly as available as its history, which is
 the price of the history being real.
 
+**One thing sighop does that the firmware does not.** A post that arrives flooded is
+acknowledged by a flooded `PATH` return that carries the path the post travelled and bundles
+the ACK, the way a companion answers a flooded direct message (`BaseChatMesh.cpp:328-340`)
+and the way sighop already answers a flooded login. `simple_room_server` instead floods a bare
+ACK when it has no out-path for the client (`MyMesh.cpp:494-497`), and sighop used to send the
+ACK along whatever route it had learned — for a client sending zero-hop floods, a zero-hop
+DIRECT route learned from the post itself, transmitted once, relayed by no one, and missed by
+a client that then retried forever. A client floods because it has no route to us, so the
+reversed flood path is not evidence our reply gets back over it. The path return costs about
+22 bytes instead of 6, and buys a client that stores a route to the room and stops flooding
+every later post across the whole mesh. A post that arrives direct still gets a bare ACK along
+the member's known route, flooded only when none is known. The route taken is logged as
+`ack_route` on `room_post_stored`.
+
+**Posts tolerate a clock split the firmware does not.** A companion stamps posts with the
+phone's clock (`companion_radio/MyMesh.cpp:1089-1107`) but logins and keep-alives with the
+radio's (`BaseChatMesh.cpp:577`). The firmware's single guard (`MyMesh.cpp:448`) compares the
+two as one clock, and a radio running 15 s fast locked a stock client's posts out: every post
+fell below the timestamp its own login had raised, went unacknowledged, and showed "failed"
+(`issue-room-post-2`). The companion knows the problem exists, since it restamps CLI commands
+"to avoid tripping replay protection" (`companion_radio/MyMesh.cpp:1103`), but not for posts.
+So a post is accepted up to `POST_CLOCK_SKEW_TOLERANCE_S` (300 s) below the member's recorded
+timestamp, which never moves down. A replay inside that window is found by the stored-post
+lookup and only acknowledged again, and `retry` on `room_post_stored` means exactly that it
+was already stored. A post further below is refused with the gap in seconds in its detail.
+Requests (keep-alive, status, telemetry) keep the strict check: a replayed keep-alive can
+move a member's sync cursor, and the mirror case, a phone ahead of its radio, has not been
+seen. Separately, sighop used to raise the recorded timestamp on an existing member's
+blank-password login, which the firmware does not: that path bypasses the whole update block
+(`MyMesh.cpp:335-376`). It now leaves the timestamp alone, so a route re-establishment cannot
+lock posts out, and `room_login_admitted` logs `empty_password` so a report shows which path a
+client took.
+
 ### Companion
 
 An addressable identity driven by a human in the WebUI: send/receive DMs, join channels,
@@ -1174,6 +1233,60 @@ when something worth an operator's attention happens, without anyone watching th
   schemes are limited to `http`/`https` and redirects are not followed. Not otherwise
   mitigated.
 
+### Repeater collection
+
+Change `repeater-metrics-collection`. sighop as a **guest client** of the repeaters around it:
+everywhere else it answers, and here it logs in, asks, and records (`net/collect.py`).
+
+- **Blank guest password, nothing else.** Stock repeater firmware compares a blank login
+  first against its ACL and then against `guest_password`, which is empty by default, so a
+  blank login is admitted as a guest (`simple_repeater/MyMesh.cpp:90-143`). A guest may ask
+  for `GET_STATUS` (`:216`, "guests can also access this now") and `GET_NEIGHBOURS` (`:276`,
+  no admin check). A refused login is **silence**, not a code, so a repeater with a guest
+  password set and one out of range look the same: the outcome is `login_unanswered`. No
+  other password is configurable or sent.
+- **Selection and recency.** Only repeaters an operator ticked on the contact table, whose
+  advert was last heard within the recency window (default 3 days), are polled. A selected
+  repeater outside it is skipped without a record and polled again once heard.
+- **One exchange at a time.** Repeaters are polled sequentially; each poll is login →
+  status → neighbour pages (prefix 6 bytes, 11 entries a page into the firmware's 130-byte
+  buffer, at most 8 pages), each step waiting for its answer. So an answer is matched against
+  exactly one outstanding request: decrypted under the one shared secret of the login identity
+  and the repeater asked — never a candidate trial — and, for status and neighbours, only if
+  its first four bytes echo that request's timestamp (`:214`). A login answer carries the
+  repeater's clock rather than an echo, so it is matched by MAC and shape. Anything else is
+  counted unmatched and dropped.
+- **Timestamps strictly increase per repeater**, because the firmware drops a login or request
+  whose timestamp is not above the last it saw from that client. The next value is
+  `max(now, last + 1)`; not persisted, since cycles are minutes apart.
+- **Log in every poll.** Guest entries live only in the repeater's RAM (32 by default) and are
+  evicted; reusing a session fails silently after a reboot and costs a timeout to discover.
+- **Routing.** Only a route keyed by the repeater's public key is used directly; a node-hash
+  route is ignored for a flood. A flooded request is answered by a path return bundling the
+  `RESPONSE`: `PathBodyReader` adopts the route and hands the bundle to the collector, so the
+  next request goes direct. Each step's timeout is the peer ACK formula over the larger of the
+  request's and the reply's airtime, plus the firmware's 300 ms response delay.
+- **Flooded answers.** A repeater with no route to us answers a direct request by flood, and
+  learns a route only from a `PATH` we send. The first live run showed every answer flooded
+  and requests sent into the re-floods lost. So after an answer heard by flood the collector
+  waits `max(3 s, 2 × 3.6 × airtime)` and then sends a direct path return with the route the
+  flood took, as stock clients do (`BaseChatMesh::handleReturnPathRetry`); the repeater keeps it
+  in its guest entry and answers direct from then on.
+- **Yields and gates.** Submissions are `ADVERT`, the lowest class. A cycle that finds
+  transmission disabled sends and records nothing and is retried an interval later; a
+  submission the scheduler drops (a budget-stalled one expires) or suppresses ends the poll as
+  `not_sent` with the scheduler's reason.
+- **Settings are read from the database every 60 s**, with the last good read kept on a
+  failure, so the system page's changes apply without a restart or a reconcile call. Cycles
+  run inside that tick, so two never overlap; disabling mid-cycle stops before the next
+  repeater. A missing or room-serving login identity skips the cycle with a note the system
+  page shows. Pruning runs at each cycle's end and at least daily, also while disabled.
+- **Live runs only.** A replay builds no collector, whatever the stored settings say.
+- **Firmware variance.** `RepeaterStats` is 56 bytes; the room server's `ServerStats` shares
+  its first 48 and diverges after `n_flood_dups`. A shorter answer ending at `n_flood_dups`
+  parses with the two receive counters absent — though a decrypted body is block-padded, so in
+  practice older firmware reads zeros there rather than absent.
+
 ---
 
 ## 8. WebUI
@@ -1184,6 +1297,17 @@ All four areas confirmed in scope. Priority order for building:
 2. **Observability dashboard** — live packet feed (WebSocket), airtime and duty-cycle usage against budget, per-entity TX/RX counters, contact table with learned paths, SNR/RSSI, modem health.
 3. **Room browsing** — message history from Postgres, per-room member lists.
 4. **Chat client** — send DMs and channel messages as any companion entity. This makes sighop usable without a handheld and is the strongest argument for the project. Channels (change `channel-messaging`) are listed beside direct conversations with unread indication and read without choosing an identity; posting requires choosing one, and the Public composer says the post is flooded to the whole mesh. A received sender is a claimed name, never a verified identity, and the conversation says names are not authenticated. The same channel list on `/chat` administers them: it adds hashtag and pre-shared-key channels, re-adds Public, lists stored channels this run could not load, and removes a channel through confirm-and-nonce stating how many messages go with it. Conversations with a contact are started from the contact list, one link per loaded identity.
+
+The **system page** carries the repeater collection settings (§7): enabled, the login identity
+(stored identities not serving a room), interval, recency and retention windows, validated
+strictly — junk or out-of-range values are refused with the reason and nothing is stored. It
+states that collection uses a blank guest password, how many repeaters are selected and how
+many are in the window now, the last cycle, and that no poll is sent while transmission is
+disabled. The **contact table** gives repeater rows a "collect metrics" checkbox (htmx, stored
+at once), the last poll's time and outcome, a skipped-for-recency marker, and a link to the
+repeater's **metrics page**: the latest status with its time (a field not returned is "not
+reported", counters as reported, not rates), its neighbours attributed to a contact only when
+exactly one key starts with the prefix, and up to 200 polls of history, newest first.
 
 ### Design direction: instrument panel
 
@@ -1656,7 +1780,8 @@ sighop/
 │   │                   tx.py (scheduler), airtime.py, adverts.py,
 │   │                   contacts.py, dm.py (direct messages, both directions),
 │   │                   room.py (the room server), acks.py, pathbodies.py,
-│   │                   channels.py (channel set, receive, post, repeat registry)
+│   │                   channels.py (channel set, receive, post, repeat registry),
+│   │                   collect.py (repeater collection: guest login and polls)
 │   ├── monitor/        render.py (pure formatting of the node's own output)
 │   ├── keystore.py     entity keyfile documents (the panel's import and export) —
 │   │                   file formats, so not under protocol/
@@ -1672,7 +1797,7 @@ sighop/
 │   │                   events.py, render.py (json and discord bodies),
 │   │                   transport.py (one stdlib POST), dispatcher.py (queue,
 │   │                   retries, sample sends)
-│   ├── db/             models.py (the fourteen tables), repositories.py (what net/
+│   ├── db/             models.py (the eighteen tables), repositories.py (what net/
 │   │                   calls), engine.py (pool, bounds, degraded state, probe),
 │   │                   writer.py (bounded write-behind), sealing.py (keys and
 │   │                   webhook URLs at rest), packetlog.py (feed rows, pruner),
@@ -1688,8 +1813,9 @@ sighop/
 │   │                   chat.py (this run's own conversations and channel
 │   │                   logs), routes/chat.py (direct and channel conversations,
 │   │                   and channel administration), routes/admin.py (writes and
-│   │                   confirmations), routes/system.py (readback, schema and
-│   │                   the station's gate controls),
+│   │                   confirmations), routes/system.py (readback, schema,
+│   │                   the station's gate controls and collection settings),
+│   │                   routes/collect.py (contact-table selection, metrics page),
 │   │                   serialize.py, render.py (view models), deps.py,
 │   │                   routes/ (session.py: sign-in and sign-out), templates/,
 │   │                   static/ (vendored htmx, no bundler)
