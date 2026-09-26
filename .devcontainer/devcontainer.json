@@ -119,12 +119,12 @@
   "postStartCommand": "./.devcontainer/ollama-forward.sh",
 
   // And every attach, because a container outlives the editor window. The
-  // forward dies on its own — a host Ollama restart, an OOM kill, a socat that
-  // was never started because the host was still booting — and nothing brings
-  // it back until the container restarts, which is rare. Without a forward
-  // `cce serve` refuses to start at all and context-engine is gone for the
-  // whole session. The script is idempotent and exits in milliseconds when the
-  // forward is already up, so paying it per attach costs nothing.
+  // script starts a supervisor that restarts socat whenever it dies, but the
+  // supervisor itself can be killed too (an OOM kill, say); an attach brings
+  // it back. Without a forward `cce serve` refuses to start at all and
+  // context-engine is gone for the whole session. The script is idempotent
+  // and exits in milliseconds when the forward is already up, so paying it
+  // per attach costs nothing.
   "postAttachCommand": "./.devcontainer/ollama-forward.sh",
 
   "customizations": {
