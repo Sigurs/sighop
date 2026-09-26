@@ -227,7 +227,11 @@ def test_the_smoke_run_is_a_stranger_on_a_read_only_root() -> None:
 def test_the_replay_gate_compares_the_image_with_the_host_byte_for_byte() -> None:
     text = BUILD.read_text()
     replay = text[text.index("replay() {") : text.index("check_trivyignore() {")]
-    assert "captures/*.jsonl" in replay
+    assert "tests/corpus/*.jsonl" in replay
+    assert '-v "${PWD}/tests/corpus:/app/tests/corpus:ro"' in replay
+    assert "captures/" not in replay.replace("captures/ is gitignored", ""), (
+        "the gate must replay the generated corpus, never a live recording"
+    )
     assert "cmp -s" in replay
     assert "uv run --locked python -m sighop.replay" in replay
     assert '--entrypoint python "${IMAGE}" -m sighop.replay' in replay

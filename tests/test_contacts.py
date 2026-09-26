@@ -252,18 +252,18 @@ def test_an_unknown_reference_says_the_advert_may_not_have_been_heard() -> None:
 
 @pytest.mark.usefixtures("default_persistence")
 async def test_replaying_a_corpus_file_populates_contacts() -> None:
-    """The advert path against real traffic, end to end through the bus."""
+    """The advert path against the corpus, end to end through the bus."""
     import io
 
     from sighop.radio.modem import EU868_NARROW
     from sighop.runtime import Runtime, RuntimeConfig
-    from tests.protocol.corpus import CAPTURES_DIR
+    from tests.protocol.corpus import AMBIENT, CORPUS_DIR
     from tests.test_runtime import _events, _startup
     from tests.test_tx import ManualClock, RecordingLogger
 
     store = ContactStore(logger=RecordingLogger())
     run = Runtime(
-        source=_events(CAPTURES_DIR / "2026-09-04-03.jsonl"),
+        source=_events(CORPUS_DIR / AMBIENT),
         startup=_startup,
         persistence=the_default_persistence(),
         config=RuntimeConfig(status_interval=3600, advert_tick=3600),
@@ -276,8 +276,9 @@ async def test_replaying_a_corpus_file_populates_contacts() -> None:
 
     await run.run()
 
-    # Three distinct keys advertise in this capture. Recorded rather than
-    # derived from the run, so a decode change that loses an advert fails here.
-    assert len(store) == 3
+    # 23 distinct keys advertise in the ambient file: twelve repeaters, three room
+    # servers and eight chat nodes. Recorded rather than derived from the run, so a
+    # decode change that loses an advert fails here.
+    assert len(store) == 23
     assert all(contact.advert_verified for contact in store)
     assert len({contact.public_key for contact in store}) == len(store)

@@ -34,7 +34,7 @@ from sighop.db.repositories import EntityRepository
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType
 from sighop.runtime import Runtime, RuntimeConfig
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_runtime import _events, _startup, run_briefly, runtime
 from tests.test_tx import ManualClock
 from tests.test_tx import RecordingLogger as _RuntimeRecordingLogger
@@ -42,7 +42,7 @@ from tests.test_tx import RecordingLogger as _RuntimeRecordingLogger
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
 SECRET = base64.b64decode(generate_secret_key())
-CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
+CAPTURE = CORPUS_DIR / AMBIENT
 
 
 class _RecordingLogger:

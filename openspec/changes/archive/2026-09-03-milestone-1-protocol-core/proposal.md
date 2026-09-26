@@ -68,8 +68,8 @@ entirely above the radio and does not open a serial port)
   6-7 are `hash_size - 1`. Multi-byte path hashes are not hypothetical on this mesh — of the
   351 captured frames, 152 use 1-byte hashes, 106 use 2-byte and 93 use 3-byte. Decoding
   adverts under the assumption of 1-byte hashes yields corrupt flags and truncated names
-  (`0xfa`/`rala Hill repeater`); decoding with the encoded hash size yields consistent flags
-  and clean names (`0x92`/`[redacted]`). The correct check is
+  (`0xfa` and a truncated name); decoding with the encoded hash size yields consistent flags
+  and clean names (`0x92` and a whole name). The correct check is
   `hop_count * hash_size <= 64` (`MAX_PATH_SIZE`). DESIGN.md is updated in this change, per
   its own rule that reality disagreeing with it is fixed in the same change.
 - **A second, smaller correction:** DESIGN.md §3 and §5 read the advert appdata flags byte as

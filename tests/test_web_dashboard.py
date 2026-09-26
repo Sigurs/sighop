@@ -89,7 +89,7 @@ def _learn(state: StubState, key: PathKey, path: bytes, hops: int, *, snr: float
 def test_the_overview_shows_every_counter_against_a_stub_state() -> None:
     """11.1: queue depths, scheduler counts, dedup, paths, contacts, durability."""
     state = stub_state()
-    contact = _contact("[redacted]")
+    contact = _contact("syn-harbor-repeater")
     state.contacts.restore([contact])
     _learn(state, PathKey.for_public_key(contact.public_key), b"\xbe\xd0", 2)
     state.pipeline.delivered = 41
@@ -311,7 +311,7 @@ def test_a_route_matched_by_node_hash_is_marked_ambiguous() -> None:
 def test_the_contact_table_carries_identity_route_and_signal_together() -> None:
     """11.3: the columns `web-dashboard` names, in one row."""
     state = stub_state()
-    contact = _contact("[redacted]")
+    contact = _contact("syn-tower-repeater")
     state.contacts.restore([contact])
     _learn(state, PathKey.for_public_key(contact.public_key), b"\xbe\xd0", 2, snr=12.25)
 
@@ -328,7 +328,7 @@ def test_the_contact_table_carries_identity_route_and_signal_together() -> None:
     assert '<span class="status-figures" aria-hidden="true">2 · bed0</span>' in body
     assert 'title="2 hops via bed0"' in body
     assert "+12.25" in body
-    assert "[redacted]" in body
+    assert "syn-tower-repeater" in body
 
 
 def test_an_unverified_contact_is_drawn_distinctly_in_the_table() -> None:

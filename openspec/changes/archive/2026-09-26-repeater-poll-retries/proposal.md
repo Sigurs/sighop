@@ -18,8 +18,8 @@ request, well inside the step timeout, so the timeout is not cutting them off.
 The collector sends every step exactly once and ends the poll at the first silence. It also always
 uses the most recently learned direct route, even after many failed polls. For example:
 
-- [redacted] was polled 18 times along one route and failed 15 of them at login.
-- [redacted] Hill failed 14 logins. In 9 of those, the first relay never forwarded the request.
+- One repeater was polled 18 times along one route and failed 15 of them at login.
+- Another repeater failed 14 logins. In 9 of those, the first relay never forwarded the request.
 
 Stock clients handle this differently: they resend, and they fall back to a flood when a direct
 route stops working.

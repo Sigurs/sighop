@@ -206,7 +206,7 @@ def _contact(name: str | None, *, verified: bool) -> Contact:
 
 def test_the_three_verification_states_are_three_different_claims() -> None:
     """9.3, design D13: verified, unverified and key-only are not two things."""
-    verified = identity_for(_contact("[redacted]", verified=True))
+    verified = identity_for(_contact("syn-harbor-repeater", verified=True))
     assert verified.verification == "verified"
     assert verified.mark == VERIFIED_MARK
     assert "verified" in verified.marking_text
@@ -227,12 +227,12 @@ def test_the_three_verification_states_are_three_different_claims() -> None:
 def test_a_key_that_matches_a_contact_resolves_to_that_contact() -> None:
     """9.3: the resolution a feed row and a room author both go through."""
     state = stub_state()
-    contact = _contact("[redacted]", verified=True)
+    contact = _contact("syn-tower-repeater", verified=True)
     state.contacts.restore([contact])
 
     view = identity_for_key(contact.public_key, state.contacts)
     assert view.verification == "verified"
-    assert view.name == "[redacted]"
+    assert view.name == "syn-tower-repeater"
 
 
 def test_no_template_renders_a_contact_name_outside_the_macro() -> None:
@@ -258,8 +258,8 @@ def test_no_template_renders_a_contact_name_outside_the_macro() -> None:
 
 def test_the_distinction_survives_with_every_colour_stripped() -> None:
     """9.3: a glyph and a word, never colour alone (design D13)."""
-    verified = identity_for(_contact("[redacted]", verified=True))
-    unverified = identity_for(_contact("[redacted]", verified=False))
+    verified = identity_for(_contact("syn-harbor-repeater", verified=True))
+    unverified = identity_for(_contact("syn-harbor-repeater", verified=False))
 
     rendered = {
         view.verification: f"{view.mark} {view.label} {view.verification}"

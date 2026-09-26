@@ -1,12 +1,16 @@
-"""Loader for the captured-frame regression corpus.
+"""Loader for the synthetic regression corpus.
 
-The capture files and their provenance — a `capture_meta` header line from
-milestone 2 onward, a paired `.meta.json` sidecar for the two milestone 0
-files — are read-only evidence (DESIGN.md §12): this module opens them for
-reading and never writes to them, and nothing in the test suite regenerates
-them.
+The corpus is three generated capture files under `tests/corpus/`, written by
+`tests.protocol.synthetic` from a fixed seed and committed. They are read-only
+generated artefacts (`protocol-corpus`): this module opens them for reading and
+never writes to them, and only `python -m tests.protocol.generate_corpus` does.
+`test_synthetic_corpus.py` regenerates the corpus in memory and fails if the
+committed files differ.
 
-See `CORPUS.md` for what the corpus does and does not cover.
+The corpus replaced a recording of live mesh traffic. A generated corpus proves
+the decoders agree with sighop's own encoders and with the expectations below; it
+does not prove interoperability with another MeshCore implementation. See
+`CORPUS.md` for what it does and does not cover.
 """
 
 from __future__ import annotations
@@ -16,23 +20,20 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-CAPTURES_DIR = Path(__file__).resolve().parents[2] / "captures"
+from sighop.protocol.packet import PayloadType, decode
+from sighop.protocol.result import DecodeFailure
 
-CAPTURE_FILES = (
-    "2026-09-02.jsonl",
-    "2026-09-03.jsonl",
-    "2026-09-04.jsonl",
-    "2026-09-04-02.jsonl",
-    "2026-09-04-03.jsonl",
-    "2026-09-05.jsonl",
-    "2026-09-04-first-transmit.jsonl",
-    "2026-09-06-room-server.jsonl",
-)
+CORPUS_DIR = Path(__file__).resolve().parents[1] / "corpus"
 
-# Files from milestone 2 onward carry their provenance in-band, as a
-# `capture_meta` first line; the two milestone 0 files predate that record and
-# carry theirs in a paired `.meta.json` sidecar (DESIGN.md §12).
-SIDECAR_PROVENANCE_FILES = ("2026-09-02.jsonl", "2026-09-03.jsonl")
+AMBIENT = "synthetic-ambient.jsonl"
+"""Receive-only mesh: adverts of every form, routing, discovery, third-party mail.
+What a test takes when it wants "a realistic stream of receptions"."""
+CHANNELS = "synthetic-channels.jsonl"
+"""Group text on the Public channel and a second channel, and group data."""
+EXCHANGE = "synthetic-exchange.jsonl"
+"""sighop and a synthetic peer: both directions, both acknowledgement forms, a room."""
+
+CORPUS_FILES = (AMBIENT, CHANNELS, EXCHANGE)
 
 RX_FRAME_KIND = "rx_frame"
 TX_FRAME_KIND = "tx_frame"
@@ -41,53 +42,26 @@ and belong in the corpus, but they must stay out of any measurement whose
 subject is what the mesh sent us — a duplicate rate computed over our own
 transmissions would be measuring the wrong thing (milestone 4)."""
 
-# Recorded expectations. Asserted, never regenerated from a failing run.
-EXPECTED_FRAME_COUNT = 1093
-"""Every `rx_frame`/`tx_frame` record: 1058 received, 35 transmitted."""
+# Recorded expectations. Typed in from a reviewed run of the generator's manifest
+# (`python -m tests.protocol.generate_corpus`), asserted, never regenerated.
+EXPECTED_FRAME_COUNT = 282
+"""Every `rx_frame`/`tx_frame` record: 264 received, 18 transmitted."""
 
-EXPECTED_RECEIVED_COUNT = 1059
+EXPECTED_RECEIVED_COUNT = 265
 """Receptions as the *live pipeline* (`CaptureReplay`/`decode_event`) counts
-them — one more than `EXPECTED_FRAME_COUNT`'s 1058 `rx_frame` records, because
-the room-server session's capture carries one `unparsed` line (a stray
-`RxMeta` at modem startup) that the pipeline turns into its own `ModemUnparsed`
-record. `CorpusFrame`-based counting (`EXPECTED_FRAME_COUNT`) skips that kind
-entirely, so the two totals no longer sum to the same thing; that's the
-capture, not a bug in either counter."""
-EXPECTED_TRANSMITTED_COUNT = 35
-"""3 frames from the first-transmit exercise (the DM, its acknowledgement of the
-peer's DM, and one zero-hop advert), plus 32 from milestone 6's live room-server
-exercise: adverts, room logins, post acknowledgements and pushes."""
+them — one more than the 264 `rx_frame` records, because the exchange file carries
+one `unparsed` line (a stray `RxMeta` at modem startup) that the pipeline turns
+into its own `ModemUnparsed` record. `CorpusFrame`-based counting skips that kind
+entirely, so the two totals no longer sum to the same thing."""
+EXPECTED_TRANSMITTED_COUNT = 18
+"""The frames sighop sends in the exchange file: its own adverts, direct messages,
+acknowledgements, and the room's login answers, responses and pushes."""
 
 EXPECTED_FRAMES_PER_FILE = {
-    "2026-09-02.jsonl": 152,
-    "2026-09-03.jsonl": 199,
-    "2026-09-04.jsonl": 56,
-    "2026-09-04-02.jsonl": 2,
-    "2026-09-04-03.jsonl": 33,
-    "2026-09-05.jsonl": 555,
-    "2026-09-04-first-transmit.jsonl": 6,
-    "2026-09-06-room-server.jsonl": 90,
+    AMBIENT: 180,
+    CHANNELS: 63,
+    EXCHANGE: 39,
 }
-
-FIRST_TRANSMIT_FILE = "2026-09-04-first-transmit.jsonl"
-"""The one session in the corpus whose ciphertext sighop holds a key for.
-
-Its record indices, which the known-answer tests name so the vector and its
-provenance cannot drift apart:
-
-* 1 — the peer's zero-hop advert
-* 2 — sighop's first transmission (a `TXT_MSG` to the peer)
-* 3 — the peer's `TXT_MSG` to sighop, produced by stock `companion_radio`
-  v1.17.1-d929643 and decryptable with `tests/fixtures/burned-first-transmit.json`
-* 4 — the peer's 6-byte acknowledgement of record 2
-* 5 — sighop's 4-byte acknowledgement of record 3
-* 6 — sighop's zero-hop advert
-"""
-
-PEER_DM_INDEX = 3
-SIGHOP_DM_INDEX = 2
-PEER_ACK_INDEX = 4
-SIGHOP_ACK_INDEX = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,11 +91,12 @@ class CorpusError(RuntimeError):
 
 
 def _load_file(name: str) -> list[CorpusFrame]:
-    path = CAPTURES_DIR / name
+    path = CORPUS_DIR / name
     if not path.is_file():
         raise CorpusError(
-            f"capture file {path} is missing; the corpus is the regression "
-            "evidence for the protocol layer and the suite must not pass without it"
+            f"corpus file {path} is missing; the corpus is the regression "
+            "evidence for the protocol layer and the suite must not pass without it "
+            "(regenerate it with `uv run python -m tests.protocol.generate_corpus`)"
         )
     frames: list[CorpusFrame] = []
     with path.open("r", encoding="utf-8") as handle:  # read-only, never "a" or "w"
@@ -146,20 +121,20 @@ def _load_file(name: str) -> list[CorpusFrame]:
                 )
             )
     if not frames:
-        raise CorpusError(f"capture file {path} contained no frame records")
+        raise CorpusError(f"corpus file {path} contained no frame records")
     return frames
 
 
 @cache
 def load_corpus() -> tuple[CorpusFrame, ...]:
-    """Every frame record across every capture file, in capture order.
+    """Every frame record across every corpus file, in file order.
 
     Both directions: receptions, and the frames sighop transmitted in the
-    first-transmit exercise. `received_frames()` is what any measurement of what
-    the mesh sent us must use.
+    exchange file. `received_frames()` is what any measurement of what the mesh
+    sent us must use.
     """
     frames: list[CorpusFrame] = []
-    for name in CAPTURE_FILES:
+    for name in CORPUS_FILES:
         loaded = _load_file(name)
         expected = EXPECTED_FRAMES_PER_FILE[name]
         if len(loaded) != expected:
@@ -185,13 +160,16 @@ def transmitted_frames() -> tuple[CorpusFrame, ...]:
     return tuple(frame for frame in load_corpus() if frame.transmitted)
 
 
-def first_transmit_frame(index: int) -> CorpusFrame:
-    """One record of the first-transmit session, by its index in the file.
+def first_received_frame(payload_type: PayloadType, *, hops: int | None = None) -> bytes:
+    """The raw bytes of the first reception of a payload type, for a test that
+    needs one frame that decodes rather than a hand-built shape.
 
-    Named rather than searched for, so a known-answer test and the capture it
-    reads cannot drift apart (`protocol-corpus`, milestone 4).
+    `hops`, when given, picks the first with that hop count.
     """
-    for frame in load_corpus():
-        if frame.capture_file == FIRST_TRANSMIT_FILE and frame.index == index:
-            return frame
-    raise CorpusError(f"{FIRST_TRANSMIT_FILE} has no record at index {index}")
+    for frame in received_frames():
+        packet = decode(frame.raw)
+        if isinstance(packet, DecodeFailure) or packet.payload_type is not payload_type:
+            continue
+        if hops is None or packet.hop_count == hops:
+            return frame.raw
+    raise CorpusError(f"the corpus holds no received {payload_type.name} frame (hops={hops})")

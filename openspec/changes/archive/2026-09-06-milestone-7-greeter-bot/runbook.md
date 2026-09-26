@@ -119,8 +119,8 @@ every other node on the mesh, and its automation is sighop's business rather tha
 mesh's — so only the stored type tells them apart:
 
 ```
-uv run sighop keys new --name [redacted] --out keys/[redacted].json --node-type CHAT
-uv run sighop keys import keys/[redacted].json --bot
+uv run sighop keys new --name syn-greeter-bot --out keys/syn-greeter-bot.json --node-type CHAT
+uv run sighop keys import keys/syn-greeter-bot.json --bot
 uv run sighop keys list                      # expect: type=bot  node_type=CHAT
 ```
 
@@ -131,13 +131,13 @@ with the file it came from.
 ### 3. Create the greeter — which is created observing
 
 ```
-uv run sighop bot create [redacted] --driver greeter
+uv run sighop bot create syn-greeter-bot --driver greeter
 ```
 
 Expect, and read every line of it:
 
 ```
-bot        [redacted]
+bot        syn-greeter-bot
 driver     greeter
 mode       observe
 enabled    yes
@@ -151,12 +151,12 @@ enabled    yes
   rate_per_hour  6.0
   retry_after_minutes  15
 the bot is enabled and in observe mode: it runs its whole decision path and will transmit
-nothing until `sighop bot mode [redacted] active` says otherwise
+nothing until `sighop bot mode syn-greeter-bot active` says otherwise
 transmission still requires the run's --enable-transmit flag, and stays under the
 duty-cycle ceiling
 seeded     N existing contacts recorded as already greeted, so this greeter starts owing
 nothing to the contacts this node already knew. Release one with `sighop bot greeted
-[redacted] <peer> --clear`
+syn-greeter-bot <peer> --clear`
 ```
 
 (sighop names its own commands without the `uv run` prefix, because it does not know how it
@@ -168,12 +168,12 @@ was launched. Everything it suggests is run the same way as everything else here
 count in a previous run's status line are the cross-check. If it says `seeded nothing` on a
 node that has been receiving for weeks, the seed did not happen and the greeter owes a
 greeting to every contact in the table — run
-`uv run sighop bot greeted [redacted] --seed` before going any further.
+`uv run sighop bot greeted syn-greeter-bot --seed` before going any further.
 
 Set a greeting appropriate to the mesh you are on, if the default is not:
 
 ```
-uv run sighop bot set [redacted] greeting "welcome — you are new to this node"
+uv run sighop bot set syn-greeter-bot greeting "welcome — you are new to this node"
 ```
 
 An over-long greeting is refused **here**, with the limit and the length given, rather than
@@ -195,7 +195,7 @@ Check the startup output before anything else:
 
 - `transmit: DISABLED` — the gate is closed.
 - `persistence: on — …  schema=0003` and the restored counts.
-- `bot '[redacted]'[xx]  driver=greeter  mode=observe  rate_per_hour=6.0 burst=3
+- `bot 'syn-greeter-bot'[xx]  driver=greeter  mode=observe  rate_per_hour=6.0 burst=3
   max_hops=1 node_types=CHAT min_snr_db=none greeting_bytes=NN
   greeting_attempts=3 retry_after_minutes=15 ack_grace_seconds=30`
 
@@ -215,16 +215,16 @@ Leave it running long enough to see a representative sample of the mesh's advert
 decision is a line as it happens:
 
 ```
-.. bot '[redacted]'  suppressed: already_greeted  ✗<key prefix>
-.. bot '[redacted]'  suppressed: too_many_hops  ✗<key prefix>  4 hops, limit 1
-.. bot '[redacted]'  suppressed: node_type  ✗<key prefix>  REPEATER
-.. bot '[redacted]'  would send to ✗<key prefix>  transmitted nothing (observe mode)  '…'
+.. bot 'syn-greeter-bot'  suppressed: already_greeted  ✗<key prefix>
+.. bot 'syn-greeter-bot'  suppressed: too_many_hops  ✗<key prefix>  4 hops, limit 1
+.. bot 'syn-greeter-bot'  suppressed: node_type  ✗<key prefix>  REPEATER
+.. bot 'syn-greeter-bot'  would send to ✗<key prefix>  transmitted nothing (observe mode)  '…'
 ```
 
 and the periodic status line carries the running totals:
 
 ```
-== bot '[redacted]' driver=greeter mode=observe acted=0 observed=N pending=0
+== bot 'syn-greeter-bot' driver=greeter mode=observe acted=0 observed=N pending=0
    dropped=0 failures=0 suppressed=already_greeted=A,node_type=B,too_many_hops=C
 ```
 
@@ -259,7 +259,7 @@ From the counters, not from impression. The question the numbers answer:
 Change it, if the numbers say so, with:
 
 ```
-uv run sighop bot set [redacted] max_hops 2
+uv run sighop bot set syn-greeter-bot max_hops 2
 ```
 
 ## Stage two — the test peer (tasks 13.4 to 13.7, 13.9)
@@ -275,8 +275,8 @@ contact:
   and was therefore seeded at creation. Clear its record:
 
   ```
-  uv run sighop bot greeted [redacted] <peer name or key prefix> --clear
-  # cleared the greeting record for <name> (<key prefix>): bot '[redacted]' will greet it
+  uv run sighop bot greeted syn-greeter-bot <peer name or key prefix> --clear
+  # cleared the greeting record for <name> (<key prefix>): bot 'syn-greeter-bot' will greet it
   # the next time it adverts, if the hop, node-type and rate gates pass
   ```
 
@@ -288,8 +288,8 @@ Prefer re-keying if the board is easy to reset, because it tests one more thing.
 confirm before going on:
 
 ```
-uv run sighop bot greeted [redacted] <peer>
-# <name> (<key prefix>) has no greeting record from bot '[redacted]' and will be greeted
+uv run sighop bot greeted syn-greeter-bot <peer>
+# <name> (<key prefix>) has no greeting record from bot 'syn-greeter-bot' and will be greeted
 # when it next adverts
 ```
 
@@ -298,13 +298,13 @@ If that line says the contact *has* a record, the exercise cannot test what it i
 ### 8. Make the greeter active
 
 ```
-uv run sighop bot mode [redacted] active
+uv run sighop bot mode syn-greeter-bot active
 ```
 
 Expect:
 
 ```
-bot '[redacted]' is now active: it may transmit. Transmission still requires the run's
+bot 'syn-greeter-bot' is now active: it may transmit. Transmission still requires the run's
 --enable-transmit flag and stays under the duty-cycle ceiling
 ```
 
@@ -322,12 +322,12 @@ UI). Expect, in order:
 
 ```
 [frame line for the peer's advert]
--> advert  [redacted]  zero-hop  109B
--> bot '[redacted]'  sent to ✗<key prefix>  DIRECT h0  attempts=1  acknowledged  '…'
+-> advert  syn-greeter-bot  zero-hop  109B
+-> bot 'syn-greeter-bot'  sent to ✗<key prefix>  DIRECT h0  attempts=1  acknowledged  '…'
 ```
 
 - **The advert comes first, and this is the fix for the first run's failure.** A peer that
-  has never heard `[redacted]` holds no key for it, cannot derive the shared secret,
+  has never heard `syn-greeter-bot` holds no key for it, cannot derive the shared secret,
   cannot read the greeting, and has nothing to acknowledge (design D18). If the greeting line
   appears with no advert line before it, the ordering is broken — an advert is class 3 and a
   message is class 2, so a send that did not wait would be transmitted first.
@@ -338,7 +338,7 @@ UI). Expect, in order:
 - `acknowledged` — the peer answered. `NOT ACKNOWLEDGED` after four packet attempts is
   recorded as an **attempt**, not a delivery: the contact is retried after
   `retry_after_minutes` on its next advert, up to `greeting_attempts` (design D6, revised).
-- The message must appear on the peer, as a direct message from `[redacted]`.
+- The message must appear on the peer, as a direct message from `syn-greeter-bot`.
 
 **If the greeting is unacknowledged, that is now a testable path rather than a dead end.**
 For a peer heard **directly**, the advert already went out, so silence means something the
@@ -346,7 +346,7 @@ greeter cannot fix by repeating itself: it waits. Leave the run going and let th
 advert again inside 15 minutes: expect
 
 ```
-.. bot '[redacted]'  suppressed: greeting_cooldown  ✗<key prefix>  attempt 1 unanswered, retry in Nm
+.. bot 'syn-greeter-bot'  suppressed: greeting_cooldown  ✗<key prefix>  attempt 1 unanswered, retry in Nm
 ```
 
 and after the cooldown, a second greeting. Three attempts in, expect
@@ -356,7 +356,7 @@ and after the cooldown, a second greeting. Three attempts in, expect
 
 The case the second run of this exercise failed, and the one worth reproducing deliberately.
 Use a peer whose adverts reach sighop at **h1** (through a repeater), that has never heard
-`[redacted]`, and that carries no greeting record. Expect, in order, from a single
+`syn-greeter-bot`, and that carries no greeting record. Expect, in order, from a single
 advert:
 
 ```
@@ -364,9 +364,9 @@ advert:
 -> dm sent  to '<name>'  attempt 0  DIRECT h1  …          # bare: no advert before it
    … three more packet attempts, then ~30 s of grace …
 ! dm unacknowledged to '<name>' after 4 attempt(s)
--> bot '[redacted]'  sent to ✗<key prefix>  DIRECT h1  attempts=1  NOT ACKNOWLEDGED  '…'
--> advert  [redacted]  flood  118B                   # the escalation
--> bot '[redacted]'  sent to ✗<key prefix>  DIRECT h1  attempts=2  acknowledged  '…'
+-> bot 'syn-greeter-bot'  sent to ✗<key prefix>  DIRECT h1  attempts=1  NOT ACKNOWLEDGED  '…'
+-> advert  syn-greeter-bot  flood  118B                   # the escalation
+-> bot 'syn-greeter-bot'  sent to ✗<key prefix>  DIRECT h1  attempts=2  acknowledged  '…'
 ```
 
 What each part is asserting:
@@ -409,7 +409,7 @@ Stop the run. Start it again with the same command. Prompt another advert from t
 peer. Expect:
 
 ```
-.. bot '[redacted]'  suppressed: already_greeted  ✗<key prefix>
+.. bot 'syn-greeter-bot'  suppressed: already_greeted  ✗<key prefix>
 ```
 
 `already_greeted`, because the greeting record was written before the transmission, records
@@ -424,7 +424,7 @@ the mesh, so losing the second does not re-open the first.
 Confirm the record from the other side:
 
 ```
-uv run sighop bot greeted [redacted] <peer>
+uv run sighop bot greeted syn-greeter-bot <peer>
 # <name> (<key prefix>)  acknowledged  at 2026-…
 ```
 
@@ -455,6 +455,6 @@ initiative**, which is what makes it worth keeping.
 ## Afterwards
 
 Leave the greeter in whatever mode the operator intends. If the exercise is over and the
-mesh is a shared one, `uv run sighop bot mode [redacted] observe` is the state a bot
+mesh is a shared one, `uv run sighop bot mode syn-greeter-bot observe` is the state a bot
 should be left in — a greeter pointed at strangers is a decision that should be made on
 purpose each time, not inherited from the last exercise.

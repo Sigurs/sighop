@@ -185,7 +185,7 @@ everyone on the channel.
 *(Added after the live exercise.)* The exercise's greeting was transmitted four times to a peer at
 zero hops with a strong signal, and every attempt went unanswered. The reason is not in this
 milestone's code at all: a direct message is encrypted under a secret derived from the **sender's**
-public key, so a peer decrypts one by trying the contacts it holds. `[redacted]` had been
+public key, so a peer decrypts one by trying the contacts it holds. the dev greeter bot had been
 created minutes earlier and its flood interval is a day, so it had never adverted — the peer did
 not hold its key, could not derive the secret, could not read a byte, and had nothing to
 acknowledge. **From the sender's side this is indistinguishable from a peer that is not
@@ -202,7 +202,7 @@ the mechanism. The mechanism is the runtime's because the two choices differ eno
   advert of ours, and the flood is paid for only once silence has proved it necessary.
 
 **That proof is acted on immediately, not at the next cooldown.** *(Revised after the second live
-exercise, which reproduced the problem exactly: `[redacted]` at one hop, four unanswered attempts,
+exercise, which reproduced the problem exactly: a peer at one hop, four unanswered attempts,
 `announced=0`.)* When a bare greeting to a distant peer goes unacknowledged, the silence has
 already identified its own cause — the peer cannot decrypt us — and waiting fifteen minutes buys
 only the same silence for the same reason, while the peer is adverting *now* and is therefore

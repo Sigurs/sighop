@@ -31,12 +31,12 @@ from sighop.radio.modem import EU868_NARROW, ModemEvent, TransmitDone
 from sighop.radio.replay import CaptureReplay
 from sighop.runtime import Runtime, RuntimeConfig
 from tests.dbfixtures import the_default_persistence
-from tests.protocol.corpus import CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_tx import ManualClock, RecordingLogger, RecordingSender
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
+CAPTURE = CORPUS_DIR / AMBIENT
 
 
 async def _events(path=CAPTURE) -> AsyncIterator[ModemEvent]:

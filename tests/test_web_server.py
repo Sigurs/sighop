@@ -45,13 +45,13 @@ from sighop.web.app import (
 )
 from sighop.web.auth import FirstRunSetup
 from tests.dbfixtures import the_default_persistence
-from tests.protocol.corpus import CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_web_state import RecordingLogger, _empty_source, _startup
 from tests.webfixtures import MemoryAccounts, authenticator, signed_client, stub_state
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
+CAPTURE = CORPUS_DIR / AMBIENT
 
 
 def _runtime(logger: RecordingLogger | None = None, out: io.StringIO | None = None) -> Runtime:

@@ -107,10 +107,10 @@ def test_a_long_path_is_truncated_rather_than_wrapping():
 
 
 def test_a_verified_advert_shows_its_mark_name_node_type_and_flags():
-    detail = render_detail_line(record_for(advert_bytes("[redacted]")))
+    detail = render_detail_line(record_for(advert_bytes("syn-ridge-repeater")))
 
     assert "✓ advert" in detail
-    assert "'[redacted]'" in detail
+    assert "'syn-ridge-repeater'" in detail
     assert "REPEATER" in detail
     assert "flags=0x82" in detail
 
@@ -301,7 +301,7 @@ def test_replay_startup_uses_the_files_provenance():
 
 
 def test_replay_startup_states_missing_provenance_rather_than_inventing_it():
-    text = render_replay_startup(None, "captures/2026-09-02.jsonl")
+    text = render_replay_startup(None, "captures/x.jsonl")
 
     assert "provenance absent" in text
     assert "no capture_meta header" in text
@@ -763,7 +763,7 @@ def test_a_channel_message_renders_its_claimed_sender_as_unverified():
             channel_id=1,
             channel_name="Public",
             packet_id="pkt9",
-            unverified_sender_name="Sigurs",
+            unverified_sender_name="syn-alder",
             body="hej",
             wire_timestamp=1_757_000_000,
             hop_count=2,
@@ -775,7 +775,7 @@ def test_a_channel_message_renders_its_claimed_sender_as_unverified():
 
     assert VERIFIED_MARK not in line, "a channel sender name was rendered as verified"
     assert line == (
-        "          ✗ Public from claimed 'Sigurs' (unverified)  h2: 'hej'  ts=1757000000"
+        "          ✗ Public from claimed 'syn-alder' (unverified)  h2: 'hej'  ts=1757000000"
     )
     assert "pkt9" not in line, "a per-reception id would make a replay render differently"
 

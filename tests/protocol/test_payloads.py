@@ -50,6 +50,7 @@ from sighop.protocol.payloads import (
     parse_text_message_body,
 )
 from sighop.protocol.result import DecodeFailure, EncodeError, FailureReason
+from tests.protocol.synthetic import discover_response_payload
 
 BLOCK = bytes(range(16))
 
@@ -185,11 +186,10 @@ def test_unsupported_payload_types_are_preserved_not_dropped(
 
 # --- CONTROL: node discovery ------------------------------------------------
 
-# A 38-byte response lifted from the corpus (2026-09-05): a repeater answering
-# the request above it, tag 9a7d3916, reporting it heard the request at +11.75 dB.
-CORPUS_DISCOVER_RESP = bytes.fromhex(
-    "922f9a7d3916[redacted]"
-)
+# A 38-byte response as the corpus carries them: a repeater answering a request,
+# tag 9a7d3916, reporting it heard the request at +11.75 dB. Built from the cast's
+# repeater rather than pasted, so it names no real node.
+CORPUS_DISCOVER_RESP = discover_response_payload()
 
 
 def test_discover_request_without_since() -> None:
@@ -296,12 +296,12 @@ def test_build_discover_response_rejects_a_bad_key(key_size: int) -> None:
 
 # --- Adverts ---------------------------------------------------------------
 
-# Appdata bytes as they appear on the corpus mesh: flags, lat, lon, name.
+# Appdata bytes as the corpus's repeaters advertise them: flags, lat, lon, name.
 CORPUS_REPEATER_APPDATA = (
     bytes([0x92])
-    + (59_123_456).to_bytes(4, "little", signed=True)
-    + (17_654_321).to_bytes(4, "little", signed=True)
-    + b"[redacted]"
+    + (1_234_567).to_bytes(4, "little", signed=True)
+    + (2_345_678).to_bytes(4, "little", signed=True)
+    + b"syn-ridge-repeater"
 )
 CORPUS_ROOM_APPDATA = (
     bytes([0x93])
@@ -342,11 +342,11 @@ def test_located_named_repeater_appdata() -> None:
     appdata = ok(parse_appdata(CORPUS_REPEATER_APPDATA))
     assert isinstance(appdata, AdvertAppData)
     assert appdata.node_type is NodeType.REPEATER
-    assert appdata.latitude == 59_123_456
-    assert appdata.latitude_degrees == pytest.approx(59.123456)
-    assert appdata.longitude == 17_654_321
+    assert appdata.latitude == 1_234_567
+    assert appdata.latitude_degrees == pytest.approx(1.234567)
+    assert appdata.longitude == 2_345_678
     assert appdata.name is not None
-    assert appdata.name.text == "[redacted]"
+    assert appdata.name.text == "syn-ridge-repeater"
 
 
 def test_room_server_flags_are_an_enum_not_a_bit_combination() -> None:
@@ -429,9 +429,9 @@ def test_empty_appdata_is_rejected() -> None:
 def test_build_appdata_round_trips_a_corpus_shape() -> None:
     raw = build_appdata(
         NodeType.REPEATER,
-        latitude=59_123_456,
-        longitude=17_654_321,
-        name="[redacted]",
+        latitude=1_234_567,
+        longitude=2_345_678,
+        name="syn-ridge-repeater",
     )
     assert raw == CORPUS_REPEATER_APPDATA
 

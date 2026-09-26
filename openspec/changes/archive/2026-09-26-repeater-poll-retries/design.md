@@ -146,7 +146,7 @@ Rejected.
 - **A flooded answer arrives after the flood attempt's timeout.** It is counted as unmatched, and
   the poll ends as login unanswered, as today. A path return that arrives late still teaches the
   route through `PathBodyReader`, so the next cycle benefits.
-- **A 1-byte-hash route is ambiguous.** [redacted]'s learned route `be` could match more than one
+- **A 1-byte-hash route is ambiguous.** One repeater's learned route `be` could match more than one
   repeater. This design does not address that. The flood fallback repairs the route when it
   fails.
 

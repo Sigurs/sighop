@@ -1,10 +1,10 @@
 """Renderer for the corpus golden file.
 
 Per design D8 the golden file holds **structural fields and ciphertext digests
-only — never decrypted plaintext**. The corpus is other people's traffic and
-sighop holds no key for any of it, so today the rule costs nothing; it is
-written down now so it still holds at milestone 4, when we will hold keys and
-the temptation to snapshot a decrypted body will be real.
+only — never decrypted plaintext**. The synthetic corpus's keys are all known (the
+generator holds them), so the rule costs something now: it is what keeps the file
+from becoming a second copy of the corpus's messages, and it holds unchanged if a
+recorded frame is ever added.
 
 Regeneration is deliberately not a test flag (design D10). `generate_golden.py`
 is a script you run and whose diff you review.

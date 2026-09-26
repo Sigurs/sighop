@@ -223,7 +223,7 @@ evening run the exit criterion asks for. Recorded here because three of these ar
 capture file could have told us.
 
 **Adverts decode off live air with verified names — the exit criterion, demonstrated.** Against the
-V4: `✓ advert 'Sigurs' CHAT flags=0x81 key=[redacted]7064e837`, arriving both DIRECT h0 and FLOOD h1
+V4: `✓ advert 'Sigurs' CHAT flags=0x81 key=[redacted]`, arriving both DIRECT h0 and FLOOD h1
 via `path=[redacted]`, with SNR and RSSI attached. Six frames, four adverts verified, zero decode
 failures, zero reconnects, zero reboots. This is a three-minute run, not the evening one task 9.1
 asks for, but it is the first end-to-end evidence that `radio/` and `protocol/` compose into a
@@ -331,7 +331,7 @@ added is written correctly by a real run rather than only by its tests.
 Two shapes the 351-frame corpus lacked arrived here, which is why these files were appended to
 it (task 9.5):
 
-- **`ROUTE_TYPE_TRANSPORT_FLOOD`, once.** A `[redacted]` advert, transport codes
+- **`ROUTE_TYPE_TRANSPORT_FLOOD`, once.** A repeater's advert, transport codes
   `0x0075`/`0x0000`, hop 0, 2-byte hash. Transport routing had been synthetic-only since
   milestone 1; the codec now decodes and re-encodes a real one byte-identically. The second
   code being zero is worth noting but not worth a rule — one frame is a sighting, not a

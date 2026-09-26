@@ -220,3 +220,9 @@ pyrightconfig.json
 
 # Development identity keyfiles: unencrypted seeds, never committed
 keys/
+.env*
+!.env.example
+
+# Live recordings (SIGHOP_CAPTURE_FILE, `sighop run --capture`) are other people's traffic:
+# never committed. The regression corpus is synthetic and lives in tests/corpus/.
+captures/

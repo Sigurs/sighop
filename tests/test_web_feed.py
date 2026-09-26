@@ -44,6 +44,8 @@ from sighop.radio.modem import EU868_NARROW, RxEvent, RxMeta, UnparsedEvent
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.feed import DEFAULT_CONNECTION_QUEUE, FeedHub
 from sighop.web.serialize import HISTORY, LIVE, logged_packet, rx_record, tx_record
+from tests.protocol.corpus import first_received_frame
+from tests.protocol.synthetic import discover_response_payload
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import authenticator, signed_client, stub_state
 
@@ -52,13 +54,10 @@ pytestmark = pytest.mark.usefixtures("default_persistence")
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 HOSTS = allowed_hosts("127.0.0.1", 8080)
 
-# A real reception from the corpus. Fabricated bytes would decode as a
-# structural failure, and a failed frame is deliberately never deduplicated —
-# which would make the duplicate test below quietly test nothing.
-FRAME = bytes.fromhex(
-    "1e0054[redacted]8ecd77dfc078d4386ea8326f26e124e257869087027731a53dc31db"
-    "9c0ecc0ced37f0a645a90e11bf324210277fe"
-)
+# A reception from the corpus. Fabricated bytes would decode as a structural
+# failure, and a failed frame is deliberately never deduplicated — which would
+# make the duplicate test below quietly test nothing.
+FRAME = first_received_frame(PayloadType.ANON_REQ)
 
 
 def _reception(raw: bytes = FRAME, *, at: dt.datetime = NOW):
@@ -284,8 +283,8 @@ def test_an_unparsed_frame_carries_its_bytes_and_its_reason() -> None:
     assert row["raw"] == "fffe", "the evidence was dropped on the way to the browser"
 
 
-DISCOVER_RESP_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
-    "922f9a7d3916[redacted]"
+DISCOVER_RESP_FRAME = (
+    bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + discover_response_payload()
 )
 """DIRECT CONTROL, zero hops: a corpus node discovery response."""
 

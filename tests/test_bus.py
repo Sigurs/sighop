@@ -28,14 +28,14 @@ from sighop.net.dedup import DedupCache
 from sighop.net.rx import RxRecord, decode_event
 from sighop.radio.modem import EU868_NARROW
 from sighop.radio.replay import CaptureReplay
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import CORPUS_DIR, CORPUS_FILES
 
 
 @pytest.fixture(scope="module")
 def corpus_records() -> list[RxRecord]:
     records: list[RxRecord] = []
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
     return records
 

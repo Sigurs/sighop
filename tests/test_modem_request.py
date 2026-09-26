@@ -208,8 +208,8 @@ async def test_response_between_data_and_rxmeta_keeps_the_signal_metadata():
 
 # --- Device reboot (found live, 2026-09-03) --------------------------------
 
-# The first 96 bytes of a real ESP32-S3 ROM banner, taken verbatim from
-# `captures/2026-09-03-2.jsonl`, where it arrived seven times in nine minutes.
+# The first 96 bytes of a real ESP32-S3 ROM banner, as the chip prints it at
+# power-on: it arrived seven times in nine minutes in an early live capture.
 BOOT_BANNER = (
     b"ESP-ROM:esp32s3-20210327\r\nBuild:Mar 27 2021\r\n"
     b"rst:0x1 (POWERON),boot:0x29 (SPI_FAST_FLASH_BOOT)\r\nSPIWP:0xee\r\n"

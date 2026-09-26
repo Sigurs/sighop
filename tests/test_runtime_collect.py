@@ -18,11 +18,11 @@ from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType
 from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.runtime import Runtime, RuntimeConfig
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_runtime import _events, _startup
 from tests.test_tx import ManualClock, RecordingLogger
 
-CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
+CAPTURE = CORPUS_DIR / AMBIENT
 SECRET = base64.b64decode(generate_secret_key())
 
 

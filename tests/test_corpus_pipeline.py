@@ -27,8 +27,8 @@ from sighop.protocol.packet import PayloadType, RouteType, decode
 from sighop.protocol.payloads import Advert, parse_payload
 from sighop.radio.replay import CaptureReplay
 from tests.protocol.corpus import (
-    CAPTURE_FILES,
-    CAPTURES_DIR,
+    CORPUS_DIR,
+    CORPUS_FILES,
     EXPECTED_RECEIVED_COUNT,
     EXPECTED_TRANSMITTED_COUNT,
     received_frames,
@@ -45,8 +45,8 @@ def harness_packets():
 def replayed() -> list[RxRecord]:
     records: list[RxRecord] = []
     skipped = 0
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
         assert replay.unreadable == [], f"{name}: {replay.unreadable}"
         skipped += replay.transmitted_skipped
@@ -64,10 +64,10 @@ def test_every_corpus_frame_produces_an_outcome_through_the_live_pipeline(replay
 def decoded_only(replayed: list[RxRecord]) -> list[RxRecord]:
     """The receptions that produced a packet — what the offline harness sees.
 
-    The room-server session's capture carries one `ModemUnparsed` reception (a
-    stray `RxMeta` at modem startup, forwarded rather than dropped): it has no
-    packet and so no counterpart in `harness_packets()`, which only ever sees
-    the corpus's `rx_frame`/`tx_frame` records.
+    The exchange file carries one `ModemUnparsed` reception (a stray `RxMeta` at
+    modem startup, forwarded rather than dropped): it has no packet and so no
+    counterpart in `harness_packets()`, which only ever sees the corpus's
+    `rx_frame`/`tx_frame` records.
     """
     return [record for record in replayed if record.packet is not None]
 
@@ -137,7 +137,7 @@ def test_the_pipeline_carries_the_recorded_signal_values(replayed):
     """SNR and RSSI survive capture, replay and decode unchanged.
 
     Paired against `received_frames()` rather than `replayed` directly: the
-    room-server session's `ModemUnparsed` reception has no `CorpusFrame`
+    exchange file's `ModemUnparsed` reception has no `CorpusFrame`
     counterpart (it is not a `rx_frame`/`tx_frame` record) and carries no
     signal values of its own to compare.
     """
@@ -164,13 +164,14 @@ def test_the_pipeline_sees_the_same_single_transport_routed_frame(replayed):
 # --- Channels (change `channel-messaging`, task 6.2) -------------------------
 
 
-ALL_CAPTURES = tuple(sorted(path.name for path in CAPTURES_DIR.glob("*.jsonl")))
-"""Every capture, as `tests/protocol/test_channel_foreign_decrypt.py` reads them:
-the Public channel's 85 distinct frames span files the protocol corpus does not
-name."""
+ALL_CAPTURES = tuple(sorted(path.name for path in CORPUS_DIR.glob("*.jsonl")))
+"""Every corpus file, as the channel tests read them."""
 
-EXPECTED_PUBLIC_DECRYPTED = 85
-EXPECTED_UNKNOWN_CHANNEL = 108
+EXPECTED_PUBLIC_DECRYPTED = 32
+"""Distinct `GRP_TXT` frames on the Public channel (`0x11`): 32 in
+`synthetic-channels.jsonl`, whose flood repeats the dedup stage keeps off the bus."""
+EXPECTED_UNKNOWN_CHANNEL = 22
+"""Distinct `GRP_TXT` frames on the second channel, whose key is not loaded."""
 
 
 async def _replay_with_channels(*, public_loaded: bool) -> dict[str, int]:
@@ -210,7 +211,7 @@ async def _replay_with_channels(*, public_loaded: bool) -> dict[str, int]:
     )
     pipeline.observers.append(messenger.observe)
     for name in ALL_CAPTURES:
-        for event in CaptureReplay.open(CAPTURES_DIR / name).read():
+        for event in CaptureReplay.open(CORPUS_DIR / name).read():
             pipeline.ingest(decode_event(event))
             while not channel_queue.queue.empty():
                 await messenger.handle(channel_queue.queue.get_nowait())

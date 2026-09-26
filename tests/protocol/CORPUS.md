@@ -1,107 +1,119 @@
 # The protocol regression corpus
 
-1093 frame records in eight files: **1058 received** off the live mesh, and
-**35 that sighop itself transmitted**.
+282 frame records in three files under `tests/corpus/`: **264 received** and **18 that
+sighop itself transmitted**. The corpus is **synthetic**: a fictional mesh generated
+from sighop's own encoders under a fixed seed, and committed.
 
-| File | Frames | Recorded | Provenance |
-|---|---|---|---|
-| `captures/2026-09-02.jsonl` | 152 | milestone 0, Heltec V3 | `.meta.json` sidecar |
-| `captures/2026-09-03.jsonl` | 199 | milestone 0, Heltec V3 | `.meta.json` sidecar |
-| `captures/2026-09-04.jsonl` | 56 | milestone 2, Heltec V4 OLED | `capture_meta` header |
-| `captures/2026-09-04-02.jsonl` | 2 | milestone 2, Heltec V4 OLED | `capture_meta` header |
-| `captures/2026-09-04-03.jsonl` | 33 | milestone 2, Heltec V4 OLED | `capture_meta` header |
-| `captures/2026-09-05.jsonl` | 555 | milestone 3, Heltec V4 OLED | `capture_meta` header |
-| `captures/2026-09-04-first-transmit.jsonl` | 6 (3 rx, 3 tx) | milestone 4, V4 OLED ↔ V3 peer | `capture_meta` header, both boards |
-| `captures/2026-09-06-room-server.jsonl` | 90 (58 rx, 32 tx) | milestone 6, V4 OLED ↔ stock `v1.17.1` client | `capture_meta` header |
+| File | Frames | Job |
+|---|---|---|
+| `synthetic-ambient.jsonl` | 180 (all rx) | A receive-only mesh: adverts of every node type and flag form, flood and direct routing, hop counts 0–5, path hash sizes 1–3, TRACE of two lengths, PATH, discovery requests and responses, one `TRANSPORT_FLOOD`, third-party direct messages, acknowledgements, room logins, requests and responses, the flood repeats and the late echo |
+| `synthetic-channels.jsonl` | 63 (all rx) | Group text on the Public channel (`0x11`) and on a second synthetic channel (`0x33`), and a few group-data frames |
+| `synthetic-exchange.jsonl` | 39 (21 rx, 18 tx) + 1 `unparsed` | sighop and a synthetic peer: direct messages in both directions with both acknowledgement forms, a flooded message answered by a returned path, one identical retransmission, and a room sighop hosts — login, requests, posts, a guest whose posts are never acknowledged, pushes — plus sighop's own adverts as `tx_frame` |
 
-Per DESIGN.md §12 these files are the permanent regression corpus for the
-protocol layer. The two milestone 0 files predate the `capture_meta` header
-record and keep their sidecars; everything recorded from milestone 2 onward
-carries its provenance in-band, as the first line of the file itself. Either
-way every corpus file states the conditions it was recorded under —
-`test_every_corpus_file_carries_provenance` refuses a file that states neither.
+Tests take the corpus by role (`AMBIENT`, `CHANNELS`, `EXCHANGE` in `corpus.py`), not by
+date. Most only want "a realistic stream of receptions" and take `AMBIENT`.
 
-The first-transmit file is milestone 4's exercise: sighop's first three
-transmissions and the peer's three replies, recorded on 2026-09-04 between
-21:44 and 21:49 UTC. It is the only file holding frames sighop sent, and its
-`capture_meta` header records **both** boards — the V4 that ran sighop and the
-Heltec V3 running stock `companion_radio` v1.17.1-d929643 that produced the
-ciphertext. Transmitted frames carry the record kind `tx_frame`; they decode
-through the same codecs as receptions and are excluded from every
-reception-derived measurement, the duplicate rate included.
+## Why it is generated
 
-The 2026-09-04 files are one overnight session split by device restarts. The
-2026-09-05 file is milestone 3's long receive-only run — 2 h 54 min on the V4,
-17:06–20:00 UTC, recorded by `sighop run --capture` while the TX scheduler
-carried live advert load behind a closed gate. All of them were kept whole
-rather than filtered down to their novel frames: a corpus of hand-picked
-interesting frames stops being a sample of what the mesh actually carries.
+The corpus used to be 13 files of live LoRa traffic recorded off a real mesh. That put
+other people's node names, keys and Public-channel chat in the repository, and it made
+coverage a matter of volume: about a third of the receptions were flood repeats of a
+packet already seen. A generated corpus fixes both. Nothing real can be in it, and its
+composition is chosen — wide coverage, a controlled and declared amount of repetition.
 
-The 2026-09-06 file is milestone 6's live room-server exercise, run in three
-`sighop run` invocations against the same capture file: receive-only, then
-transmit enabled with a zero-hop advert, then a restart partway through to
-exercise the exit criterion. It holds the first live room login (`ANON_REQ`
-carrying the login envelope), the first live room post and refusal (`TXT_MSG`
-to the room's own node hash), the first pushes and their acknowledgements
-(`ACK`, both 4-byte forms — this session never saw the 6-byte form the other
-sessions did), and the two `PATH` exchanges either side used to learn a route
-home. It also caught the discovery that drove design D4's revision: five posts
-refused `too_long` at 156–158 bytes, before the fix that truncates and
-acknowledges instead. Kept whole for the same reason as the rest: the refused
-posts are exactly the evidence that the original design was wrong, and a
-corpus edited down to only the "working" frames would have erased it.
+`tests/protocol/synthetic.py` is the generator. Same generator version and seed, same
+bytes; `SEED` and `GENERATOR_VERSION` are written into every file's `capture_meta`
+header, which also says the file is synthetic and describes no real device, board,
+firmware or mesh. Regenerate deliberately and review the diff:
 
-**They are read-only evidence.** The harness opens them for reading and never
-writes to them or their sidecars. Nothing regenerates them.
+    uv run python -m tests.protocol.generate_corpus
+
+That writes `tests/corpus/*.jsonl` and prints a **manifest**: record counts per file, per
+payload type, route type, hop count, path hash size and advert form. The expectations in
+`corpus.py` and `test_corpus.py` are typed in from a reviewed run of it, never written by
+tooling, so a change to the generator fails the drift check, the manifest and the
+recorded expectations together until each is updated in the same reviewed change.
+
+**The corpus files are read-only generated artefacts.** The harness opens them for reading
+and never writes to them; only the generator does. `test_synthetic_corpus.py` regenerates
+the corpus in memory and fails, naming the file and the first differing line, if the
+committed files differ. The golden file is regenerated the same way, with
+`tests/protocol/generate_golden.py`.
+
+## The cast
+
+Every identity is a seeded Ed25519 key and every name carries the fixed prefix `syn-`, so
+a reader cannot mistake one for real: twelve repeaters (`syn-ridge-repeater`, …), three
+room servers (`syn-cellar-room`, `syn-attic-room`, and `syn-lounge-room`, the room sighop
+hosts, which advertises with no location), eight chat nodes (`syn-alder`, …, four of them
+with a location), and two local identities, `syn-sighop` and `syn-peer`. Locations are in a
+small square around 0°N 0°E. The chat lines are written out in the generator; no text is
+produced at run time. Every node's first key byte is its own, so a 1-byte path hash names
+exactly one node.
+
+The **no-real-data guard** (`test_synthetic_corpus.py`, `corpus_checks.py`) checks
+membership in this cast, not a denylist of real names, so it needs no real data to exist
+anywhere in the repository: every advert's key and name, every discovery response's key,
+every ciphertext (which must open with a cast key) and every sender and text it opens to
+must be the cast's. A scan of the tracked files also fails if any holds private-key
+material outside test code that builds its keys in memory.
 
 ## What the corpus proves
 
-- **Framing.** Every frame decodes structurally and re-encodes byte-identically,
-  including the packed `path_length` encoding, all three live path hash sizes,
-  hop counts 0-5, and the one transport-routed frame's transport codes.
-- **Payload shapes.** Every payload parses to its envelope and rebuilds
-  byte-identically across eleven payload types, CONTROL included.
-- **CONTROL is node discovery.** All 168 CONTROL frames decode as MeshCore node
-  discovery (`MyMesh.cpp::onControlDataRecv`): 3 six-byte and 9 ten-byte
-  `NODE_DISCOVER_REQ`, 156 thirty-eight-byte `NODE_DISCOVER_RESP`, every
-  response from a REPEATER, every frame DIRECT with zero hops. None falls back to
-  uninterpreted (`test_corpus.py::test_every_corpus_control_frame_decodes_as_discovery`).
-  A response's key is recorded as the sender claimed it — the payload carries no
-  signature, so the corpus proves the layout, not who sent it.
-- **Adverts.** All 92 ADVERT frames pass Ed25519 signature verification, and
-  their appdata decodes to consistent flags, node types and UTF-8 names.
-- **That the multi-byte hash reading is the correct one.** Forcing 1-byte hashes
-  yields corrupt flags and truncated names (`0xfa` / `rala Hill repeater`); the
-  encoded hash size yields `0x92` / `[redacted]`. The corpus
-  discriminates between the two candidate readings, which is how DESIGN.md §4.2's
-  original `path_length > 64` rule was found to be wrong.
+- **Framing.** Every frame decodes structurally and re-encodes byte-identically, including
+  the packed `path_length` encoding, all three path hash sizes, hop counts 0–5, and the
+  one transport-routed frame's transport codes.
+- **Payload shapes.** Every payload parses to its envelope and rebuilds byte-identically
+  across eleven payload types, CONTROL included.
+- **CONTROL is node discovery.** All 25 CONTROL frames decode as MeshCore node discovery:
+  2 six-byte and 3 ten-byte `NODE_DISCOVER_REQ`, 20 thirty-eight-byte
+  `NODE_DISCOVER_RESP`, every response from a REPEATER, every frame DIRECT with zero hops.
+  A response's key is what its sender claimed — the payload carries no signature.
+- **Adverts.** All 81 ADVERT frames pass Ed25519 signature verification, and their appdata
+  decodes to consistent flags, node types and UTF-8 names in every form the mesh uses:
+  `0x92` repeater (located), `0x81` chat, `0x91` chat (located), `0x93` room server
+  (located) and `0x83` room server (no location).
+- **The multi-byte hash reading.** Read with 1-byte hashes, a multi-hop advert with a
+  multi-byte path hash yields corrupt flags or a truncated name; read with its encoded
+  hash size it is correct. The corpus keeps advert frames on which the two readings
+  differ, which is how DESIGN.md §4.2's original `path_length > 64` rule was found wrong.
+- **Both acknowledgement forms.** 4-byte and 6-byte (a 2-byte tail), each matching the
+  checksum computed for the message it answers.
+- **Decryption, end to end, with the generator's keys.** Direct messages between the cast's
+  nodes, group text on Public and on the second channel, the `0x11` / `0x17` channel hash
+  discrimination, the two key slices, and the closed-channel negative
+  (`test_corpus_decrypt.py`, `test_corpus_channel_decrypt.py`).
+- **Dedup and path learning have something to see.** See *Repetition* below.
 
 ## What the corpus does NOT prove
 
-**Decryption, except for exactly one exchange.** sighop holds the key for the
-two direct messages in `2026-09-04-first-transmit.jsonl` (records 2 and 3) and
-for **no other encrypted payload in the corpus**. Those two are decrypted on
-every commit by `test_foreign_decrypt.py`, and record 3 was produced by a
-different implementation — stock `companion_radio` v1.17.1-d929643 — which is
-what makes it evidence rather than a round-trip against ourselves. Decryption is
-therefore confirmed against live MeshCore traffic **for that exchange only**.
+**Interoperability.** The corpus is generated by sighop's own encoders, so a green run
+proves the decoders agree with the encoders and with the expectations recorded in the
+tests. It does not prove interoperability with any other MeshCore implementation, and no
+test here may be read as if it did.
 
-Every other ciphertext here stays unopenable and is verified only by round-trip
-against our own keys and by the fixed known-answer vectors in `test_crypto.py`.
-Nearly all of it is third-party traffic; the 2026-09-04 files also caught a
-handful of exchanges involving the operator's own MeshCore node (`Sigurs`, key
-`[redacted]7064e837…`), whose key sighop still does not hold. The golden file's
-no-plaintext rule holds regardless, and now means something it did not before:
-we hold a key for two of these frames and the golden file still renders them as
-ciphertext digests.
+**Cryptography.** The decryption tests are self-consistency tests: sighop's encryptor
+against sighop's decryptor. What anchors sighop to other implementations is only the
+**firmware-embedded signing keypair** and the **fixed known-answer vectors transcribed
+from the firmware source**, both in `test_crypto.py` and neither touching the corpus.
+The earlier recorded corpus once held one exchange with a stock firmware (a direct message
+opened with a key we held, and both acknowledgement forms) and 85 Public-channel frames
+from other nodes, which were decrypted on every commit. That evidence was withdrawn with
+the recorded corpus, together with the key that opened it: a synthetic corpus can only
+prove sighop against itself. DESIGN.md records that the exchange existed and passed once.
+If interoperability evidence is wanted again it is its own change, and it must scrub
+before it commits.
 
-A green corpus run still must not be read as evidence that decryption works in
-general — it is evidence that it worked for one message from one firmware build
-on one evening, which is exactly one more than the corpus could hold before.
+**A misreading shared by generator and decoder.** The recording found real misreadings —
+the multi-byte path-hash rule, and a wrong acknowledgement construction — because it was
+someone else's implementation. A generated corpus cannot surprise us that way. The
+discriminations that recording taught are kept as explicit cases (multi-byte hash
+adverts, both acknowledgement forms, the discovery forms), and the fixed vectors above
+keep the constructions anchored.
 
-Shapes absent from the corpus, each covered by a synthetic fixture instead:
+Shapes the corpus does not exercise, each covered by a hand-built fixture instead:
 
-| Absent shape | Where the synthetic fixture lives |
+| Absent shape | Where the fixture lives |
 |---|---|
 | `ROUTE_TYPE_TRANSPORT_DIRECT` | `test_packet.py::test_transport_routed_packet_carries_transport_codes` |
 | Hop counts above 5 | `test_packet.py::test_hop_count_above_the_corpus_maximum` |
@@ -116,123 +128,67 @@ Shapes absent from the corpus, each covered by a synthetic fixture instead:
 | Every decrypted body layout (text, group text, returned path, room login) | `test_payloads.py`, over synthetic plaintext |
 | Node types NONE and SENSOR | `test_payloads.py::test_feature_fields_decode_in_wire_order` and neighbours |
 
-The 2026-09-04 session closed three of these gaps with live evidence:
-**`ROUTE_TYPE_TRANSPORT_FLOOD`** (one frame, an advert, transport codes
-`0x0075`/`0x0000` — the first proof that the transport-code field is read from
-real air and not only from a fixture we wrote), **CONTROL** (six frames, three
-distinct lengths, all preserved uninterpreted), and the **CHAT** node type (six
-adverts, flags `0x81`). The synthetic fixtures for them stay: they cover the
-shapes around what happened to arrive.
-
-The 2026-09-05 session added three more, and settled how ordinary one of the
-2026-09-04 findings really was:
-
-- **A chat node that reports a location** — flags `0x91`, two adverts from one
-  node. Every chat advert before it was `0x81`, named with no location, so
-  `ADV_LATLON_MASK` and a non-repeater node type had never been seen set
-  together on real air.
-- **A 10-byte TRACE**, against 13 and 21 bytes in every earlier trace.
-- **CONTROL is routine traffic, not a curiosity.** 162 frames in this one
-  session against six in the entire corpus before it, 154 of them at 38 bytes.
-  The shape has not changed; its frequency has. Preserving CONTROL
-  uninterpreted is now a path taken by roughly a fifth of the corpus.
-  (Since `decode-control-discovery` it is no longer preserved uninterpreted:
-  every one of these frames is decoded as node discovery — see *What the corpus
-  proves*.)
+The corpus holds one `ROUTE_TYPE_TRANSPORT_FLOOD` frame and its CONTROL frames, and
+`test_corpus.py` asserts them against the frames themselves — the transport codes, and
+for CONTROL the discovery subtype, tag and length form with a byte-identical rebuild —
+while the hand-built fixtures stay.
 
 ## Recorded composition
 
-Asserted by `test_corpus.py`; a decoder change that shifts classification fails
-loudly even when every frame still decodes.
+Asserted by `test_corpus.py`; a decoder change that shifts classification fails loudly
+even when every frame still decodes. Counted over all 282 records, receptions and
+transmissions alike.
 
-Counted over all 1093 records, receptions and transmissions alike — the
-first-transmit session's 6 frames are every one `DIRECT` with an empty path, so
-its whole contribution is `TXT_MSG` +2, `ACK` +2, `ADVERT` +2, `DIRECT` +6, hop
-count 0 +6 and hash size 1 +6. The room-server session's 90 frames contribute
-`TXT_MSG` +36, `ADVERT` +4, `ACK` +19, `ANON_REQ` +15, `PATH` +14, `REQ` +2,
-`FLOOD` +51, `DIRECT` +39, hop count 0 +67, hop count 1 +23, hash size 1 +26,
-hash size 3 +64.
+- **Payload types**: GRP_TXT 59, ADVERT 81, TXT_MSG 43, CONTROL 25, ACK 24, ANON_REQ 14,
+  PATH 14, RESPONSE 7, TRACE 6, REQ 5, GRP_DATA 4.
+- **Route types**: FLOOD 188, DIRECT 93, TRANSPORT_FLOOD 1. No `TRANSPORT_DIRECT`.
+- **Hop counts**: 0→83, 1→73, 2→57, 3→43, 4→19, 5→7.
+- **Path hash sizes**: 1-byte 140, 2-byte 83, 3-byte 59.
+- **Adverts**: 81, all verifying and all named, 25 distinct names: 53 with flags `0x92`,
+  10 with `0x81`, 9 with `0x91`, 4 with `0x93` and 5 with `0x83`.
+- **ACK payload lengths**: 4 bytes ×18, 6 bytes ×6.
 
-- **Payload types**: GRP_TXT 341, TXT_MSG 229, CONTROL 168, ADVERT 98, ACK 88,
-  ANON_REQ 57, PATH 52, RESPONSE 36, REQ 14, GRP_DATA 5, TRACE 5.
-- **Route types**: FLOOD 553, DIRECT 539, TRANSPORT_FLOOD 1. No
-  `TRANSPORT_DIRECT`.
-- **Hop counts**: 0→491, 1→349, 2→177, 3→69, 4→5, 5→2.
-- **Path hash sizes**: 1-byte 519, 2-byte 109, 3-byte 465.
-- **Adverts**: 98, all verifying and all named; 78 with flags `0x92` (repeater,
-  located, named — the room-server session added one more `[redacted]`, no new
-  name), 10 with `0x81` (chat, named, no location — one more `Sigurs`, also not
-  new), 6 with `0x93` (room server, located, named), 2 with `0x91` (chat,
-  located, named), and 2 with `0x83` — **room server, named, no location** — a
-  shape not seen before this session: `[redacted]`'s zero-hop advert carries no
-  lat/lon, where every earlier room-server advert did. Eleven distinct names —
-  the room-server session's only new one is `[redacted]` itself.
-- **ACK payload lengths**: 4 bytes ×68, 6 bytes ×20. The room-server session's
-  19 acknowledgements were every one 4 bytes, the plain checksum form; the
-  6-byte form with a tail stays confirmed only by the first-transmit session.
+## Repetition
 
-## Flood repetition rate (input to the milestone 3 dedup cache)
+The recorded corpus was about a third repeats. The budget here is: **at most 12% of
+receptions repeat a packet already seen, and at most 3 copies of any packet.** The
+generator has one function that emits a repeat and it takes a `reason`, so every duplicate
+in the output traces to a line that says why a test needs it. The declared repeats are:
 
-DESIGN.md §13 lists dedup cache sizing as an in-flight unknown. Counting
-duplicates the way the firmware does — `Packet::calculatePacketHash`, over the
-payload type and payload bytes, plus `path_len` for TRACE — over the 351-frame
-milestone 0 subset:
+- **Flood repeats** over a different path, seconds apart — the same payload and hash
+  size, a longer path, different hop count and signal readings, within ten seconds of the
+  first copy (what `test_dedup` and path learning need). 23 receptions of 264 in all,
+  8.7%.
+- **Exactly one late echo**: a flood `ANON_REQ` whose copy arrives over a different path
+  200.7 s after the first, which is what shows a 60 s dedup TTL is too short.
+- **Exactly one retransmitted direct message**: byte-identical, 31.5 minutes after the
+  first, standing for a sender retrying an unacknowledged message — which is why the TTL
+  must stay short enough not to swallow a retry.
 
-- 351 receptions carried **205 distinct packets**: **41.6% of receptions are
-  repeats**, 1.71 receptions per distinct packet.
-- Copies per packet: 82 seen once, 101 twice, 21 three times, 1 four times.
-  **Maximum 4.**
-- Flood frames repeat far more than direct ones: 94 of 171 flood receptions were
-  repeats, against 52 of 180 direct.
-- Duplicates arrive close together: median spread between first and last copy
-  **1.3 s**, p95 **3.6 s**, maximum **31.1 s**.
-- Distinct packets within a sliding window: **16** in any 60 s, 49 in any 300 s,
-  56 in any 900 s.
-
-The 2026-09-04 session, measured the same way, came out **much quieter**: 91
-receptions, 81 distinct packets, **11.0% repeats**, at most 2 copies of any
-packet, median spread 2.8 s and maximum 4.6 s, 24 distinct packets in any 60 s.
-The directional finding survives and sharpens — all 10 repeats were flood
-receptions, and **not one of the 57 direct receptions repeated** — but the
-*rate* clearly is not a constant of this mesh: it moved from 41.6% to 11.0%
-between nights, on a different board.
-
-The 2026-09-05 session, being both long and busy, is the one that settled the
-sizing. 555 receptions, 370 distinct, **33.3% repeats**, at most 3 copies of any
-packet, 16 distinct packets in any 60 s and 49 in any 300 s. Over all **1000
-receptions** — the 3 frames sighop transmitted are excluded, since the subject
-here is what the mesh sent us: 659 distinct packets, 34.1% repeats, median gap
-between consecutive copies **0.99 s**, p95 **3.3 s**, and only **two** gaps anywhere
-above 60 s. Those two are worth naming, because they are not the same thing:
-
-- **200.7 s** — a flood ANON_REQ whose late copy arrived by a *different* path
-  (`23` against `be`, SNR −10.25 against 14.25). A genuine late echo, six times
-  the 31.1 s the milestone 0 subset called its worst case.
-- **3158 s (52.6 min)** — two **byte-for-byte identical** zero-hop DIRECT
-  TXT_MSG frames, same ciphertext, same SNR. Not a copy of one transmission but
-  the sender **retransmitting an unacked DM**.
-
-So the earlier recommendation here — "~128 entries with a 60 s TTL, an order of
-magnitude of headroom" — was wrong, and wrong because three short nights cannot
-sample the tail of a duration. A 60 s TTL would have missed the 200.7 s copy
-outright. The shipped defaults are **300 s and 4096 entries**, and the TTL is
-bounded from both sides: shorter discards real flood copies, much longer starts
-swallowing sender retries, which are events a user should see rather than have
-deduplicated away. Peak occupancy at 300 s is 49 entries, so the cap is headroom
-against a busier mesh, not a fit to this one.
+Everything else is unique by construction, and `test_synthetic_corpus.py` checks it: it
+fails if the share is over the ceiling, a packet has too many copies, more than one
+late echo or retransmission exists, or anything repeats that the generator did not
+declare. The recorded measurements that sized the dedup cache are in DESIGN.md.
 
 ## The golden file
 
 `corpus_golden.txt` renders every decoded frame, one line each. It holds
-**structural fields and ciphertext digests only, never decrypted plaintext** —
-today because there is no plaintext to hold, and from milestone 4 onward as a
-standing rule.
+**structural fields and ciphertext digests only, never decrypted plaintext** — the
+generator holds every key in the synthetic corpus, so plaintext could be rendered and is
+not, and the rule stands if a recorded frame is ever added.
 
 Regenerate deliberately and review the diff:
 
     uv run python -m tests.protocol.generate_golden
 
-There is no `--update-golden` test flag, by design (D10): a generated
-expectation records whatever the code did on the day, bugs included, so
-regenerating it is a reviewed step in a change, not a way to make a red test go
-green.
+There is no `--update-golden` test flag, by design (D10): a generated expectation records
+whatever the code did on the day, bugs included, so regenerating it is a reviewed step in
+a change, not a way to make a red test go green.
+
+## Live recordings
+
+`sighop run --capture` (`SIGHOP_CAPTURE_FILE`) still writes ordinary capture JSONL, and
+`captures/` is gitignored so a recording cannot be committed by accident: it is other
+people's traffic. A recording can be replayed with `python -m sighop.replay`, and used to
+find a bug; it is not corpus material until it has been scrubbed of every real name, key
+and message.

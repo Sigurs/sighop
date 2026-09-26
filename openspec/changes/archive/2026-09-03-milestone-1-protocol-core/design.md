@@ -28,7 +28,7 @@ Three constraints shape every decision below:
 | Advert appdata low nibble is an enum | Flags `0x92`/`0x93` observed; `app_data[0] = _type` then `\|= mask` in `AdvertDataHelpers.cpp` | `0x03` is "room server", not `chat\|repeater` |
 | ACK is truncated SHA-256, not CRC32 | `BaseChatMesh.cpp:243` — `sha256(ack_hash, 4, data, 5+text_len, pub_key, 32)` | DESIGN.md §5 is wrong; a CRC32 implementation would never produce an acknowledgement any node accepts |
 | HMAC key is the full 32-byte secret | `Utils.cpp:133` uses `PUB_KEY_SIZE`, while `encrypt()` uses `CIPHER_KEY_SIZE` | Cipher key and MAC key are different slices of the same secret |
-| Decode is unambiguous under the right reading | Forcing 1-byte hashes yields `0xfa`/`rala Hill repeater`; the encoded size yields `0x92`/`[redacted]` | The corpus discriminates between candidate readings — use it that way |
+| Decode is unambiguous under the right reading | Forcing 1-byte hashes yields `0xfa`/a truncated name; the encoded size yields `0x92`/a whole name | The corpus discriminates between candidate readings — use it that way |
 
 ## Goals / Non-Goals
 

@@ -41,11 +41,13 @@ from sighop.net.dm import (
 )
 from sighop.net.paths import LearnedPath, PathKey
 from sighop.protocol.identity import generate_identity
+from sighop.protocol.packet import PayloadType
 from sighop.protocol.payloads import WireText
 from sighop.radio.modem import EU868_NARROW
 from sighop.web.app import allowed_hosts, create_app
 from sighop.web.chat import ConversationLog
 from sighop.web.guard import TOKEN_FIELD
+from tests.protocol.corpus import first_received_frame
 from tests.test_web_state import RecordingLogger
 from tests.webfixtures import (
     MemoryAccounts,
@@ -66,7 +68,7 @@ HOSTS = allowed_hosts("127.0.0.1", 8080)
 NOW = dt.datetime(2026, 9, 6, 12, 0, tzinfo=dt.UTC)
 
 
-def _contact(name: str = "[redacted]", *, verified: bool = True) -> Contact:
+def _contact(name: str = "syn-alder", *, verified: bool = True) -> Contact:
     return Contact(
         public_key=generate_identity().public_key,
         name=WireText.from_bytes(name.encode()),
@@ -650,7 +652,7 @@ def test_a_received_message_from_an_unverified_contact_is_marked() -> None:
 
 def test_a_message_from_a_verified_contact_uses_the_same_marking_as_elsewhere() -> None:
     """15.6: one macro, so the chat client cannot disagree with the contact table."""
-    contact = _contact("[redacted]", verified=True)
+    contact = _contact("syn-harbor-repeater", verified=True)
     app, state, log = _built(contacts=[contact])
     stub = state.adverts.stubs[0]
     log.offer(
@@ -680,10 +682,7 @@ def test_a_group_text_reception_produces_no_chat_message() -> None:
     from sighop.radio.modem import RxEvent, RxMeta
     from sighop.web.serialize import rx_record
 
-    grp_txt = bytes.fromhex(
-        "1e0054[redacted]8ecd77dfc078d4386ea8326f26e124e257869087027731a53dc31db"
-        "9c0ecc0ced37f0a645a90e11bf324210277fe"
-    )
+    grp_txt = first_received_frame(PayloadType.GRP_TXT)
     record = decode_event(
         RxEvent(packet=grp_txt, rx_meta=RxMeta(snr_db=12.0, rssi_dbm=-30), received_at=NOW)
     )
@@ -1074,9 +1073,9 @@ def test_a_message_arriving_in_an_open_channel_appears_on_refresh() -> None:
 
 def test_a_claim_matching_a_verified_contact_is_not_drawn_as_that_contact() -> None:
     app, state, log = _channel_app()
-    contact = _contact("[redacted]", verified=True)
+    contact = _contact("syn-alder", verified=True)
     state.contacts.restore([contact])
-    log.offer(_received(2, "p1", "[redacted]"))
+    log.offer(_received(2, "p1", "syn-alder"))
 
     with _client(app) as client:
         body = client.get("/chat/channel/2").text

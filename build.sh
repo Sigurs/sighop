@@ -17,7 +17,7 @@
 #   image  docker build, version from `uv version`, commit from git (-dirty if modified)
 #   smoke  as a stranger (UID 52037) on a read-only root with no capabilities, the image
 #          imports and its entry point refuses an empty environment
-#   replay every committed capture, rendered by `python -m sighop.replay` inside the image
+#   replay every synthetic corpus file (tests/corpus/), rendered by `python -m sighop.replay` inside the image
 #          (musl), matches byte for byte what it renders on this host — the tests never
 #          run on musl
 #   scan   trivy, from a pinned image, fed a `docker save` tarball — never the socket.
@@ -139,16 +139,18 @@ replay() {
   # this is the one place the platform's own behaviour is checked on the libc
   # it ships with. `python -m sighop.replay` renders a capture through the
   # decode path — no modem, no database, no network — so both sides need none.
+  # The files are the generated corpus (tests/corpus/), never a live recording:
+  # captures/ is gitignored, so a recording cannot be swept into this gate.
   local capture expected actual count=0
   expected=$(mktemp) || return 1
   actual=$(mktemp) || return 1
   # shellcheck disable=SC2064
   trap "rm -f '${expected}' '${actual}'" RETURN
-  for capture in captures/*.jsonl; do
+  for capture in tests/corpus/*.jsonl; do
     uv run --locked python -m sighop.replay "${capture}" > "${expected}" 2> /dev/null || return 1
     docker run --rm --read-only --tmpfs /tmp --user "${SMOKE_USER}" --cap-drop ALL \
       --security-opt no-new-privileges --network none \
-      -v "${PWD}/captures:/app/captures:ro" \
+      -v "${PWD}/tests/corpus:/app/tests/corpus:ro" \
       --entrypoint python "${IMAGE}" -m sighop.replay "${capture}" \
       > "${actual}" 2> /dev/null || return 1
     if ! cmp -s "${expected}" "${actual}"; then
@@ -158,8 +160,8 @@ replay() {
     fi
     count=$((count + 1))
   done
-  [ "${count}" -gt 0 ] || { echo "replay: no captures to replay" >&2; return 1; }
-  echo "replay: ${count} capture(s) render identically on the host and in ${IMAGE}"
+  [ "${count}" -gt 0 ] || { echo "replay: no corpus files to replay" >&2; return 1; }
+  echo "replay: ${count} corpus file(s) render identically on the host and in ${IMAGE}"
 }
 
 check_trivyignore() {

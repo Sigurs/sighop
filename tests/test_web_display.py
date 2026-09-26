@@ -310,7 +310,7 @@ def test_a_short_key_is_three_bytes() -> None:
 
 @pytest.mark.parametrize("verification", ["verified", "unverified", "key_only"])
 def test_an_identity_mark_is_a_glyph_with_its_meaning_on_hover(verification: str) -> None:
-    view = IdentityView(public_key=KEY, name="[redacted]", verification=verification)
+    view = IdentityView(public_key=KEY, name="syn-harbor-repeater", verification=verification)
     drawn = _macro("_identity.html", "identity", view, False)
     assert f'title="{view.marking_text}"' in drawn
     assert f'<span class="identity-mark" aria-hidden="true">{view.mark}</span>' in drawn

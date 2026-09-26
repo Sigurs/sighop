@@ -45,7 +45,7 @@ def _live(app: FastAPI) -> httpx2.AsyncClient:
     )
 
 
-async def _room(database: Database, *, name: str = "[redacted]"):
+async def _room(database: Database, *, name: str = "syn-lounge-room"):
     persistence = Persistence(database=database)
     entity = await persistence.entities.store(
         name=f"{name}-host",
@@ -167,7 +167,7 @@ async def test_a_verified_author_is_named_and_marked_verified(
         [
             Contact(
                 public_key=author.public_key,
-                name=WireText.from_bytes(b"[redacted]"),
+                name=WireText.from_bytes(b"syn-harbor-repeater"),
                 advert_verified=True,
             )
         ]
@@ -177,7 +177,7 @@ async def test_a_verified_author_is_named_and_marked_verified(
     async with _live(app) as client:
         body = (await client.get(f"/rooms/{room.id}")).text
 
-    assert "[redacted]" in body
+    assert "syn-harbor-repeater" in body
     assert "identity-verified" in body
 
 

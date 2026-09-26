@@ -37,7 +37,7 @@ deployment's, and each is bounded by something in the files rather than in this 
   start (`run --migrate`); nothing here migrates or writes the shared dev database.
 
 **Test entities keep the `dev-` convention** (DESIGN.md §2): the account is `dev-operator`.
-The companion identity is **reused**, not created: `keys/[redacted].json` is the companion
+The companion identity is **reused**, not created: `keys/syn-greeter.json` is the companion
 that exchanged direct messages with the stock peer in milestone 8, so the peer already holds
 its key and can decrypt and acknowledge (milestone 7's finding: a peer that has never heard
 an identity's advert cannot decrypt a byte from it).
@@ -56,7 +56,7 @@ an identity's advert cannot decrypt a byte from it).
    docker compose logs -f --no-log-prefix sighop | grep --line-buffered -v '^{'
    ```
 4. **The browser**, at `http://localhost:8080`.
-5. **The stock peer** — "[redacted]" on the CP2102 board
+5. **The stock peer** — "syn-peer" on the CP2102 board
    (`/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0`)
    — through its own client, able to see an incoming message.
 
@@ -119,8 +119,8 @@ showing sighop restarting. That loop is expected until step 4 adds the account.
 
 ```bash
 docker compose run --rm -it sighop web user add dev-operator
-docker compose run --rm -v "$PWD/keys/[redacted].json:/keys/[redacted].json:ro" \
-  sighop keys import /keys/[redacted].json
+docker compose run --rm -v "$PWD/keys/syn-greeter.json:/keys/syn-greeter.json:ro" \
+  sighop keys import /keys/syn-greeter.json
 docker compose run --rm sighop web user list             # dev-operator, enabled, no hash
 ```
 
@@ -170,14 +170,14 @@ refusal is its own `web_guarded_action` with `reason: bad_password`, and you sta
 
 ### 7. Send the direct message
 
-In the browser: **chat**, pick `[redacted]` and "[redacted]", send a short text
+In the browser: **chat**, pick `syn-greeter` and "syn-peer", send a short text
 (`sighop milestone 9, from a container`).
 
 **Watch for:** `awaiting transmission` → `attempt 1 in progress` → `delivered — acknowledged
 after N attempt(s), … ms`, and the peer showing the message. Window 3 reports the same send
 and outcome.
 
-**If it is never acknowledged**, the peer may not hold `[redacted]`'s key. The panel has no
+**If it is never acknowledged**, the peer may not hold `syn-greeter`'s key. The panel has no
 advert control, so send one zero-hop advert from the same image with the service stopped —
 this transmits one advert and nothing else — then bring the service back, sign in, open the
 gate again and resend:
@@ -185,7 +185,7 @@ gate again and resend:
 ```bash
 docker compose stop sighop
 docker compose run --rm sighop run --device /dev/modem --enable-transmit \
-  --advert-zero-hop [redacted] --status-interval 3600     # Ctrl-C once the advert is sent
+  --advert-zero-hop syn-greeter --status-interval 3600     # Ctrl-C once the advert is sent
 docker compose up -d sighop
 ```
 

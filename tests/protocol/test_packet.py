@@ -21,6 +21,7 @@ from sighop.protocol.packet import (
     encode,
 )
 from sighop.protocol.result import DecodeFailure, EncodeError, FailureReason
+from tests.protocol.corpus import first_received_frame
 
 
 def build_raw(
@@ -278,15 +279,13 @@ def test_encode_requires_transport_codes_on_a_transport_route() -> None:
         encode(packet)
 
 
-@pytest.mark.parametrize(
-    "raw_hex",
-    [
-        "1e0054[redacted]8ecd77dfc078d4386ea8326f26e124e257869087027731a53dc"
-        "31db9c0ecc0ced37f0a645a90e11bf324210277fe",
-        "0601be425431382924f0af5742afb44129753844ea8a8e",
-        "0600425431382924f0af5742afb44129753844ea8a8e",
-    ],
+CORPUS_SHAPES = (
+    first_received_frame(PayloadType.ANON_REQ),
+    first_received_frame(PayloadType.RESPONSE, hops=1),
+    first_received_frame(PayloadType.TXT_MSG, hops=0),
 )
-def test_round_trip_of_real_frames(raw_hex: str) -> None:
-    raw = bytes.fromhex(raw_hex)
+
+
+@pytest.mark.parametrize("raw", CORPUS_SHAPES, ids=["anon_req", "response_1_hop", "txt_msg_0_hops"])
+def test_round_trip_of_corpus_frames(raw: bytes) -> None:
     assert encode(decoded(raw)) == raw

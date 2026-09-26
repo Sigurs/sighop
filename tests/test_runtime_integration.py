@@ -78,7 +78,7 @@ async def test_creating_an_identity_a_room_and_a_bot_reaches_a_running_process(
     entities = EntityRepository(database=database)
     room_identity = generate_identity()
     room_host = await entities.store(
-        name="[redacted]-host",
+        name="syn-lounge-host",
         identity=room_identity,
         secret=SECRET,
         node_type=NodeType.ROOM_SERVER,
@@ -104,7 +104,7 @@ async def test_creating_an_identity_a_room_and_a_bot_reaches_a_running_process(
         room_persistence = Persistence(database=database)
         room = await room_persistence.rooms.create(
             entity_id=room_host.value.id,
-            name="[redacted]",
+            name="syn-lounge-room",
             admin_password_hash=hash_password(ADMIN_PASSWORD),
         )
         assert isinstance(room, Succeeded)
@@ -121,7 +121,7 @@ async def test_creating_an_identity_a_room_and_a_bot_reaches_a_running_process(
         held = {stub.identity.public_key for stub in run.adverts.stubs}
         assert room_identity.public_key in held
         assert bot_identity.public_key in held
-        assert [server.room.name for server in run.rooms] == ["[redacted]"]
+        assert [server.room.name for server in run.rooms] == ["syn-lounge-room"]
         assert [worker.record.id for worker in run.bots] == [bot.value.id]
     finally:
         run.stop()
@@ -136,7 +136,7 @@ async def test_disabling_then_removing_those_identities_withdraws_them_and_keeps
     entities = EntityRepository(database=database)
     room_identity = generate_identity()
     room_host = await entities.store(
-        name="[redacted]-host",
+        name="syn-lounge-host",
         identity=room_identity,
         secret=SECRET,
         node_type=NodeType.ROOM_SERVER,
@@ -153,7 +153,7 @@ async def test_disabling_then_removing_those_identities_withdraws_them_and_keeps
     persistence = Persistence(database=database)
     room = await persistence.rooms.create(
         entity_id=room_host.value.id,
-        name="[redacted]",
+        name="syn-lounge-room",
         admin_password_hash=hash_password(ADMIN_PASSWORD),
     )
     assert isinstance(room, Succeeded)
@@ -188,7 +188,7 @@ async def test_disabling_then_removing_those_identities_withdraws_them_and_keeps
     try:
         await run._ready.wait()
         await _tick()
-        assert [server.room.name for server in run.rooms] == ["[redacted]"]
+        assert [server.room.name for server in run.rooms] == ["syn-lounge-room"]
         assert [worker.record.id for worker in run.bots] == [bot.value.id]
 
         # From the command line: `sighop keys disable` then `sighop keys delete`.
@@ -212,7 +212,7 @@ async def test_disabling_then_removing_those_identities_withdraws_them_and_keeps
         # outright and offers disabling as the reversible action instead.
         stored_rooms = await persistence.rooms.list_all()
         assert isinstance(stored_rooms, Succeeded)
-        assert [r.name for r in stored_rooms.value] == ["[redacted]"]
+        assert [r.name for r in stored_rooms.value] == ["syn-lounge-room"]
         members = await persistence.members.load_for_room(room.value.id)
         assert isinstance(members, Succeeded)
         assert [m.public_key for m in members.value] == [member_key]

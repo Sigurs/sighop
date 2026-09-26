@@ -7,8 +7,8 @@ See proposal.md for motivation. What already exists and shapes the approach:
   the real length), `channel_key_from_hashtag`, `mac_then_decrypt`. Missing only a group text body
   builder and the Public key constant.
 - **Corpus evidence, measured while planning.** 193 distinct `GRP_TXT` payloads: 85 on hash `0x11`
-  all decrypt under Public (`izOH6cXN6mrJ5e26oRXNcg==`), claimed senders include `Sigurs`,
-  `[redacted]`, `[redacted]`; 108 on `0x81` open under none of the obvious hashtags. Also measured: the Public
+  all decrypt under Public (`izOH6cXN6mrJ5e26oRXNcg==`), claimed senders include several
+  real node names, redacted here; 108 on `0x81` open under none of the obvious hashtags. Also measured: the Public
   hash over the zero-extended 32-byte buffer is `0x17`, and HMAC gives the same MAC for a 16-byte key
   and its zero extension (HMAC zero-pads keys itself), so only the hash length is a falsifiable
   negative.

@@ -62,7 +62,7 @@ from sighop.protocol.payloads import (
 )
 from sighop.protocol.result import DecodeFailure
 from sighop.radio.modem import RxEvent, RxMeta
-from tests.protocol.corpus import _load_file
+from tests.protocol.corpus import CHANNELS, _load_file
 from tests.test_dm import START, Entity, RecordingSubmit, TickingClock
 from tests.test_tx import RecordingLogger
 
@@ -92,7 +92,7 @@ def colliding_key(channel: LoadedChannel) -> ChannelKey:
 
 
 def corpus_public_frame() -> bytes:
-    for frame in _load_file("2026-09-03.jsonl"):
+    for frame in _load_file(CHANNELS):
         packet = decode_packet(frame.raw)
         if isinstance(packet, DecodeFailure):
             continue

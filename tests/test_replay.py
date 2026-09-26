@@ -157,26 +157,18 @@ async def test_a_record_missing_a_required_field_is_reported(tmp_path):
 
 
 async def test_every_corpus_capture_replays_with_the_provenance_it_has(tmp_path):
-    """Both corpus generations, read by the same reader: the milestone 0 files
-    have no `capture_meta` line and must replay anyway, the milestone 2 files
-    carry one and must have it read back rather than decoded as a frame.
+    """Every corpus file carries a synthetic `capture_meta` header, which must be
+    read back as provenance rather than decoded as a frame.
     """
-    from tests.protocol.corpus import (
-        CAPTURE_FILES,
-        CAPTURES_DIR,
-        EXPECTED_FRAMES_PER_FILE,
-        SIDECAR_PROVENANCE_FILES,
-    )
+    from tests.protocol.corpus import CORPUS_DIR, CORPUS_FILES, EXPECTED_FRAMES_PER_FILE
 
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         events = [event async for event in replay.events()]
 
-        if name in SIDECAR_PROVENANCE_FILES:
-            assert replay.provenance is None, f"{name} unexpectedly carries a header"
-        else:
-            assert replay.provenance is not None, f"{name} lost its header"
-            assert replay.provenance["kind"] == "capture_meta"
+        assert replay.provenance is not None, f"{name} lost its header"
+        assert replay.provenance["kind"] == "capture_meta"
+        assert replay.provenance["synthetic"] is True
         assert replay.unreadable == [], f"{name} has unreadable lines: {replay.unreadable}"
         rx_events = [event for event in events if isinstance(event, RxEvent)]
         # A file's frame records are its receptions plus, for a capture from a
@@ -207,9 +199,9 @@ async def test_replay_does_not_pace_itself(tmp_path):
 
 def test_the_harness_renders_a_committed_capture_and_exits_zero(capsys) -> None:
     from sighop.replay import main
-    from tests.protocol.corpus import CAPTURES_DIR
+    from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 
-    assert main([str(CAPTURES_DIR / "2026-09-04-03.jsonl")]) == 0
+    assert main([str(CORPUS_DIR / AMBIENT)]) == 0
     printed = capsys.readouterr().out
     assert printed.startswith("replaying ")
     assert "\n-- frames=" in printed
@@ -245,18 +237,18 @@ def test_a_malformed_line_is_reported_and_the_rest_still_renders(tmp_path, capsy
 def test_the_harness_needs_no_database(monkeypatch, capsys) -> None:
     """It is not a node: with no database anywhere, it still renders."""
     from sighop.replay import main
-    from tests.protocol.corpus import CAPTURES_DIR
+    from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("SIGHOP_TEST_DATABASE_URL", raising=False)
-    assert main([str(CAPTURES_DIR / "2026-09-04-03.jsonl")]) == 0
+    assert main([str(CORPUS_DIR / AMBIENT)]) == 0
 
 
 def test_the_harness_reads_the_radio_from_the_capture_header() -> None:
     from sighop.replay import replay_radio
-    from tests.protocol.corpus import CAPTURES_DIR
+    from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 
-    replay = CaptureReplay.open(CAPTURES_DIR / "2026-09-04-03.jsonl")
+    replay = CaptureReplay.open(CORPUS_DIR / AMBIENT)
     radio = replay_radio(replay.provenance)
 
     assert radio is not None

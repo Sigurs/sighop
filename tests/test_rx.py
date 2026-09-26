@@ -33,17 +33,18 @@ from sighop.protocol.payloads import DirectEnvelope, GroupEnvelope
 from sighop.radio.modem import RxEvent, RxMeta, UnparsedEvent
 from sighop.radio.replay import CaptureReplay
 from tests.protocol.corpus import (
-    CAPTURE_FILES,
-    CAPTURES_DIR,
+    AMBIENT,
+    CORPUS_DIR,
+    CORPUS_FILES,
     EXPECTED_RECEIVED_COUNT,
     EXPECTED_TRANSMITTED_COUNT,
 )
+from tests.protocol.synthetic import discover_responder, discover_response_payload
 
-EXPECTED_RECEIVED_ADVERT_COUNT = 95
-"""Adverts the mesh sent us. Three fewer than the corpus holds: the
-first-transmit and room-server sessions between them carry three adverts
-sighop itself transmitted (one zero-hop advert each, the room-server session's
-sent twice), and this stage only ever sees receptions."""
+EXPECTED_RECEIVED_ADVERT_COUNT = 79
+"""Adverts the mesh sent us. Two fewer than the 81 the corpus holds: the exchange
+file carries two adverts sighop itself transmitted (its own and the room it
+hosts, each zero-hop), and this stage only ever sees receptions."""
 
 
 @pytest.fixture(scope="module")
@@ -56,8 +57,8 @@ def corpus_records() -> list[RxRecord]:
     """
     records: list[RxRecord] = []
     skipped = 0
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
         assert replay.unreadable == [], (
             f"{name} has unreadable lines: {[str(u) for u in replay.unreadable]}"
@@ -163,9 +164,10 @@ def test_an_uninterpreted_payload_type_is_an_outcome_not_a_failure():
 DISCOVER_REQ_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
     "80069a7d3916"
 )
-DISCOVER_RESP_FRAME = bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + bytes.fromhex(
-    "922f9a7d3916[redacted]"
+DISCOVER_RESP_FRAME = (
+    bytes([RouteType.DIRECT | (PayloadType.CONTROL << 2), 0x00]) + discover_response_payload()
 )
+RESPONDER_KEY_PREFIX = discover_responder().public_key[:8].hex()
 
 
 def test_a_discovery_request_has_its_own_outcome():
@@ -189,7 +191,7 @@ def test_a_discovery_response_has_its_own_outcome_and_only_a_key_prefix():
         "control_tag": "9a7d3916",
         "discover_node_type": "REPEATER",
         "discover_snr_db": 11.75,
-        "discover_key_prefix": "[redacted]13728be1",
+        "discover_key_prefix": RESPONDER_KEY_PREFIX,
     }
 
 
@@ -211,7 +213,7 @@ def test_discovery_summary_for_a_response_marks_the_key_as_a_claim():
 
     assert discovery_summary(record) == (
         "discover response  tag=9a7d3916  REPEATER  reported snr=+11.75 dB  "
-        "claimed key=[redacted]13728be1 (unauthenticated)"
+        f"claimed key={RESPONDER_KEY_PREFIX} (unauthenticated)"
     )
 
 
@@ -380,7 +382,7 @@ async def test_the_stage_keeps_no_state_between_frames():
 
 
 def _first_advert_bytes() -> bytes:
-    with (CAPTURES_DIR / "2026-09-02.jsonl").open() as handle:
+    with (CORPUS_DIR / AMBIENT).open() as handle:
         for line in handle:
             record = json.loads(line)
             if record.get("kind") != "rx_frame":

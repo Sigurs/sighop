@@ -20,7 +20,7 @@ from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.runtime import Runtime, RuntimeConfig
 from sighop.webhooks.dispatcher import WebhookDispatcher
 from tests.dbfixtures import the_default_persistence
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_runtime import _events, _startup
 from tests.test_tx import ManualClock
 from tests.test_webhooks_dispatcher import (
@@ -34,7 +34,7 @@ from tests.test_webhooks_dispatcher import (
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
+CAPTURE = CORPUS_DIR / AMBIENT
 
 
 def _dispatcher(repository: FakeRepository, transport: FakeTransport) -> WebhookDispatcher:

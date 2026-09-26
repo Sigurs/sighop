@@ -25,14 +25,14 @@ from sighop.protocol.identity import generate_identity
 from sighop.radio.modem import EU868_NARROW, ModemEvent, RxEvent, RxMeta, TransmitDone
 from sighop.runtime import Runtime, RuntimeConfig
 from tests.dbfixtures import the_default_persistence
-from tests.protocol.corpus import CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_contacts import verified_advert
 from tests.test_runtime import _events, _never_ends, _startup
 from tests.test_tx import ManualClock, RecordingLogger
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
+CAPTURE = CORPUS_DIR / AMBIENT
 
 
 # --- Building a run (tasks 5.2, 5.5) ---------------------------------------

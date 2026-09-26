@@ -26,14 +26,14 @@ from sighop.passwords import hash_password
 from sighop.protocol.identity import generate_identity
 from sighop.protocol.payloads import NodeType, Permission
 from sighop.runtime import Runtime, RuntimeConfig
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR
 from tests.test_runtime import _events, _startup, runtime
 from tests.test_tx import ManualClock, RecordingLogger
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
 SECRET = base64.b64decode(generate_secret_key())
-CAPTURE = CAPTURES_DIR / CAPTURE_FILES[0]
+CAPTURE = CORPUS_DIR / AMBIENT
 
 ADMIN_PASSWORD = "an-admin-password"
 

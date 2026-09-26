@@ -22,14 +22,14 @@ from sighop.protocol.crypto import PUBLIC_CHANNEL_KEY, channel_key_from_hashtag
 from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.runtime import Runtime, RuntimeConfig
 from tests.dbfixtures import the_default_persistence
-from tests.protocol.corpus import CAPTURES_DIR
+from tests.protocol.corpus import CHANNELS, CORPUS_DIR
 from tests.test_runtime import RecordingLogger, _events, _never_ends, _startup, run_briefly, runtime
 from tests.test_tx import ManualClock
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-PUBLIC_CAPTURE = CAPTURES_DIR / "2026-09-03.jsonl"
-"""33 distinct Public frames (see `test_channel_foreign_decrypt.py`)."""
+PUBLIC_CAPTURE = CORPUS_DIR / CHANNELS
+"""32 distinct Public frames (see `test_corpus_channel_decrypt.py`)."""
 
 PUBLIC = LoadedChannel(1, "Public", ChannelKind.PUBLIC, PUBLIC_CHANNEL_KEY)
 HASHTAG = LoadedChannel(
@@ -121,7 +121,7 @@ async def test_a_replay_decrypts_public_frames_with_a_loader() -> None:
     run = _with_loader(loader, out, source=_events(PUBLIC_CAPTURE))
     await asyncio.wait_for(run.run(), 10)
 
-    assert run.channels.decrypted == 33
+    assert run.channels.decrypted == 32
     assert "✗ Public from claimed" in out.getvalue()
 
 
@@ -164,7 +164,7 @@ async def _replay(persistence: Persistence, **config: object) -> Runtime:
     )
     task = asyncio.create_task(run.run())
     for _ in range(2000):
-        if run.channels.decrypted == 33:
+        if run.channels.decrypted == 32:
             break
         await asyncio.sleep(0.01)
     # No `wait_idle()` first: the stop drains what the lane still holds, and a
@@ -178,11 +178,11 @@ async def test_a_replay_records_channel_messages_only_when_writes_are_enabled(
     database: Database,
 ) -> None:
     quiet = await _replay(Persistence(database=database, writes_enabled=False))
-    assert quiet.channels.decrypted == 33
+    assert quiet.channels.decrypted == 32
     assert await _channel_rows(database) == 0, "a replay recorded without --persist-replay"
 
     writing = await _replay(
         Persistence(database=database, writes_enabled=True), replay_persists=True
     )
-    assert writing.channels.decrypted == 33
-    assert await _channel_rows(database) == 33
+    assert writing.channels.decrypted == 32
+    assert await _channel_rows(database) == 32

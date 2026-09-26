@@ -40,14 +40,14 @@ from sighop.radio.modem import EU868_NARROW, ModemEvent
 from sighop.radio.replay import CaptureReplay
 from sighop.runtime import Runtime, RuntimeConfig
 from tests.dbfixtures import _create_schema, _drop_schema
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import AMBIENT, CORPUS_DIR, CORPUS_FILES
 from tests.test_render import _dedup_stats, _status
 from tests.test_runtime import _events, _startup, runtime
 from tests.test_tx import ManualClock
 
 pytestmark = pytest.mark.usefixtures("default_persistence")
 
-CAPTURE = CAPTURES_DIR / "2026-09-04-03.jsonl"
+CAPTURE = CORPUS_DIR / AMBIENT
 SECRET = base64.b64decode(generate_secret_key())
 URL = "postgresql+asyncpg://role:secret@db.example:5432/sighop"
 
@@ -55,8 +55,8 @@ URL = "postgresql+asyncpg://role:secret@db.example:5432/sighop"
 async def _corpus_events() -> AsyncIterator[ModemEvent]:
     """Every recorded frame. One capture is too quiet to learn a contact from —
     the whole corpus is what has adverts and multi-hop routes in it."""
-    for name in CAPTURE_FILES:
-        for event in CaptureReplay.open(CAPTURES_DIR / name).read():
+    for name in CORPUS_FILES:
+        for event in CaptureReplay.open(CORPUS_DIR / name).read():
             yield event
 
 
@@ -396,9 +396,9 @@ async def test_a_run_against_an_unmigrated_database_fails_naming_both_revisions(
 
 def _corpus_records() -> list[RxRecord]:
     records: list[RxRecord] = []
-    for name in CAPTURE_FILES:
+    for name in CORPUS_FILES:
         records.extend(
-            decode_event(event) for event in CaptureReplay.open(CAPTURES_DIR / name).read()
+            decode_event(event) for event in CaptureReplay.open(CORPUS_DIR / name).read()
         )
     return records
 

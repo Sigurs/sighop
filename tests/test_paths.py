@@ -27,14 +27,14 @@ from sighop.net.rx import AdvertOutcome, Payload, RxRecord, decode_event
 from sighop.protocol.packet import RouteType
 from sighop.protocol.payloads import AnonRequestEnvelope, DirectEnvelope
 from sighop.radio.replay import CaptureReplay
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import CORPUS_DIR, CORPUS_FILES
 
 
 @pytest.fixture(scope="module")
 def corpus_records() -> list[RxRecord]:
     records: list[RxRecord] = []
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
     return records
 
@@ -128,9 +128,9 @@ def test_a_direct_reception_carrying_a_path_teaches_nothing(flood_advert) -> Non
 def test_a_direct_reception_with_no_path_is_a_zero_hop_neighbour(corpus_records) -> None:
     """MeshCore's zero-hop adverts arrive this way, and they are real evidence.
 
-    Learning only from flood packets discarded them: replaying
-    `captures/2026-09-04-03.jsonl` learned two destinations where most of the
-    file's adverts are DIRECT with `h0`.
+    Learning only from flood packets discarded them: replaying an early recorded
+    capture learned two destinations where most of its adverts were DIRECT with
+    `h0`. The synthetic corpus keeps zero-hop DIRECT adverts for this test.
     """
     zero_hop_direct = next(
         record

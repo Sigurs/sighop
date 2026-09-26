@@ -179,7 +179,7 @@ async def test_disabling_an_identity_a_room_is_bound_to_names_the_room(
     )
     assert isinstance(stored, Succeeded)
     room = await persistence.rooms.create(
-        entity_id=stored.value.id, name="[redacted]", admin_password_hash="x"
+        entity_id=stored.value.id, name="syn-lounge-room", admin_password_hash="x"
     )
     assert isinstance(room, Succeeded)
 
@@ -187,7 +187,7 @@ async def test_disabling_an_identity_a_room_is_bound_to_names_the_room(
     async with _live(app) as client:
         body = (await client.get("/admin/identities")).text
 
-    assert "[redacted]" in body
+    assert "syn-lounge-room" in body
     assert "Disabling this identity stops" in body
     assert "immediately" in body and "does not wait for a restart" in body
     assert "stored messages" in body and "durable state" in body and "survive" in body
@@ -251,7 +251,7 @@ async def test_the_rooms_page_shows_member_and_message_counts(
     )
     assert isinstance(entity, Succeeded)
     room = await persistence.rooms.create(
-        entity_id=entity.value.id, name="[redacted]", admin_password_hash="x"
+        entity_id=entity.value.id, name="syn-lounge-room", admin_password_hash="x"
     )
     assert isinstance(room, Succeeded)
     assert isinstance(
@@ -265,11 +265,11 @@ async def test_the_rooms_page_shows_member_and_message_counts(
     async with _live(app) as client:
         body = (await client.get("/rooms")).text
 
-    assert "[redacted]" in body
+    assert "syn-lounge-room" in body
     assert "unserved" in body, "an unserved room is not marked as served"
 
     # One list for reading and configuring (consolidate-web-pages 2.2).
-    row = body[body.index("<td>[redacted]</td>") :]
+    row = body[body.index("<td>syn-lounge-room</td>") :]
     row = row[: row.index("</tr>")]
     assert f'href="/rooms/{room.value.id}"' in row
     assert f'href="/admin/rooms/{room.value.id}/delete"' in row
@@ -376,7 +376,7 @@ async def _room(database: Database):
     )
     assert isinstance(entity, Succeeded)
     room = await persistence.rooms.create(
-        entity_id=entity.value.id, name="[redacted]", admin_password_hash="x"
+        entity_id=entity.value.id, name="syn-lounge-room", admin_password_hash="x"
     )
     assert isinstance(room, Succeeded)
     return persistence, room.value

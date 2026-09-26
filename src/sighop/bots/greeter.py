@@ -108,9 +108,9 @@ DEFAULT_ACK_GRACE_SECONDS = 30
 """How long a greeting keeps listening after the message path has spent its
 attempts, before silence is believed.
 
-The live exercise's `[redacted]` acknowledgement would have had to return over a
-repeater we did not send through, and an acknowledgement that took a longer way
-home is late rather than absent. Believing it absent costs a flood advert and a
+A live exercise's acknowledgement once had to return over a repeater we did not
+send through, and an acknowledgement that took a longer way home is late rather
+than absent. Believing it absent costs a flood advert and a
 second greeting, so a few seconds of listening is much the cheaper mistake. No
 packet is transmitted during the window."""
 

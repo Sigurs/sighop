@@ -454,10 +454,11 @@ over the zero-extended 32-byte buffer it would be `0x17`, which no corpus frame 
 cipher and MAC key with that zero-extended buffer. **HMAC cannot tell the two apart** — it
 zero-pads a short key to its block size itself, so a 16-byte key and its zero extension yield
 the same MAC — which leaves the hash length the only falsifiable negative, and the known-answer
-test asserts it. As of change `channel-messaging` this is also confirmed against a foreign
-implementation: `tests/protocol/test_channel_foreign_decrypt.py` verifies and decrypts all 85
-distinct corpus `GRP_TXT` frames on `0x11` under Public, and asserts none of the 108 on `0x81`
-opens. Hashtag-derived keys have a small keyspace and are brute-forceable — surface this in the
+test asserts it. As of change `channel-messaging` this was also confirmed against a foreign
+implementation, over 85 recorded `GRP_TXT` frames on `0x11` and 108 on `0x81` that did not open;
+change `synthetic-corpus` withdrew those recordings with the recorded corpus (they were other
+people's chat), and `tests/protocol/test_corpus_channel_decrypt.py` now does the same over the
+synthetic corpus's frames — a self-consistency test, which says so. Hashtag-derived keys have a small keyspace and are brute-forceable — surface this in the
 WebUI when a user creates a hashtag channel.
 
 **Adverts** are unencrypted but Ed25519-signed over `public key ‖ timestamp ‖ appdata`, in
@@ -486,16 +487,20 @@ a message sighop sent. It remains a checksum rather than a cryptographic proof �
 unkeyed, so anyone who can read the plaintext can reproduce it. Treat an ACK as delivery
 evidence only, never as authentication.
 
-**This is no longer verified only against ourselves.** As of milestone 4 the shared-secret
-derivation, the AES-128-ECB key slice, the 2-byte HMAC truncation and both directions of the
-ACK construction are confirmed against a **foreign implementation**: a Heltec V3 running stock
-`companion_radio` v1.17.1-d929643 encrypted a DM to a key sighop holds, and
-`tests/protocol/test_foreign_decrypt.py` decrypts it on every commit from
-`captures/2026-09-04-first-transmit.jsonl`. The negative half of that vector is asserted too —
-the full 32-byte secret used as the cipher key, or the MAC keyed on only the first 16, must
-fail — so the two distinct key slices stay distinguishable by evidence rather than by comment.
-It confirms these constructions for one exchange with one firmware build, which is the whole
-of what one exchange can confirm.
+**Recorded history: this was once verified against a foreign implementation.** As of milestone
+4 the shared-secret derivation, the AES-128-ECB key slice, the 2-byte HMAC truncation and both
+directions of the ACK construction were confirmed against a **foreign implementation**: a
+Heltec V3 running stock `companion_radio` v1.17.1-d929643 encrypted a DM to a key sighop held,
+and it decrypted on every commit for as long as the recorded corpus stood. That exchange
+existed and passed once; it was **withdrawn** by change `synthetic-corpus`, because the
+recording and the burned private key that opened it were real data in the repository, and a
+synthetic corpus can only prove sighop against itself. What anchors interoperability now is the
+firmware-embedded signing keypair and the fixed known-answer vectors transcribed from the
+firmware source (`tests/protocol/test_crypto.py`). `tests/protocol/test_corpus_decrypt.py` keeps
+the negative half of the old vector, over generated frames — the full 32-byte secret used as the
+cipher key, or the MAC keyed on only the first 16, must fail — so the two distinct key slices
+stay distinguishable by evidence rather than by comment, and says plainly that it proves
+agreement with our own encryptor and not interoperability.
 
 Group messages carry **no sender authentication** — the sender name is plain text inside the
 ciphertext (`<name>: <body>`). Anyone with the channel key can claim any name. The WebUI
@@ -1914,28 +1919,36 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
 0. **Capture.** KISS transport and enough of `Modem` to open the serial link, plus a
    `sighop capture` command that dumps raw frames with RxMeta and timestamps to a file.
    Run it overnight against the live mesh. **Receive-only; nothing transmits.**
-   *Done:* `captures/2026-09-02.jsonl` (152 frames, 9h16m, graceful stop) and
-   `captures/2026-09-03.jsonl` (199 frames, ~7h37m, no graceful-stop event but every JSONL
-   line well-formed), both recorded on the **Heltec V3**. Both runs: zero reconnects, zero
-   unparsed/malformed frames, zero Data/RxMeta correlation anomalies.
+   *Done:* two overnight captures (152 frames, 9h16m, graceful stop; and 199 frames,
+   ~7h37m, no graceful-stop event but every JSONL line well-formed), both recorded on the
+   **Heltec V3**. Both runs: zero reconnects, zero unparsed/malformed frames, zero
+   Data/RxMeta correlation anomalies. (The recordings were removed from the repository by
+   change `synthetic-corpus`, which replaced the recorded corpus with a generated one; see
+   `tests/protocol/CORPUS.md`.)
 1. **Protocol core.** Packet codec, crypto, advert parse/verify — developed against the real
    captured frames from milestone 0, not synthetic fixtures. Pure functions over bytes; no
    radio, no database. The capture file becomes the permanent regression corpus.
-   *The corpus's one hard limit, and where it now stands:* every encrypted payload recorded
-   through milestone 3 is addressed to a third party, so the corpus proved framing, adverts
+   *The corpus's one hard limit, and where it stood:* every encrypted payload recorded
+   through milestone 3 was addressed to a third party, so the corpus proved framing, adverts
    and signature verification but **could not prove decryption**. Milestone 4 closed that for
-   exactly one exchange — the two direct messages in
-   `captures/2026-09-04-first-transmit.jsonl`, whose key the repository holds — and for no
-   other ciphertext in the corpus, which stays verifiable only by round-trip and by fixed
-   known-answer vectors against the firmware source.
-   *The corpus is not frozen:* milestone 2's live session added `captures/2026-09-04.jsonl`,
-   `-02` and `-03` (91 frames), taking it to 442 frames across five files, and milestone 3's
-   long receive-only run added `captures/2026-09-05.jsonl` (555 frames), taking it to **997
-   frames across six files**. A session is appended when it carries a shape the corpus lacks —
-   the first brought the first `TRANSPORT_FLOOD` frame and the first CONTROL payloads, the
-   second a located CHAT advert (`0x91`), a 10-byte TRACE, and the duplicate-timing tail that
-   sizes the dedup TTL — and is appended whole, because a corpus of hand-picked interesting
-   frames stops being a sample of the mesh.
+   exactly one exchange — a pair of direct messages whose key the repository held — and for no
+   other ciphertext, which stayed verifiable only by round-trip and by fixed known-answer
+   vectors against the firmware source.
+   *The recorded corpus was not frozen:* milestone 2's live session added 91 frames, taking it
+   to 442 frames across five files, and milestone 3's long receive-only run added 555 frames,
+   taking it to **997 frames across six files**. A session was appended when it carried a
+   shape the corpus lacked — the first brought the first `TRANSPORT_FLOOD` frame and the
+   first CONTROL payloads, the second a located CHAT advert (`0x91`), a 10-byte TRACE, and the
+   duplicate-timing tail that sized the dedup TTL — and was appended whole, because a corpus of
+   hand-picked interesting frames stops being a sample of the mesh.
+   *Superseded by change `synthetic-corpus`.* The recorded corpus held other people's node
+   names, keys and Public-channel chat, and a private key, and about a third of its receptions
+   were flood repeats of a packet already seen. It was replaced by a generated corpus
+   (`tests/corpus/`, `tests/protocol/synthetic.py`) built from sighop's own encoders under a
+   fixed seed, with a declared amount of repetition and an explicit account of what it does
+   not prove. What the recording measured about the mesh — the flood repetition rate, the late
+   echo and the retransmission that sized the dedup TTL — carries no identity and is kept
+   below, under *Recorded history: flood repetition*.
 2. **Live decode.** Point the decoder at the live link. Adverts, names, paths and SNR
    printing in real time. *This is where the design is proven or isn't* — and it is still
    entirely receive-only.
@@ -2035,7 +2048,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      lesson as before: repetition is a property of the session, not of the mesh.
    - **The sliding window only becomes observable after an hour on the air, and the long V4
      session is what showed it.** Across 2 h 54 min receive-only (2026-09-04 17:06–20:00 UTC,
-     `captures/2026-09-05`), with a 15-minute advert override on two stub entities so the
+     the long receive-only capture), with a 15-minute advert override on two stub entities so the
      scheduler carried real load, remaining budget fell 99.70% → 98.22% over the first six
      adverts and then **held at 98.22% for the remaining ten**: charges ageing out of the
      window at exactly the rate new ones entered it. That plateau is the sliding window
@@ -2078,11 +2091,13 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    implementation rather than against ourselves.
    *Done, 2026-09-04 21:44 UTC.* `keystore.py`, `net/contacts.py` and `net/dm.py`, with
    `sighop keys` and `--entity/--peer/--send/--allow-flood` on `sighop run`. The exit
-   criterion is met and is a **committed regression test**, not a log line:
-   `captures/2026-09-04-first-transmit.jsonl` holds the peer's DM and
-   `tests/fixtures/burned-first-transmit.json` holds the key that opens it, so
-   `tests/protocol/test_foreign_decrypt.py` decrypts a foreign implementation's ciphertext on
-   every commit. The corpus's "one hard limit" is removed for exactly that exchange.
+   criterion was met and was a **committed regression test**, not a log line, for as long as
+   the recorded corpus stood: the recorded exchange and a burned key that opened it let a test
+   decrypt a foreign implementation's ciphertext on every commit, which removed the corpus's
+   "one hard limit" for exactly that exchange. Change `synthetic-corpus` withdrew that test, the
+   recording and the burned key, because they were real data; the exchange existed and
+   passed once, and `tests/protocol/test_corpus_decrypt.py` is now the self-consistency
+   successor.
    The exercise ran as D13's runbook: key injected over the peer's USB link, so sighop's first
    RF transmission was the DM itself and not an advert timer's side effect. Findings:
    - **The first transmission worked on the first attempt, and every construction matched.**
@@ -2139,7 +2154,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      degrades instead of waiting.
 
      **Confirmed on the air, 2026-09-18**, V4 KISS modem against the same stock V3 companion
-     (`[redacted]…`) that found the bug, with sighop's adverts suppressed for the exercise and the
+     ([redacted]) that found the bug, with sighop's adverts suppressed for the exercise and the
      companion's contact given a zero-hop path so nothing flooded. Both halves of the rule were
      exercised by varying one number — how long startup was held before it adopted the readback:
      - **Held 4 s, message at T+2 s.** Received at `16:48:24.450` with `radio` still `None`; the
@@ -2157,9 +2172,9 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      That is what `--peer-wait` exists for, and it is milestone 5's `contact` table that
      removes the need.
    - **Total cost on the air: 3 frames, 1.5 s, 0.2% of the hourly duty-cycle ceiling.** The
-     session is appended whole as `captures/2026-09-04-first-transmit.jsonl`, taking the
-     corpus to **1003 records — 1000 received and 3 transmitted**, and bringing it its first
-     frames sighop sent and its first decryptable payload.
+     session was appended whole to the recorded corpus, taking it to **1003 records — 1000
+     received and 3 transmitted**, and bringing it its first frames sighop sent and its first
+     decryptable payload (both since withdrawn with the recorded corpus).
 5. **Persistence.** Postgres, models, Alembic, entity identity storage with key encryption.
    *Done:* `src/sighop/db/` (models, repositories, engine, bounded write-behind writer, seed
    sealing, packet-log feed and pruner, the `Persistence` wiring), `src/sighop/config.py`,
@@ -2377,7 +2392,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      exercise's one greeting was transmitted four times to a peer at zero hops with a +13 dB
      signal, and every attempt went unanswered. Nothing in this milestone's code was wrong:
      a direct message is encrypted under a secret derived from the **sender's** key, so the
-     peer decrypts by trying the contacts it holds — and `[redacted]` had been created
+     peer decrypts by trying the contacts it holds — and the dev greeter bot had been created
      eight minutes earlier with a 24 h flood interval, so it had never adverted and the peer
      held nothing for it. **Greeting a stranger is a two-packet problem and the design had
      modelled it as one.** The greeter now adverts first: zero-hop for a direct neighbour,
@@ -2387,7 +2402,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
      just as unreadable.
    - **Deferring the flood to the next cooldown reproduced the same failure at one hop.** The
      second exercise fixed the zero-hop case — two direct neighbours greeted and acknowledged
-     — and then `[redacted]`, at one hop, was greeted bare, four times, `announced=0`, and never
+     — and then a peer at one hop was greeted bare, four times, `announced=0`, and never
      answered. The lazy-flood policy was working exactly as written; what was wrong was
      treating that silence as *information to sleep on*. It is not ambiguous: a peer that
      cannot decrypt us will not be able to in fifteen minutes either, and it is adverting
@@ -2435,7 +2450,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    read on `PacketLogRepository`, a service slot and a traffic-watch hook on `Runtime`, and
    `--web`/`--web-host`/`--web-port` on `sighop run`. The exit criterion — a direct message
    sent, acknowledged, replied to and surviving a restart, the whole exchange driven from a
-   browser — was met on 2026-09-12: a direct message composed in Chromium as `[redacted]`,
+   browser — was met on 2026-09-12: a direct message composed in Chromium as the greeter identity,
    acknowledged after 1 attempt in 2324 ms, the stock peer's reply appearing in the same
    conversation without a reload, and both messages still there after a restart. Findings
    the offline work produced:
@@ -2638,7 +2653,7 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
    `/dev/serial/by-id`, migrated an empty database to `0005` on start and refused to serve
    until `web user add` had run; `dev-operator` signed in from Chromium on the host, opened
    the gate with a password (a wrong one first, refused as its own event, still signed in),
-   and a direct message composed as `[redacted]` was acknowledged by the stock peer after 1
+   and a direct message composed as the greeter identity was acknowledged by the stock peer after 1
    attempt in 3281 ms; `docker compose restart sighop` exited 0, the next navigation landed on
    `/login?next=%2Fchat` with the gate shut again, and after signing back in the message was
    still there, still delivered. Every `web_guarded_action` and every signed-in `web_request`
@@ -2786,13 +2801,73 @@ Ordered to exploit the fact that real hardware and a live mesh are available fro
       distinguishes a stop the operator asked for from a kill — the process simply stops
       appearing. Channel rows written before the signal did survive it, including a reception
       one minute before, but that is the write-behind's periodic flush rather than a drain.
-    - **The exercise's capture is not in the corpus, and that is a decision rather than a
-      rule.** 16 frames, and unlike milestones 8 and 9 it *does* hold shapes the corpus lacks:
-      `GRP_TXT` on hash `0xcd` that we can decrypt, and two `tx_frame`s of our own posting.
-      Appending it changes what "foreign" means for
-      `tests/protocol/test_channel_foreign_decrypt.py`, which walks every `captures/*.jsonl`
-      and asserts 85 on `0x11` and 108 on `0x81`; a corpus that holds a channel we hold the
-      key to needs that test split first.
+    - **The exercise's capture was not added to the corpus, and that was a decision rather
+      than a rule.** 16 frames, and unlike milestones 8 and 9 it *did* hold shapes the
+      corpus lacked: `GRP_TXT` on hash `0xcd` that we could decrypt, and two `tx_frame`s of
+      our own posting. Appending it would have changed what "foreign" meant for the channel
+      decryption test, which walked every capture and asserted 85 frames on `0x11` and 108 on
+      `0x81`; a corpus that holds a channel we hold the key to needed that test split first.
+      (Moot since change `synthetic-corpus`: the synthetic corpus holds a second channel we
+      have the key to, and the recordings are gone.)
+
+**Recorded history: flood repetition (input to the milestone 3 dedup cache).** These are
+measurements of the real mesh, taken from the recorded corpus that change `synthetic-corpus`
+removed. They carry no identity, so they are kept here verbatim rather than deleted: they are
+why the dedup defaults are what they are, and why the synthetic corpus declares a late echo and
+a retransmission (`tests/protocol/CORPUS.md`).
+
+Counting duplicates the way the firmware does — `Packet::calculatePacketHash`, over the payload
+type and payload bytes, plus `path_len` for TRACE — over the 351-frame milestone 0 subset:
+
+- 351 receptions carried **205 distinct packets**: **41.6% of receptions are repeats**, 1.71
+  receptions per distinct packet.
+- Copies per packet: 82 seen once, 101 twice, 21 three times, 1 four times. **Maximum 4.**
+- Flood frames repeat far more than direct ones: 94 of 171 flood receptions were repeats,
+  against 52 of 180 direct.
+- Duplicates arrive close together: median spread between first and last copy **1.3 s**, p95
+  **3.6 s**, maximum **31.1 s**.
+- Distinct packets within a sliding window: **16** in any 60 s, 49 in any 300 s, 56 in any
+  900 s.
+
+The 2026-09-04 session, measured the same way, came out **much quieter**: 91 receptions, 81
+distinct packets, **11.0% repeats**, at most 2 copies of any packet, median spread 2.8 s and
+maximum 4.6 s, 24 distinct packets in any 60 s. The directional finding survives and sharpens —
+all 10 repeats were flood receptions, and **not one of the 57 direct receptions repeated** — but
+the *rate* clearly is not a constant of this mesh: it moved from 41.6% to 11.0% between nights,
+on a different board.
+
+The 2026-09-05 session, being both long and busy, is the one that settled the sizing. 555
+receptions, 370 distinct, **33.3% repeats**, at most 3 copies of any packet, 16 distinct packets
+in any 60 s and 49 in any 300 s. Over all **1000 receptions** — the 3 frames sighop transmitted
+are excluded, since the subject here is what the mesh sent us: 659 distinct packets, 34.1%
+repeats, median gap between consecutive copies **0.99 s**, p95 **3.3 s**, and only **two** gaps
+anywhere above 60 s. Those two are worth naming, because they are not the same thing:
+
+- **200.7 s** — a flood ANON_REQ whose late copy arrived by a *different* path (SNR −10.25
+  against 14.25). A genuine late echo, six times the 31.1 s the milestone 0 subset called its
+  worst case.
+- **3158 s (52.6 min)** — two **byte-for-byte identical** zero-hop DIRECT TXT_MSG frames, same
+  ciphertext, same SNR. Not a copy of one transmission but the sender **retransmitting an
+  unacked DM**.
+
+So the earlier recommendation here — "~128 entries with a 60 s TTL, an order of magnitude of
+headroom" — was wrong, and wrong because three short nights cannot sample the tail of a
+duration. A 60 s TTL would have missed the 200.7 s copy outright. The shipped defaults are
+**300 s and 4096 entries**, and the TTL is bounded from both sides: shorter discards real flood
+copies, much longer starts swallowing sender retries, which are events a user should see rather
+than have deduplicated away. Peak occupancy at 300 s is 49 entries, so the cap is headroom
+against a busier mesh, not a fit to this one.
+
+**Recorded history: the first-transmit interoperability exchange.** On 2026-09-04 a Heltec V4
+running sighop and a Heltec V3 running stock `companion_radio` v1.17.1-d929643 exchanged three
+frames each way (the peer's direct message, sighop's acknowledgement of it, sighop's message,
+the peer's 6-byte acknowledgement, and a zero-hop advert each), recorded whole and committed
+with a burned key so that a test could decrypt the peer's ciphertext on every commit. It
+confirmed the ECDH, the AES-128-ECB key slice, the 2-byte HMAC truncation and both
+acknowledgement forms against another implementation, for one exchange with one firmware
+build. It existed and passed once, and was withdrawn by change `synthetic-corpus` with the
+rest of the recorded corpus and the key, because both were real data; nothing replaces it as
+interoperability evidence (§5).
 
 Milestones 0–4 carry nearly all the technical risk, and 0–3 need no transmit permission at
 all. Get real adverts decoded off real air before building anything else.
@@ -2821,23 +2896,23 @@ as an explicit null *with its reason*, and the read-back radio parameters are re
 separately from the configured ones so a disagreement is visible in the file itself.
 `radio/replay.py` reads the header back as provenance and tolerates its absence.
 
-The existing `captures/2026-09-02.jsonl` and `captures/2026-09-03.jsonl` predate this and
-have no header. Their frames are left untouched; provenance lives in the sidecar
-`captures/2026-09-02.meta.json` and `captures/2026-09-03.meta.json`, which separate what was
+The two milestone 0 captures predated this and had no header. Their frames were left
+untouched, and provenance lived in a sidecar `.meta.json` each, which separated what was
 **observed** (recomputed from each file and its paired log) from what was **reconstructed**
-(stated from memory afterwards) and record the hardware readback as explicitly absent.
-Reconstructed radio settings are not evidence — if a decoder disagreement ever turns on them,
-re-capture with a real header rather than trusting them. The two files are kept as separate
-captures rather than merged — the second run started independently (~12 min after the first's
-`capture_stopped`) and each carries its own provenance.
+(stated from memory afterwards) and recorded the hardware readback as explicitly absent.
+Reconstructed radio settings are not evidence — if a decoder disagreement ever turned on them,
+the answer was to re-capture with a real header rather than trust them. The two were kept as
+separate captures rather than merged — the second run started independently (~12 min after
+the first's `capture_stopped`) and each carried its own provenance.
 
-Everything recorded from milestone 2 onward carries the header instead, so the sidecar is a
+Everything recorded from milestone 2 onward carries the header instead, so the sidecar was a
 transitional form and not a second supported mechanism. What the corpus requires is that
-*every* file state the conditions it was recorded under, by one means or the other; a capture
-whose origin is unrecorded is a fixture, not evidence, and the corpus harness refuses it.
-Files from one session stay separate for the same reason as above: `captures/2026-09-04.jsonl`,
-`-02` and `-03` are one night split by device restarts, and each restart re-probed the board,
-so each file's header describes its own run.
+*every* file state the conditions it was recorded or generated under; a file whose origin is
+unrecorded is a fixture, not evidence, and the corpus harness refuses it. Since change
+`synthetic-corpus` every corpus file is generated and its header says so, with the generator
+version and seed, and the sidecars are gone with the recordings. Files from one recording
+session stayed separate for the same reason as above: one night split by device restarts, each
+restart re-probing the board, so each file's header described its own run.
 
 This is also how the V3-vs-V4 RX question gets settled if it ever matters: capture on each
 board from the same aerial over the same interval and diff the frame counts by device name.
@@ -2906,7 +2981,7 @@ These need real hardware or real traffic to answer, and are cheap to resolve in-
    reachable by a node it has not been introduced to over a cable — milestone 5 or 6 —
    and the answer decides whether an entity must solicit a path before it can be replied to
    cheaply. **Settled, asymmetrically, by milestone 6's live exercise** — the first
-   opportunity to observe it, since the client learned `[redacted]` purely from its zero-hop
+   opportunity to observe it, since the client learned the hosted room purely from its zero-hop
    advert. Read off the captured frames rather than the client's UI: every one of the
    client's own outbound frames — every `ANON_REQ` login, every posted `TXT_MSG`, its one
    `REQ` — arrived `FLOOD`-routed for the full ~20-minute session, including long after the

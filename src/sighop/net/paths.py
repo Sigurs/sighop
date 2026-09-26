@@ -273,8 +273,9 @@ class PathStore:
         us over the air with no repeater in between, which is a zero-hop route
         and the most useful one there is. MeshCore's zero-hop adverts arrive
         exactly this way, and reading only flood packets throws them away
-        (observed replaying `captures/2026-09-04-03.jsonl`, where most adverts
-        are DIRECT/h0 and only two destinations were learned).
+        (seen replaying an early recorded capture, where most adverts were
+        DIRECT/h0 and only two destinations were learned; the synthetic corpus
+        keeps the shape).
         """
         if record.packet is None:
             return None

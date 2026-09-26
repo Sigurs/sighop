@@ -60,7 +60,7 @@ from sighop.protocol.payloads import (
 from sighop.protocol.result import DecodeFailure
 from sighop.radio.modem import EU868_NARROW
 from sighop.radio.replay import CaptureReplay
-from tests.protocol.corpus import CAPTURE_FILES, CAPTURES_DIR
+from tests.protocol.corpus import CORPUS_DIR, CORPUS_FILES
 from tests.roomfixtures import ADMIN_PASSWORD, MemoryStorage, room_record
 from tests.test_dm import Entity, RecordingSubmit, TickingClock, _packet_for
 from tests.test_room_login import login_packet
@@ -292,8 +292,8 @@ async def test_a_restarted_server_resumes_delivery_from_each_stored_position() -
 
 def _replayed() -> list:
     records: list = []
-    for name in CAPTURE_FILES:
-        replay = CaptureReplay.open(CAPTURES_DIR / name)
+    for name in CORPUS_FILES:
+        replay = CaptureReplay.open(CORPUS_DIR / name)
         records.extend(decode_event(event) for event in replay.read())
     return records
 
@@ -308,9 +308,9 @@ def test_every_anon_req_frame_still_parses_as_an_anonymous_request(
 ) -> None:
     """13.4: the corpus's `ANON_REQ` frames are unchanged by the login codec.
 
-    42 were third-party anonymous requests already in the corpus; milestone 6
-    added 15 more that are genuine logins to `[redacted]`, and both kinds must
-    still parse as the same envelope shape.
+    The corpus holds 14: eight third-party logins in the ambient file, plus the
+    logins to the room sighop hosts in the exchange file (one flood login is heard
+    twice, the late echo). Both kinds must still parse as the same envelope shape.
     """
     anon = 0
     for record in corpus_records:
@@ -321,7 +321,7 @@ def test_every_anon_req_frame_still_parses_as_an_anonymous_request(
             f"{record.packet_id} no longer parses as an anonymous request"
         )
         anon += 1
-    assert anon == 57, "the corpus's anonymous-request count changed"
+    assert anon == 14, "the corpus's anonymous-request count changed"
 
 
 def _entity_avoiding(taken: set[int], name: str = "lounge") -> Entity:
@@ -345,11 +345,11 @@ async def test_no_corpus_frame_is_mistaken_for_a_login_to_one_of_our_entities(
 ) -> None:
     """13.4: zero login attempts during a full replay.
 
-    None of the corpus's 57 anonymous requests is addressed to the identity
-    this synthetic room server holds. 15 of them are the milestone 6
-    exercise's real logins, but to `[redacted]`'s key, not this one — so a
-    room server wired into the replay must not so much as try to decrypt a
-    request addressed to somebody else's key, and certainly must not answer.
+    None of the corpus's 14 anonymous requests is addressed to the identity
+    this synthetic room server holds. Some of them are logins to the corpus's own
+    rooms, but to those rooms' keys, not this one — so a room server wired into
+    the replay must not so much as try to decrypt a request addressed to somebody
+    else's key, and certainly must not answer.
 
     The identity is chosen to avoid every destination hash in the corpus rather
     than generated and hoped for: see `_entity_avoiding`.
