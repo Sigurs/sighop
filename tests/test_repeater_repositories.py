@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -90,6 +91,17 @@ async def test_valid_settings_are_stored_and_read_back(database: Database) -> No
     assert (saved.enabled, saved.entity_id, saved.interval_minutes) == (True, identity, 30)
 
 
+async def test_keeping_forever_is_stored_and_read_back_as_no_bound(database: Database) -> None:
+    repository = RepeaterCollectionRepository(database=database)
+    saved = _value(
+        await repository.save(
+            enabled=False, entity_id=None, interval_minutes=60, recent_days=3, retention_days=None
+        )
+    )
+    assert saved.retention_days is None
+    assert _value(await repository.get()).retention_days is None
+
+
 async def test_enabling_without_an_identity_is_refused_and_nothing_stored(
     database: Database,
 ) -> None:
@@ -103,7 +115,12 @@ async def test_enabling_without_an_identity_is_refused_and_nothing_stored(
 
 @pytest.mark.parametrize(
     ("interval", "recent", "retention", "words"),
-    [(2, 3, 30, "5 to 1440"), (60, 0, 30, "1 to 365"), (60, 3, 366, "1 to 365")],
+    [
+        (2, 3, 30, "5 to 1440"),
+        (60, 0, 30, "1 to 365"),
+        (60, 3, 0, "1 to 365"),
+        (60, 3, 366, "1 to 365"),
+    ],
 )
 async def test_out_of_range_values_are_refused(
     database: Database, interval: int, recent: int, retention: int, words: str
@@ -261,3 +278,111 @@ async def test_pruning_deletes_old_polls_and_their_neighbours(database: Database
     async with database.sessions() as session:
         left = (await session.execute(text("SELECT count(*) FROM repeater_neighbour"))).scalar()
     assert left == 1, "the old poll's neighbours went with it"
+
+
+async def test_latest_status_per_key_is_not_hidden_by_a_newer_failed_poll(
+    database: Database,
+) -> None:
+    polls = RepeaterPollRepository(database=database)
+    await polls.record(_poll(NOW, PollOutcome.SUCCEEDED, stats=STATS, neighbours_total=0))
+    await polls.record(_poll(NOW + dt.timedelta(hours=1), PollOutcome.LOGIN_UNANSWERED))
+    other = replace(STATS, batt_milli_volts=3600)
+    await polls.record(replace(_poll(NOW, PollOutcome.SUCCEEDED, stats=other), public_key=OTHER))
+    await polls.record(
+        replace(
+            _poll(NOW - dt.timedelta(hours=1), PollOutcome.SUCCEEDED, stats=STATS),
+            public_key=OTHER,
+        )
+    )
+    latest = _value(await polls.latest_status_for([REPEATER, OTHER, b"\x44" * 32]))
+    assert set(latest) == {REPEATER, OTHER}
+    assert latest[REPEATER].started_at == NOW
+    assert latest[REPEATER].stats == STATS
+    assert latest[OTHER].stats is not None and latest[OTHER].stats.batt_milli_volts == 3600
+    assert _value(await polls.latest_status_for([])) == {}
+
+
+async def test_one_poll_is_read_by_id_with_its_neighbours(database: Database) -> None:
+    polls = RepeaterPollRepository(database=database)
+    entry = NeighbourEntry(prefix=b"\x01" * 6, heard_seconds_ago=30, snr=40)
+    first = _value(
+        await polls.record(
+            _poll(NOW, PollOutcome.SUCCEEDED, stats=STATS, neighbours_total=1, neighbours=(entry,))
+        )
+    )
+    await polls.record(_poll(NOW + dt.timedelta(hours=1), PollOutcome.SUCCEEDED, stats=STATS))
+    poll = _value(await polls.get(first))
+    assert poll is not None
+    assert (poll.id, poll.started_at, poll.stats) == (first, NOW, STATS)
+    assert poll.neighbours == (entry,)
+    assert _value(await polls.get(first + 1000)) is None
+
+
+async def test_the_series_is_oldest_first_bounded_by_since_and_keeps_failed_polls(
+    database: Database,
+) -> None:
+    polls = RepeaterPollRepository(database=database)
+    for hours in (3, 1, 2):
+        await polls.record(
+            _poll(
+                NOW - dt.timedelta(hours=hours),
+                PollOutcome.SUCCEEDED,
+                stats=STATS,
+                neighbours_total=hours,
+            )
+        )
+    await polls.record(_poll(NOW, PollOutcome.LOGIN_UNANSWERED))
+    await polls.record(replace(_poll(NOW, PollOutcome.SUCCEEDED, stats=STATS), public_key=OTHER))
+
+    everything = _value(await polls.series(REPEATER, since=None))
+    assert [row.started_at for row in everything] == [
+        NOW - dt.timedelta(hours=h) for h in (3, 2, 1, 0)
+    ]
+    first = everything[0]
+    assert (first.batt_milli_volts, first.last_snr_db, first.neighbours_total) == (4012, -6.5, 3)
+    assert (first.n_packets_recv, first.total_up_time_secs) == (1000, 86400)
+    failed = everything[-1]
+    assert failed.outcome is PollOutcome.LOGIN_UNANSWERED
+    assert (failed.batt_milli_volts, failed.n_packets_recv, failed.neighbours_total) == (
+        None,
+        None,
+        None,
+    )
+
+    recent = _value(await polls.series(REPEATER, since=NOW - dt.timedelta(hours=1)))
+    assert [row.started_at for row in recent] == [NOW - dt.timedelta(hours=1), NOW]
+
+
+async def test_a_poll_records_its_resend_count_and_an_uncounted_one_reads_none(
+    database: Database,
+) -> None:
+    polls = RepeaterPollRepository(database=database)
+    counted = _value(await polls.record(_poll(NOW, PollOutcome.SUCCEEDED, stats=STATS, retries=2)))
+    uncounted = _value(await polls.record(_poll(NOW, PollOutcome.LOGIN_UNANSWERED)))
+    first = _value(await polls.get(counted))
+    second = _value(await polls.get(uncounted))
+    assert first is not None and first.retries == 2
+    assert second is not None and second.retries is None
+
+
+async def test_last_answered_is_the_newest_poll_that_got_past_the_login(
+    database: Database,
+) -> None:
+    polls = RepeaterPollRepository(database=database)
+    silent = b"\x44" * 32
+    for hours, outcome in (
+        (5, PollOutcome.SUCCEEDED),
+        (3, PollOutcome.STATUS_UNANSWERED),
+        (1, PollOutcome.LOGIN_UNANSWERED),
+    ):
+        await polls.record(_poll(NOW - dt.timedelta(hours=hours), outcome))
+    await polls.record(
+        replace(_poll(NOW, PollOutcome.NEIGHBOURS_INCOMPLETE, stats=STATS), public_key=OTHER)
+    )
+    for outcome in (PollOutcome.LOGIN_UNANSWERED, PollOutcome.NOT_SENT):
+        await polls.record(replace(_poll(NOW, outcome), public_key=silent))
+
+    assert _value(await polls.last_answered()) == {
+        REPEATER: NOW - dt.timedelta(hours=3),
+        OTHER: NOW,
+    }

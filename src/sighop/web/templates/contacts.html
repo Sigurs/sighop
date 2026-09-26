@@ -39,6 +39,7 @@
           {%- if row.route -%}
             {{ display.status(row.route.status) }}
             {%- if row.route.caveat %}<span class="route-ambiguous"> · ambiguous</span>{% endif -%}
+            {%- if row.route.rewritten %}<span class="route-rewritten" title="the preferred first hop was added to the learned route"> · via preferred</span>{% endif -%}
           {%- else -%}
             <span class="absent">no route known</span>
           {%- endif -%}

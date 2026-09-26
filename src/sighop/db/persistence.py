@@ -55,6 +55,7 @@ from sighop.db.repositories import (
     RepeaterTargetRepository,
     RoomMemberRepository,
     RoomRepository,
+    RoutePreferenceRepository,
     WebhookRepository,
     WebUserRepository,
 )
@@ -175,6 +176,10 @@ class Persistence:
     repeater_targets: RepeaterTargetRepository = field(init=False)
     repeater_polls: RepeaterPollRepository = field(init=False)
 
+    # The preferred first hop is one row read at startup and written from the
+    # system page; the live value is held on the path store (preferred-first-hop D5).
+    route_preference: RoutePreferenceRepository = field(init=False)
+
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
@@ -208,6 +213,7 @@ class Persistence:
         self.repeater_collection = RepeaterCollectionRepository(database=self.database)
         self.repeater_targets = RepeaterTargetRepository(database=self.database)
         self.repeater_polls = RepeaterPollRepository(database=self.database)
+        self.route_preference = RoutePreferenceRepository(database=self.database)
         self.contact_writer = WriteBehind(
             "contacts",
             self._flush_contacts,

@@ -485,3 +485,68 @@ async def test_the_runtime_helper_accepts_persistence() -> None:
     )
     assert run.persistence is persistence
     assert run.contacts._sink is persistence.contact_writer
+
+
+# --- The preferred first hop (preferred-first-hop 4.1) -----------------------
+
+
+async def _started(run: Runtime) -> asyncio.Task[None]:
+    task = asyncio.create_task(run.run())
+    await asyncio.wait_for(run._ready.wait(), timeout=10)
+    return task
+
+
+async def test_a_stored_preferred_first_hop_is_in_force_for_the_first_send(
+    database: Database,
+) -> None:
+    from sighop.net.contacts import Contact
+    from sighop.net.dm import choose_route
+    from sighop.net.paths import LearnedPath, PathKey
+    from sighop.protocol.payloads import WireText
+
+    preferred = b"\xab" * 32
+    persistence = Persistence(database=database)
+    assert isinstance(await persistence.route_preference.save(preferred), Succeeded)
+    run = runtime(_never_ending(), out=io.StringIO(), persistence=persistence)
+    task = await _started(run)
+    try:
+        assert run.pipeline.paths.preferred_first_hop == preferred
+        peer = generate_identity()
+        run.pipeline.paths.restore(
+            [
+                (
+                    PathKey.for_public_key(peer.public_key),
+                    LearnedPath(
+                        path=b"",
+                        hash_size=1,
+                        hop_count=0,
+                        snr_db=None,
+                        confirmed_at=dt.datetime.now(dt.UTC),
+                        packet_id="seed",
+                    ),
+                )
+            ]
+        )
+        contact = Contact(public_key=peer.public_key, name=WireText.from_bytes(b"peer"))
+        route = choose_route(run.pipeline.paths, contact, path_hash_size=1)
+        assert (route.path, route.label) == (b"\xab", "DIRECT h1 via-pref")
+    finally:
+        run.stop()
+        await asyncio.wait_for(task, timeout=10)
+
+
+async def test_a_replay_runs_with_no_preferred_first_hop(database: Database) -> None:
+    persistence = Persistence(database=database, writes_enabled=False)
+    assert isinstance(await persistence.route_preference.save(b"\xab" * 32), Succeeded)
+    run = runtime(
+        _never_ending(),
+        out=io.StringIO(),
+        persistence=persistence,
+        config=RuntimeConfig(status_interval=3600, advert_tick=3600, replay=True),
+    )
+    task = await _started(run)
+    try:
+        assert run.pipeline.paths.preferred_first_hop is None
+    finally:
+        run.stop()
+        await asyncio.wait_for(task, timeout=10)

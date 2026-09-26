@@ -34,7 +34,7 @@ from sighop.config import (
     DEFAULT_STATUS_INTERVAL_SECONDS,
     DEFAULT_TTL_SECONDS,
 )
-from sighop.db.engine import Succeeded
+from sighop.db.engine import Failed, Succeeded
 from sighop.db.persistence import Persistence
 from sighop.db.repositories import BotRecord, LoadedEntity, OpenedEntities, RoomRecord
 from sighop.keystore import EntityRegistry, LocalEntity
@@ -1051,6 +1051,7 @@ class Runtime:
             self.pipeline.paths,
             entities=len(self.config.stored_entities),
         )
+        await self._load_route_preference()
         await self._load_rooms()
         # After the rooms, because a bot may not run on an entity a room is
         # bound to and this is where that is known (bot-runtime spec).
@@ -1060,6 +1061,29 @@ class Runtime:
             room.start()
         if self.retention is not None:
             self.retention.start()
+
+    async def _load_route_preference(self) -> None:
+        """Put the stored preferred first hop in force before any traffic.
+
+        After the paths are restored, before anything can send (preferred-first-
+        hop D5). A read that fails here is the posture `Persistence.restore`
+        takes — the schema check already passed, so the run continues, degraded,
+        with none in force — but it is logged as an error, because every DIRECT
+        send then goes out as learned. A replay does not transmit and loads none.
+        """
+        if self.config.replay:
+            return
+        stored = await self.persistence.route_preference.get()
+        if isinstance(stored, Failed):
+            assert self.logger is not None
+            self.logger.error(
+                "route_preference_not_loaded",
+                outcome="error",
+                error=str(stored.error),
+                detail="no preferred first hop is in force; DIRECT sends go as learned",
+            )
+            return
+        self.pipeline.paths.preferred_first_hop = stored.value
 
     async def _load_rooms(self) -> None:
         """Bind each stored room to its entity, and say why any is not served.

@@ -417,6 +417,10 @@ table.feed td {
   color: var(--unverified);
 }
 
+.route-rewritten {
+  color: var(--fg-dim);
+}
+
 .undisplayable {
   color: var(--alarm);
   font-style: italic;
@@ -708,4 +712,102 @@ time.when {
   .composer label {
     flex: 1 1 100%;
   }
+}
+
+/* --- Repeater battery (repeater-metrics-history D5) ----------------------- */
+
+.battery-low {
+  color: var(--warn);
+}
+
+/* --- Metrics charts (repeater-metrics-history D7) ------------------------- *
+ * Inline SVG with no script. The plot stretches to its column, so strokes do
+ * not scale with it. Failed polls are marked by outcome: colour and the
+ * outcome's words in the legend and each mark's title. */
+
+.ranges {
+  margin: 0 0 0.6rem;
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 24rem), 1fr));
+  gap: 0.9rem 1.5rem;
+}
+
+.chart {
+  margin: 0;
+  min-width: 0;
+}
+
+.chart figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  align-items: baseline;
+  margin-bottom: 0.25rem;
+}
+
+.chart-stats,
+.chart-y,
+.chart-x {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.chart-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
+.chart-y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: right;
+  padding-block: 2px 12px;
+}
+
+.chart-plot {
+  display: block;
+  width: 100%;
+  height: 7.5rem;
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule-soft);
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-failure {
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-x {
+  display: flex;
+  justify-content: space-between;
+  padding-left: 0.4rem;
+}
+
+.chart-failure-login_unanswered {
+  stroke: var(--alarm);
+  color: var(--alarm);
+}
+
+.chart-failure-status_unanswered {
+  stroke: var(--warn);
+  color: var(--warn);
+}
+
+.chart-failure-not_sent {
+  stroke: var(--fg-dim);
+  color: var(--fg-dim);
 }

@@ -14,6 +14,13 @@ we asked, the identity we asked from, and — for status and neighbours — the
 timestamp the firmware echoes as a tag. A login answer carries the repeater's
 clock rather than an echo, so it is matched by MAC and shape alone.
 
+**A lost packet costs an attempt, not the poll** (repeater-poll-retries). An
+unanswered step is resent with a fresh timestamp, up to three attempts, and a
+late answer to any attempt of the step completes it. A repeater that answered a
+login within the recency window gets two direct logins and then a flooded one,
+whose path-return answer replaces a route gone stale; one that has not answered
+recently — a guest password, or down — gets a single login, as before.
+
 **The only decrypter of `RESPONSE`.** Nothing else in the process opens one; a
 response bundled in a returned path reaches here from `PathBodyReader`, after
 the route it declares has been adopted, so the next request goes direct.
@@ -37,7 +44,12 @@ from typing import Protocol
 
 from sighop.config import DEFAULT_PATH_HASH_SIZE
 from sighop.db.engine import Outcome, Succeeded
-from sighop.db.repositories import CollectionSettings, PollOutcome, PollRecord
+from sighop.db.repositories import (
+    DEFAULT_COLLECTION_RECENT_DAYS,
+    CollectionSettings,
+    PollOutcome,
+    PollRecord,
+)
 from sighop.logging import Logger, get_logger
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
@@ -97,6 +109,9 @@ NEIGHBOUR_PAGE_SIZE = 11
 """Entries of `6 + 4 + 1` bytes into the firmware's 130-byte buffer (`:342`)."""
 
 MAX_NEIGHBOUR_PAGES = 8
+
+MAX_STEP_ATTEMPTS = 3
+"""Attempts at one step before the poll ends there (repeater-poll-retries D2)."""
 
 RESPONSE_POLL_SECONDS = 0.05
 
@@ -177,6 +192,8 @@ class PollSink(Protocol):
 
     async def prune_older_than(self, cutoff: dt.datetime) -> Outcome[int]: ...
 
+    async def last_answered(self) -> Outcome[dict[bytes, dt.datetime]]: ...
+
 
 class CollectorEntity(Protocol):
     """The slice of a local identity this needs. `EntityStub` satisfies it."""
@@ -217,8 +234,11 @@ class _Outstanding:
     entity: CollectorEntity
     contact: Contact
     step: Step
-    tag: int | None
     answer: asyncio.Future[bytes]
+    tags: set[int] = field(default_factory=set)
+    """Echo tags of every attempt at this step: a late answer to an earlier
+    attempt still completes it. Empty for a login, which echoes nothing."""
+
     heard: RxRecord | None = None
     """The reception that carried the accepted answer."""
 
@@ -230,7 +250,21 @@ class _NotSent:
 
 type _StepResult = bytes | _NotSent | None
 """The answer's plaintext, a submission that never reached the air, or None
-for silence until the step's timeout."""
+for silence through every attempt's timeout."""
+
+_DIRECT_ATTEMPTS: tuple[bool, ...] = (False,) * MAX_STEP_ATTEMPTS
+"""A step's attempts, each True when it is flooded whatever route is known."""
+
+_ONE_ATTEMPT: tuple[bool, ...] = (False,)
+
+_FLOOD_FALLBACK: tuple[bool, ...] = (False,) * (MAX_STEP_ATTEMPTS - 1) + (True,)
+
+
+@dataclass(slots=True)
+class _PollProgress:
+    routes: list[str] = field(default_factory=list)
+    """Every route label used, in order, a change of route appending one."""
+    resends: int = 0
 
 
 @dataclass(slots=True)
@@ -257,6 +291,8 @@ class RepeaterCollector:
     responses_matched: int = field(default=0, init=False)
     responses_unmatched: int = field(default=0, init=False)
     path_returns: int = field(default=0, init=False)
+    retries: int = field(default=0, init=False)
+    login_floods: int = field(default=0, init=False)
     cycles: int = field(default=0, init=False)
     _outstanding: _Outstanding | None = field(default=None, init=False)
     _last_sent: dict[bytes, int] = field(default_factory=dict, init=False)
@@ -264,6 +300,9 @@ class RepeaterCollector:
     _last_started: dt.datetime | None = field(default=None, init=False)
     _last_pruned: dt.datetime | None = field(default=None, init=False)
     _room_entity_ids: set[str] = field(default_factory=set, init=False)
+    _answered: dict[bytes, dt.datetime] = field(default_factory=dict, init=False)
+    """When each repeater last answered a login (D3)."""
+    _answered_seeded: bool = field(default=False, init=False)
     _stopped: asyncio.Event = field(default_factory=asyncio.Event, init=False)
 
     def __post_init__(self) -> None:
@@ -372,6 +411,7 @@ class RepeaterCollector:
             ),
             key=lambda contact: contact.public_key,
         )
+        await self._seed_answered()
         await self.settings.record_cycle(
             started_at=started, finished_at=None, polled=None, succeeded=None
         )
@@ -392,7 +432,7 @@ class RepeaterCollector:
             if not self.transmit_enabled():
                 self.logger.info("repeater_collection_transmit_disabled_mid_cycle", polled=polled)
                 break
-            poll = await self.poll(entity, contact)
+            poll = await self.poll(entity, contact, recent_days=current.recent_days)
             polled += 1
             succeeded += poll.outcome is PollOutcome.SUCCEEDED
             await self._record(poll)
@@ -429,6 +469,37 @@ class RepeaterCollector:
             return None, "the login identity is serving a room; choose another"
         return entity, ""
 
+    async def _seed_answered(self) -> None:
+        """Load when each repeater last answered, once; a failed read is retried
+        next cycle, and until then no login falls back to a flood (D3)."""
+        if self._answered_seeded:
+            return
+        outcome = await self.polls.last_answered()
+        if not isinstance(outcome, Succeeded):
+            assert self.logger is not None
+            self.logger.error("repeater_last_answered_unreadable", operation=outcome.operation)
+            return
+        for key, at in outcome.value.items():
+            if key not in self._answered or self._answered[key] < at:
+                self._answered[key] = at
+        self._answered_seeded = True
+
+    def _answered_recently(self, public_key: bytes, recent_days: int, now: dt.datetime) -> bool:
+        at = self._answered.get(public_key)
+        return at is not None and now - at <= dt.timedelta(days=recent_days)
+
+    def _login_attempts(
+        self, contact: Contact, recent_days: int, now: dt.datetime
+    ) -> tuple[bool, ...]:
+        """Direct, direct, then a flood, for a repeater that answers and has a
+        route; one attempt for one that has not answered recently, and one
+        flood when no route is known (D2)."""
+        if self._route(contact).flood:
+            return _ONE_ATTEMPT
+        if not self._answered_recently(contact.public_key, recent_days, now):
+            return _ONE_ATTEMPT
+        return _FLOOD_FALLBACK
+
     async def _record(self, poll: PollRecord) -> None:
         outcome = await self.polls.record(poll)
         assert self.logger is not None
@@ -444,6 +515,8 @@ class RepeaterCollector:
 
     async def _prune(self, settings: CollectionSettings, now: dt.datetime) -> None:
         self._last_pruned = now
+        if settings.retention_days is None:
+            return  # kept forever: nothing is ever deleted
         outcome = await self.polls.prune_older_than(
             now - dt.timedelta(days=settings.retention_days)
         )
@@ -456,10 +529,16 @@ class RepeaterCollector:
 
     # --- One poll (D3, D4, D5, D9) ------------------------------------------
 
-    async def poll(self, entity: CollectorEntity, contact: Contact) -> PollRecord:
+    async def poll(
+        self,
+        entity: CollectorEntity,
+        contact: Contact,
+        *,
+        recent_days: int = DEFAULT_COLLECTION_RECENT_DAYS,
+    ) -> PollRecord:
         """Log in, ask for status, page through neighbours. Always returns a record."""
         started = self.clock.now()
-        routes: list[str] = []
+        progress = _PollProgress()
 
         def record(outcome: PollOutcome, reason: str | None = None, **kwargs: object) -> PollRecord:
             return PollRecord(
@@ -468,11 +547,18 @@ class RepeaterCollector:
                 started_at=started,
                 outcome=outcome,
                 reason=reason,
-                route=" → ".join(routes),
+                route=" → ".join(progress.routes),
+                retries=progress.resends,
                 **kwargs,  # type: ignore[arg-type]
             )
 
-        login = await self._step(entity, contact, Step.LOGIN, routes)
+        login = await self._step(
+            entity,
+            contact,
+            Step.LOGIN,
+            progress,
+            attempts=self._login_attempts(contact, recent_days, started),
+        )
         if isinstance(login, _NotSent):
             return record(PollOutcome.NOT_SENT, login.reason)
         if login is None:
@@ -480,8 +566,9 @@ class RepeaterCollector:
                 PollOutcome.LOGIN_UNANSWERED,
                 "no answer: out of range, or a guest password is set",
             )
+        self._answered[contact.public_key] = self.clock.now()
 
-        status_answer = await self._step(entity, contact, Step.STATUS, routes)
+        status_answer = await self._step(entity, contact, Step.STATUS, progress)
         if isinstance(status_answer, _NotSent):
             return record(PollOutcome.NOT_SENT, f"status request: {status_answer.reason}")
         if status_answer is None:
@@ -494,7 +581,9 @@ class RepeaterCollector:
         entries: list[NeighbourEntry] = []
         total: int | None = None
         for _ in range(MAX_NEIGHBOUR_PAGES):
-            answer = await self._step(entity, contact, Step.NEIGHBOURS, routes, offset=len(entries))
+            answer = await self._step(
+                entity, contact, Step.NEIGHBOURS, progress, offset=len(entries)
+            )
             reason: str | None = None
             if isinstance(answer, _NotSent):
                 reason = f"neighbour request: {answer.reason}"
@@ -549,17 +638,73 @@ class RepeaterCollector:
         entity: CollectorEntity,
         contact: Contact,
         step: Step,
-        routes: list[str],
+        progress: _PollProgress,
         *,
         offset: int = 0,
+        attempts: Sequence[bool] = _DIRECT_ATTEMPTS,
     ) -> _StepResult:
+        """One step, resent until answered or out of attempts (D1).
+
+        One `_Outstanding` covers every attempt, so a late answer to an earlier
+        attempt completes the step while a later one is waiting.
+        """
+        assert self.logger is not None
+        outstanding = _Outstanding(
+            entity=entity,
+            contact=contact,
+            step=step,
+            answer=asyncio.get_running_loop().create_future(),
+        )
+        self._outstanding = outstanding
+        answer: bytes | None = None
+        try:
+            for attempt, flood in enumerate(attempts, start=1):
+                if outstanding.answer.done():
+                    break
+                if attempt > 1:
+                    progress.resends += 1
+                    self.retries += 1
+                if flood:
+                    self.login_floods += 1
+                    self.logger.info(
+                        "repeater_login_flood_fallback",
+                        repeater=contact.public_key.hex()[:12],
+                        step_attempt=attempt,
+                    )
+                result = await self._attempt(
+                    outstanding, progress, offset=offset, flood=flood, attempt=attempt
+                )
+                if isinstance(result, _NotSent):
+                    return result
+                if result is not None:
+                    answer = result
+                    break
+            if answer is None and outstanding.answer.done():
+                answer = outstanding.answer.result()
+        finally:
+            self._outstanding = None
+        if answer is not None and outstanding.heard is not None:
+            await self._after_flooded_answer(entity, contact, outstanding.heard)
+        return answer
+
+    async def _attempt(
+        self,
+        outstanding: _Outstanding,
+        progress: _PollProgress,
+        *,
+        offset: int,
+        flood: bool,
+        attempt: int,
+    ) -> _StepResult:
+        """Send one attempt at the outstanding step and wait out its timeout."""
         assert self.secrets is not None and self.logger is not None
-        route = self._route(contact)
-        if not routes or routes[-1] != route.label:
-            routes.append(route.label)
+        entity, contact, step = outstanding.entity, outstanding.contact, outstanding.step
+        route = Route(flood=True, hash_size=self.path_hash_size) if flood else self._route(contact)
+        if not progress.routes or progress.routes[-1] != route.label:
+            progress.routes.append(route.label)
         secret = self.secrets.get(entity.identity, contact.public_key)
+        # A fresh timestamp every attempt: firmware drops a repeated one (D3).
         timestamp = self._timestamp(contact.public_key)
-        tag: int | None = None
         if step is Step.LOGIN:
             packet = _anon_request_packet(
                 entity.identity,
@@ -570,7 +715,7 @@ class RepeaterCollector:
             )
             reply_body = _LOGIN_REPLY_BODY
         else:
-            tag = timestamp
+            outstanding.tags.add(timestamp)
             if step is Step.STATUS:
                 request = RequestBody(timestamp=timestamp, request_type=RequestType.GET_STATUS)
                 reply_body = _STATUS_REPLY_BODY
@@ -602,46 +747,33 @@ class RepeaterCollector:
         )
         timeout_ms = ack_timeout_ms(airtime, route) + SERVER_RESPONSE_DELAY_MS
 
-        outstanding = _Outstanding(
-            entity=entity,
-            contact=contact,
-            step=step,
-            tag=tag,
-            answer=asyncio.get_running_loop().create_future(),
+        now = self.clock.now()
+        handle = self.submit(
+            Submission(
+                packet=packet,
+                priority=PriorityClass.ADVERT,
+                entity_id=entity.entity_id,
+                entity_name=entity.name,
+                entity_type="entity",
+                # A request that cannot go inside its own answer window is
+                # better dropped than sent into a window already closed.
+                deadline=now + dt.timedelta(milliseconds=timeout_ms),
+                origin=f"repeater_{step}",
+            )
         )
-        self._outstanding = outstanding
-        try:
-            now = self.clock.now()
-            handle = self.submit(
-                Submission(
-                    packet=packet,
-                    priority=PriorityClass.ADVERT,
-                    entity_id=entity.entity_id,
-                    entity_name=entity.name,
-                    entity_type="entity",
-                    # A request that cannot go inside its own answer window is
-                    # better dropped than sent into a window already closed.
-                    deadline=now + dt.timedelta(milliseconds=timeout_ms),
-                    origin=f"repeater_{step}",
-                )
-            )
-            sent = await handle
-            self.logger.info(
-                "repeater_request_sent",
-                step=str(step),
-                repeater=contact.public_key.hex()[:12],
-                route=route.label,
-                timeout_ms=round(timeout_ms, 1),
-                **sent.as_json(),
-            )
-            if not sent.sent:
-                return _NotSent(sent.reason or str(sent.result))
-            answer = await self._await_answer(outstanding, timeout_ms)
-        finally:
-            self._outstanding = None
-        if answer is not None and outstanding.heard is not None:
-            await self._after_flooded_answer(entity, contact, outstanding.heard)
-        return answer
+        sent = await handle
+        self.logger.info(
+            "repeater_request_sent",
+            step=str(step),
+            step_attempt=attempt,
+            repeater=contact.public_key.hex()[:12],
+            route=route.label,
+            timeout_ms=round(timeout_ms, 1),
+            **sent.as_json(),
+        )
+        if not sent.sent:
+            return _NotSent(sent.reason or str(sent.result))
+        return await self._await_answer(outstanding, timeout_ms)
 
     async def _after_flooded_answer(
         self, entity: CollectorEntity, contact: Contact, heard: RxRecord
@@ -779,8 +911,8 @@ class RepeaterCollector:
             if isinstance(answer, DecodeFailure) or answer.result != RESP_SERVER_LOGIN_OK:
                 self._unmatched("not a successful login answer")
                 return
-        elif len(plaintext) < 4 or int.from_bytes(plaintext[:4], "little") != outstanding.tag:
-            self._unmatched("echoed timestamp is not the outstanding request's")
+        elif len(plaintext) < 4 or int.from_bytes(plaintext[:4], "little") not in outstanding.tags:
+            self._unmatched("echoed timestamp is not one of the outstanding step's")
             return
         self.responses_matched += 1
         outstanding.heard = record
@@ -798,6 +930,8 @@ class RepeaterCollector:
             "repeater_responses_matched": self.responses_matched,
             "repeater_responses_unmatched": self.responses_unmatched,
             "repeater_path_returns": self.path_returns,
+            "repeater_retries": self.retries,
+            "repeater_login_floods": self.login_floods,
         }
 
 

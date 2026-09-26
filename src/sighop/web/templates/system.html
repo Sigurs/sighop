@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_display.html" as display %}
+{% import "_identity.html" as ident %}
 
 {% block title %}system · sighop{% endblock %}
 
@@ -76,6 +77,74 @@
   {{ '%g'|format(regulatory_default * 100) }}%.
 </p>
 
+<h2 id="route-preference">preferred first hop</h2>
+{% set r = route %}
+{% if route_error %}
+<p class="unavailable" role="alert">{{ route_error }}</p>
+{% endif %}
+{% if not r.readable %}
+<p class="unavailable">
+  <strong>The stored setting cannot be read.</strong> What is in force in the
+  running node is shown; saving writes what the form holds.
+</p>
+{% endif %}
+<p class="note">
+  When set, <strong>every DIRECT send from every identity</strong> — direct
+  messages and their acknowledgements, room replies and repeater polls — leaves
+  through this repeater first. A learned route that already starts with it is
+  used as learned; any other has it added as the first hop, so a zero-hop route
+  becomes one hop through it. Floods, and sends to this repeater itself, are
+  unchanged.
+</p>
+<form method="post" action="/system/route-preference">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>leave through
+      <select name="preferred_first_hop">
+        <option value=""{% if not r.selected %} selected{% endif %}>(none — routes as learned)</option>
+        {% for value, label in r.repeaters %}
+        <option value="{{ value }}"{% if r.selected == value %} selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <span class="note">Only contacts that advertise as repeaters are offered.</span>
+  </p>
+  <button type="submit">save</button>
+</form>
+<p class="note">A saved change applies to the next send, without a restart.</p>
+{% if r.in_force %}
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr>
+        <td>in force</td>
+        <td>{% if r.known %}{{ ident.identity(r.identity) }}{% else %}{{ display.key(r.in_force) }} <span class="absent">(no longer a known contact)</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <td>heard directly</td>
+        <td class="mono">
+          {%- if r.heard -%}
+            zero-hop, confirmed {{ display.when(r.heard.confirmed_at) }}
+            {%- if r.heard.snr_db is not none %}, SNR {{ '%g'|format(r.heard.snr_db) }} dB{% endif -%}
+          {%- else -%}<span class="absent">no zero-hop route learned</span>{%- endif -%}
+        </td>
+      </tr>
+      <tr><td>sends left unrewritten at the path limit</td><td class="mono">{{ r.prepend_overflow }}</td></tr>
+    </tbody>
+  </table>
+</div>
+{% if not r.heard or not r.known %}
+<p class="unavailable" role="status">
+  <strong>This node has not heard the preferred repeater directly.</strong> No
+  zero-hop route to it has been learned, so this node may not reach it, and every
+  DIRECT send through it would then fail. Clearing the setting routes as learned
+  again at once.
+</p>
+{% endif %}
+{% else %}
+<p class="note">None is set: every DIRECT send uses the route as learned.</p>
+{% endif %}
+
 <h2 id="collection">repeater collection</h2>
 {% set c = collection %}
 {% if collection_error %}
@@ -138,10 +207,18 @@
     </label>
   </p>
   <p>
-    <label>keep samples for this many days ({{ c.retention_range[0] }}–{{ c.retention_range[1] }})
+    <label>keep samples for this many days ({{ c.retention_range[0] }}–{{ c.retention_range[1] }}, or keep forever)
       <input class="mono" type="text" name="retention_days" value="{{ c.form.retention_days }}">
     </label>
+    <label>
+      <input type="checkbox" name="retention_forever" value="true"{% if c.form.retention_forever %} checked{% endif %}>
+      keep forever
+    </label>
+    <span class="note">Kept forever, nothing collected is ever deleted; the days are then ignored.</span>
   </p>
+  {% if c.settings.retention_days is none %}
+  <p class="note">Samples are currently <strong>kept forever</strong>.</p>
+  {% endif %}
   <button type="submit">save</button>
 </form>
 <p class="note">A saved change applies to the running node within a minute, without a restart.</p>

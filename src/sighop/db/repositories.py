@@ -23,7 +23,7 @@ import hmac
 import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from enum import StrEnum
 
 from sqlalchemy import delete, func, literal, select, tuple_, update
@@ -46,6 +46,7 @@ from sighop.db.models import (
     RepeaterNeighbourRow,
     RepeaterPollRow,
     RepeaterTargetRow,
+    RoutePreferenceRow,
 )
 from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
@@ -3670,7 +3671,8 @@ class CollectionSettings:
     entity_id: uuid.UUID | None = None
     interval_minutes: int = DEFAULT_COLLECTION_INTERVAL_MINUTES
     recent_days: int = DEFAULT_COLLECTION_RECENT_DAYS
-    retention_days: int = DEFAULT_COLLECTION_RETENTION_DAYS
+    retention_days: int | None = DEFAULT_COLLECTION_RETENTION_DAYS
+    """Days polls are kept, or None to keep them forever."""
     last_cycle_started_at: dt.datetime | None = None
     last_cycle_finished_at: dt.datetime | None = None
     last_cycle_polled: int | None = None
@@ -3683,6 +3685,8 @@ class CollectionSettings:
             ("recency window", self.recent_days, COLLECTION_RECENT_DAYS_RANGE, "days"),
             ("retention window", self.retention_days, COLLECTION_RETENTION_DAYS_RANGE, "days"),
         ):
+            if value is None:
+                continue  # only the retention window may be unbounded: keep forever
             if not low <= value <= high:
                 raise CollectionSettingsError(
                     f"the {label} must be from {low} to {high} {unit}; {value} was given"
@@ -3705,6 +3709,12 @@ class PollOutcome(StrEnum):
         return self.value.replace("_", " ")
 
 
+LOGIN_ANSWERED_OUTCOMES = frozenset(
+    {PollOutcome.SUCCEEDED, PollOutcome.STATUS_UNANSWERED, PollOutcome.NEIGHBOURS_INCOMPLETE}
+)
+"""Outcomes only reachable once the repeater has answered the login."""
+
+
 @dataclass(frozen=True, slots=True)
 class PollRecord:
     """One poll of one repeater. `stats` is None unless status was answered."""
@@ -3718,7 +3728,33 @@ class PollRecord:
     stats: RepeaterStats | None = None
     neighbours_total: int | None = None
     neighbours: tuple[NeighbourEntry, ...] = ()
+    retries: int | None = None
+    """Requests resent after going unanswered; None for polls recorded before
+    resends were counted (repeater-poll-retries D4)."""
     id: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SeriesRow:
+    """The chartable columns of one poll (repeater-metrics-history D6).
+
+    Status fields are None when the poll returned no status, or when an older
+    firmware did not report that field."""
+
+    started_at: dt.datetime
+    outcome: PollOutcome
+    batt_milli_volts: int | None = None
+    noise_floor: int | None = None
+    last_rssi: int | None = None
+    last_snr_db: float | None = None
+    n_packets_recv: int | None = None
+    n_packets_sent: int | None = None
+    total_air_time_secs: int | None = None
+    total_up_time_secs: int | None = None
+    neighbours_total: int | None = None
+
+
+_SERIES_COLUMNS = tuple(column.name for column in fields(SeriesRow))
 
 
 _STATS_COLUMNS = tuple(name for name in REPEATER_STATS_OFFSETS if name != "last_snr")
@@ -3744,11 +3780,13 @@ class RepeaterCollectionRepository:
         entity_id: uuid.UUID | None,
         interval_minutes: int,
         recent_days: int,
-        retention_days: int,
+        retention_days: int | None,
     ) -> Outcome[CollectionSettings]:
-        """Validate, then store. Raises `CollectionSettingsError` (nothing stored)
-        for a value out of range, enabling without an identity, or an identity
-        serving a room; `UnknownIdentityError` for an identity not stored."""
+        """Validate, then store. `retention_days=None` keeps polls forever.
+
+        Raises `CollectionSettingsError` (nothing stored) for a value out of
+        range, enabling without an identity, or an identity serving a room;
+        `UnknownIdentityError` for an identity not stored."""
         CollectionSettings(
             enabled=enabled,
             entity_id=entity_id,
@@ -3898,6 +3936,59 @@ class RepeaterTargetRepository:
         return await self.database.run("list_repeater_targets", work)
 
 
+class RoutePreferenceError(ValueError):
+    """A preferred first hop refused, with the reason an operator is shown."""
+
+
+class RoutePreferenceRepository:
+    """The station-wide preferred first hop (`route-preference`, design D4).
+
+    Knows keys only; that a key is a repeater's is the caller's to check,
+    against the contact it came from, as for `RepeaterTargetRepository`.
+    """
+
+    def __init__(self, *, database: Database) -> None:
+        self.database = database
+
+    async def get(self) -> Outcome[bytes | None]:
+        """The preferred repeater's public key, or None when none is set."""
+
+        async def work(session: object) -> bytes | None:
+            row = await session.get(RoutePreferenceRow, 1)  # type: ignore[attr-defined]
+            if row is None or row.preferred_first_hop is None:
+                return None
+            return bytes(row.preferred_first_hop)
+
+        return await self.database.run("get_route_preference", work)
+
+    async def save(
+        self, public_key: bytes | None, *, at: dt.datetime | None = None
+    ) -> Outcome[bytes | None]:
+        """Store the preferred first hop, or clear it with None.
+
+        Raises `RoutePreferenceError` (nothing stored) for a key that is not
+        32 bytes."""
+        if public_key is not None and len(public_key) != 32:
+            raise RoutePreferenceError(
+                f"a public key is 32 bytes, {len(public_key)} were given; "
+                "the stored setting is unchanged"
+            )
+        values = {
+            "preferred_first_hop": public_key,
+            "updated_at": ensure_utc(at or dt.datetime.now(dt.UTC), field="updated_at"),
+        }
+
+        async def work(session: object) -> bytes | None:
+            await session.execute(  # type: ignore[attr-defined]
+                insert(RoutePreferenceRow)
+                .values(id=1, **values)
+                .on_conflict_do_update(index_elements=["id"], set_=values)
+            )
+            return public_key
+
+        return await self.database.run("save_route_preference", work)
+
+
 class RepeaterPollRepository:
     def __init__(self, *, database: Database) -> None:
         self.database = database
@@ -3912,6 +4003,7 @@ class RepeaterPollRepository:
             "reason": poll.reason,
             "route": poll.route,
             "neighbours_total": poll.neighbours_total,
+            "retries": poll.retries,
         }
         if poll.stats is not None:
             values.update({name: getattr(poll.stats, name) for name in _STATS_COLUMNS})
@@ -3963,6 +4055,66 @@ class RepeaterPollRepository:
 
         return await self.database.run("latest_repeater_polls", work)
 
+    async def latest_status_for(self, keys: Iterable[bytes]) -> Outcome[dict[bytes, PollRecord]]:
+        """The newest poll that returned a status, per key, without neighbours.
+        One query; a failed newer poll does not hide it."""
+        wanted = list(keys)
+
+        async def work(session: object) -> dict[bytes, PollRecord]:
+            if not wanted:
+                return {}
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(RepeaterPollRow)
+                    .where(
+                        RepeaterPollRow.public_key.in_(wanted),
+                        RepeaterPollRow.batt_milli_volts.is_not(None),
+                    )
+                    .distinct(RepeaterPollRow.public_key)
+                    .order_by(
+                        RepeaterPollRow.public_key,
+                        RepeaterPollRow.started_at.desc(),
+                        RepeaterPollRow.id.desc(),
+                    )
+                )
+            ).scalars()
+            return {bytes(row.public_key): _poll(row) for row in rows}
+
+        return await self.database.run("latest_repeater_statuses", work)
+
+    async def get(self, poll_id: int) -> Outcome[PollRecord | None]:
+        """One poll with its neighbours, or None when missing or pruned."""
+
+        async def work(session: object) -> PollRecord | None:
+            row = await session.get(RepeaterPollRow, poll_id)  # type: ignore[attr-defined]
+            if row is None:
+                return None
+            return _poll(row, await _neighbours_of(session, row.id))
+
+        return await self.database.run("get_repeater_poll", work)
+
+    async def series(
+        self, public_key: bytes, *, since: dt.datetime | None
+    ) -> Outcome[list[SeriesRow]]:
+        """Chartable columns of one repeater's polls, oldest first, started at
+        or after `since`; `since=None` reads everything kept."""
+        bound = None if since is None else ensure_utc(since, field="since")
+
+        async def work(session: object) -> list[SeriesRow]:
+            statement = select(*(getattr(RepeaterPollRow, name) for name in _SERIES_COLUMNS)).where(
+                RepeaterPollRow.public_key == public_key
+            )
+            if bound is not None:
+                statement = statement.where(RepeaterPollRow.started_at >= bound)
+            rows = await session.execute(  # type: ignore[attr-defined]
+                statement.order_by(RepeaterPollRow.started_at, RepeaterPollRow.id)
+            )
+            return [
+                SeriesRow(**{**row._asdict(), "outcome": PollOutcome(row.outcome)}) for row in rows
+            ]
+
+        return await self.database.run("repeater_poll_series", work)
+
     async def latest_with_status(self, public_key: bytes) -> Outcome[PollRecord | None]:
         """The newest poll that returned a status, with its neighbours."""
 
@@ -3980,14 +4132,7 @@ class RepeaterPollRepository:
             ).scalar_one_or_none()
             if row is None:
                 return None
-            neighbours = (
-                await session.execute(  # type: ignore[attr-defined]
-                    select(RepeaterNeighbourRow)
-                    .where(RepeaterNeighbourRow.poll_id == row.id)
-                    .order_by(RepeaterNeighbourRow.id)
-                )
-            ).scalars()
-            return _poll(row, tuple(_neighbour(n) for n in neighbours))
+            return _poll(row, await _neighbours_of(session, row.id))
 
         return await self.database.run("latest_repeater_status", work)
 
@@ -4008,6 +4153,20 @@ class RepeaterPollRepository:
             return [_poll(row) for row in rows]
 
         return await self.database.run("repeater_poll_history", work)
+
+    async def last_answered(self) -> Outcome[dict[bytes, dt.datetime]]:
+        """When each repeater last answered a login: the newest poll whose
+        outcome implies an answered login, per key (repeater-poll-retries D3)."""
+
+        async def work(session: object) -> dict[bytes, dt.datetime]:
+            rows = await session.execute(  # type: ignore[attr-defined]
+                select(RepeaterPollRow.public_key, func.max(RepeaterPollRow.started_at))
+                .where(RepeaterPollRow.outcome.in_([str(o) for o in LOGIN_ANSWERED_OUTCOMES]))
+                .group_by(RepeaterPollRow.public_key)
+            )
+            return {bytes(key): at for key, at in rows}
+
+        return await self.database.run("repeater_last_answered", work)
 
     async def prune_older_than(self, cutoff: dt.datetime) -> Outcome[int]:
         """Delete polls started before `cutoff`; their neighbours go by cascade."""
@@ -4037,8 +4196,20 @@ def _poll(row: RepeaterPollRow, neighbours: tuple[NeighbourEntry, ...] = ()) -> 
         route=row.route,
         stats=stats,
         neighbours_total=row.neighbours_total,
+        retries=row.retries,
         neighbours=neighbours,
     )
+
+
+async def _neighbours_of(session: object, poll_id: int) -> tuple[NeighbourEntry, ...]:
+    rows = (
+        await session.execute(  # type: ignore[attr-defined]
+            select(RepeaterNeighbourRow)
+            .where(RepeaterNeighbourRow.poll_id == poll_id)
+            .order_by(RepeaterNeighbourRow.id)
+        )
+    ).scalars()
+    return tuple(_neighbour(n) for n in rows)
 
 
 def _neighbour(row: RepeaterNeighbourRow) -> NeighbourEntry:

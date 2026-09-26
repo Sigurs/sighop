@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% import "_display.html" as display %}
 {% import "_identity.html" as ident %}
+{% import "_repeater_status.html" as status %}
+{% import "_chart.html" as chart %}
 
 {% block title %}metrics · sighop{% endblock %}
 
@@ -27,18 +29,7 @@
   repeater reported them, since its last restart — not as rates. A field the
   repeater did not return is <strong>not reported</strong>, never zero.
 </p>
-<div class="table-wrap">
-  <table class="counters">
-    <tbody>
-      {% for reading in readings %}
-      <tr>
-        <td>{{ reading.label }}</td>
-        <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+{{ status.readings_table(readings) }}
 
 <h2>neighbours</h2>
 {% if neighbours %}
@@ -47,27 +38,7 @@
   {%- if status_poll.neighbours_total is not none %} ({{ status_poll.neighbours_total }} reported){% endif %}.
   A key prefix is named only when exactly one known contact's key starts with it.
 </p>
-<div class="table-wrap">
-  <table>
-    <thead>
-      <tr><th>neighbour</th><th class="mono">prefix</th><th class="num">snr</th><th>heard before the poll</th></tr>
-    </thead>
-    <tbody>
-      {% for n in neighbours %}
-      <tr>
-        <td>
-          {%- if n.identity -%}{{ ident.identity(n.identity, key=false) }}
-          {%- elif n.ambiguous -%}<span class="route-ambiguous">ambiguous — matches more than one contact</span>
-          {%- else -%}<span class="absent">unknown</span>{%- endif -%}
-        </td>
-        <td class="mono">{{ n.prefix_hex }}</td>
-        <td class="num">{{ '%+.2f'|format(n.snr_db) }}</td>
-        <td class="mono">{{ n.heard_ago }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-</div>
+{{ status.neighbours_table(neighbours) }}
 {% else %}
 <p class="empty">No neighbours were reported by that poll.</p>
 {% endif %}
@@ -77,10 +48,46 @@
 </p>
 {% endif %}
 
+{% if history %}
+<h2 id="trends">trends</h2>
+<nav class="ranges" aria-label="chart range">
+  {% for r in ranges %}
+  {% if r == chosen %}<strong aria-current="page">{{ r.label }}</strong>
+  {% else %}<a href="?range={{ r.key }}#trends">{{ r.label }}</a>{% endif %}
+  {% if not loop.last %} · {% endif %}
+  {% endfor %}
+</nav>
+{% if charts %}
+<p class="note">
+  Each point is a poll that returned a status. Rates are the change in a counter
+  between two such polls over the time between them; a restart leaves a gap.
+  Past {{ max_points }} polls, consecutive ones are averaged — the
+  stated minimum and maximum stay exact.
+  {% if failed_counts %}
+  Marks at the foot are polls that returned no status:
+  {% for label, count in failed_counts %}<span class="chart-legend chart-failure-{{ label|replace(' ', '_') }}">{{ count }} {{ label }}</span>{% if not loop.last %}, {% endif %}{% endfor %}.
+  {% endif %}
+</p>
+<div class="charts">
+  {% for view in charts %}
+  {{ chart.chart(view, range_start, range_end) }}
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">
+  <strong>No status was collected in the {{ chosen.label }}.</strong>
+  {% if wider %}
+  Try {% for r in wider %}<a href="?range={{ r.key }}#trends">{{ r.label }}</a>{% if not loop.last %} or {% endif %}{% endfor %}.
+  {% endif %}
+</p>
+{% endif %}
+{% endif %}
+
 <h2>poll history</h2>
 {% if history %}
 <p class="note">
-  Newest first, within the retention window ({{ settings.retention_days }} days), at
+  Newest first, within the retention window
+  ({% if settings.retention_days is none %}kept forever{% else %}{{ settings.retention_days }} days{% endif %}), at
   most {{ history_cap }} polls. <em>Login unanswered</em> means the repeater did not
   answer a blank-password guest login: it was out of range, or it has a guest
   password set.
@@ -93,7 +100,7 @@
     <tbody>
       {% for poll in history %}
       <tr>
-        <td class="mono">{{ display.when(poll.started_at) }}</td>
+        <td class="mono"><a href="/contacts/{{ contact.public_key.hex() }}/metrics/polls/{{ poll.id }}">{{ display.when(poll.started_at) }}</a></td>
         <td>{{ poll.outcome.label }}</td>
         <td class="mono">{{ poll.route or '—' }}</td>
         <td>{{ poll.reason or '' }}</td>

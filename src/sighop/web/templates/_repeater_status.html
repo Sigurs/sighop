@@ -1,0 +1,42 @@
+{# The status table and neighbour table of one poll, shared by the metrics
+   page and a poll's own page (repeater-metrics-history D9). #}
+{% import "_identity.html" as ident %}
+
+{% macro readings_table(readings) %}
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      {% for reading in readings %}
+      <tr>
+        <td>{{ reading.label }}</td>
+        <td class="mono{% if reading.absent %} absent{% endif %}">{{ reading.text }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}
+
+{% macro neighbours_table(neighbours) %}
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>neighbour</th><th class="mono">prefix</th><th class="num">snr</th><th>heard before the poll</th></tr>
+    </thead>
+    <tbody>
+      {% for n in neighbours %}
+      <tr>
+        <td>
+          {%- if n.identity -%}{{ ident.identity(n.identity, key=false) }}
+          {%- elif n.ambiguous -%}<span class="route-ambiguous">ambiguous — matches more than one contact</span>
+          {%- else -%}<span class="absent">unknown</span>{%- endif -%}
+        </td>
+        <td class="mono">{{ n.prefix_hex }}</td>
+        <td class="num">{{ '%+.2f'|format(n.snr_db) }}</td>
+        <td class="mono">{{ n.heard_ago }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endmacro %}

@@ -23,4 +23,7 @@
 {%- endif %}
 · <a href="/contacts/{{ cell.key_hex }}/metrics">metrics</a>
 {%- endif %}
+{%- if cell.battery %}
+<br><span class="battery-low">low battery — <span class="mono">{{ '%.2f'|format(cell.battery.milli_volts / 1000) }} V</span>, ~{{ cell.battery.percent }}%, <span class="mono">{{ display.when(cell.battery.collected_at) }}</span></span>
+{%- endif %}
 {%- endif -%}

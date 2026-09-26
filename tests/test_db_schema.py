@@ -29,6 +29,7 @@ DM_TABLES = ("direct_message",)
 WEB_TABLES = ("web_user",)
 WEBHOOK_TABLES = ("webhook",)
 REPEATER_TABLES = ("repeater_collection", "repeater_target", "repeater_poll", "repeater_neighbour")
+ROUTE_TABLES = ("route_preference",)
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -56,7 +57,7 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0011"
+    assert migrations.expected_revision() == "0014"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
     assert migrations.knows_revision("0003")
@@ -68,6 +69,9 @@ def test_the_migration_chain_has_one_head_the_code_expects() -> None:
     assert migrations.knows_revision("0009")
     assert migrations.knows_revision("0010")
     assert migrations.knows_revision("0011")
+    assert migrations.knows_revision("0012")
+    assert migrations.knows_revision("0013")
+    assert migrations.knows_revision("0014")
     assert not migrations.knows_revision("beef")
 
 
@@ -115,6 +119,7 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
         assert set(WEB_TABLES) <= present
         assert set(WEBHOOK_TABLES) <= present
         assert set(REPEATER_TABLES) <= present
+        assert set(ROUTE_TABLES) <= present
 
         # Every timestamp column carries a time zone (design D7): the dev server's
         # own TimeZone is Europe/Helsinki, so a naive column would record local
@@ -153,18 +158,19 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
 
 
 async def test_the_repeater_models_match_what_migration_0011_built(database: Database) -> None:
-    """The models and the migration describe the same four tables.
+    """The models and the migrations describe the same tables.
 
-    Scoped to the tables 0011 adds; the older ones predate this check.
+    Scoped to the tables 0011 and 0014 add; the older ones predate this check.
     """
+    compared = REPEATER_TABLES + ROUTE_TABLES
 
     def include(
         obj: object, name: str | None, type_: str, reflected: bool, compare_to: object
     ) -> bool:
         if type_ == "table":
-            return name in REPEATER_TABLES
+            return name in compared
         table = getattr(obj, "table", None)
-        return table is None or table.name in REPEATER_TABLES
+        return table is None or table.name in compared
 
     def diff(connection: Connection) -> list[object]:
         context = MigrationContext.configure(
@@ -192,6 +198,7 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
             | set(DM_TABLES)
             | set(WEB_TABLES)
             | set(REPEATER_TABLES)
+            | set(ROUTE_TABLES)
         )
 
         await migrations.upgrade_async(config)

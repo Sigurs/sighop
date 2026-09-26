@@ -268,7 +268,7 @@ async def _truncate(handle: Database) -> None:
                 "TRUNCATE entity, contact, path, packet_log, room, room_member, "
                 "message, bot, bot_state, direct_message, web_user, webhook, channel, "
                 "channel_message, repeater_collection, repeater_target, repeater_poll, "
-                "repeater_neighbour RESTART IDENTITY CASCADE"
+                "repeater_neighbour, route_preference RESTART IDENTITY CASCADE"
             )
         )
         # Back to what an upgrade leaves: migration `0007` seeds the Public channel.

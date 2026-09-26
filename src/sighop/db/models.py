@@ -672,6 +672,29 @@ class ChannelMessage(Base):
     )
 
 
+class RoutePreferenceRow(Base):
+    """The station-wide preferred first hop (`route-preference`, design D4).
+
+    One row, `id = 1`; its absence, or a NULL key, means none is set. A public
+    key rather than a `contact` foreign key, like `repeater_target`: an advert
+    upsert must never clear it, and an orphan is harmless.
+    """
+
+    __tablename__ = "route_preference"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    preferred_first_hop: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    updated_at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="single_row"),
+        CheckConstraint(
+            "preferred_first_hop IS NULL OR octet_length(preferred_first_hop) = 32",
+            name="preferred_first_hop_length",
+        ),
+    )
+
+
 REPEATER_POLL_OUTCOMES = (
     "succeeded",
     "not_sent",
@@ -705,7 +728,8 @@ class RepeaterCollectionRow(Base):
     )
     interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
     recent_days: Mapped[int] = mapped_column(Integer, nullable=False)
-    retention_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """Days polls are kept, or NULL to keep them forever."""
     last_cycle_started_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     last_cycle_finished_at: Mapped[dt.datetime | None] = mapped_column(TIMESTAMPTZ, nullable=True)
     last_cycle_polled: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -718,7 +742,9 @@ class RepeaterCollectionRow(Base):
         CheckConstraint("id = 1", name="single_row"),
         CheckConstraint("interval_minutes BETWEEN 5 AND 1440", name="interval_minutes"),
         CheckConstraint("recent_days BETWEEN 1 AND 365", name="recent_days"),
-        CheckConstraint("retention_days BETWEEN 1 AND 365", name="retention_days"),
+        CheckConstraint(
+            "retention_days IS NULL OR retention_days BETWEEN 1 AND 365", name="retention_days"
+        ),
     )
 
 
@@ -772,6 +798,8 @@ class RepeaterPollRow(Base):
     total_rx_air_time_secs: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     n_recv_errors: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     neighbours_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retries: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    """Requests resent after going unanswered; NULL before resends were counted."""
 
     __table_args__ = (
         Index("ix_repeater_poll_public_key_started_at", "public_key", "started_at"),

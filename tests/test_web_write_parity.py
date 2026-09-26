@@ -1909,6 +1909,8 @@ async def _populated(database: Database):
             # repeater-metrics: the contact table's collection routes.
             "key_hex": identity_record.public_key.hex(),
             "peer_key": identity_record.public_key.hex(),
+            # repeater-metrics-history: one poll's page (not found here, still a page).
+            "poll_id": "1",
             # web-advert-now's confirmation views: the flood one, the costlier.
             "kind": "flood",
         },

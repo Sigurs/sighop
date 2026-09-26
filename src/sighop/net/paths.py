@@ -38,11 +38,13 @@ from enum import StrEnum
 from typing import Protocol
 
 from sighop.net.rx import AdvertOutcome, Payload, RxRecord
-from sighop.protocol.packet import RouteType
+from sighop.protocol.packet import MAX_PATH_SIZE, RouteType
 from sighop.protocol.payloads import AnonRequestEnvelope
 
 DEFAULT_MAX_DESTINATIONS = 1024
 DEFAULT_MAX_CANDIDATES_PER_DESTINATION = 4
+MAX_HOP_COUNT = 63
+"""The six bits of `path_length` that count hops (packet_format.md)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +134,59 @@ class LearnedPath:
         }
 
 
+class RouteRewrite(StrEnum):
+    """What the preferred first hop did to a route (`route-preference`).
+
+    `PREFERRED` is a learned candidate that already started with the preferred
+    repeater and was used as learned; only `PREPENDED` and `SHORTENED` change
+    the bytes that are sent.
+    """
+
+    NONE = "none"
+    PREFERRED = "preferred"
+    PREPENDED = "prepended"
+    SHORTENED = "shortened"
+
+    @property
+    def rewritten(self) -> bool:
+        return self in (RouteRewrite.PREPENDED, RouteRewrite.SHORTENED)
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedPath:
+    """The route a send will actually use, and the candidate it came from."""
+
+    path: bytes
+    hash_size: int
+    hop_count: int
+    rewrite: RouteRewrite
+    learned: LearnedPath
+
+    @property
+    def snr_db(self) -> float | None:
+        return self.learned.snr_db
+
+    @property
+    def confirmed_at(self) -> dt.datetime:
+        return self.learned.confirmed_at
+
+    @classmethod
+    def as_learned(
+        cls, learned: LearnedPath, rewrite: RouteRewrite = RouteRewrite.NONE
+    ) -> ResolvedPath:
+        return cls(
+            path=learned.path,
+            hash_size=learned.hash_size,
+            hop_count=learned.hop_count,
+            rewrite=rewrite,
+            learned=learned,
+        )
+
+
+def _hops(path: bytes, hash_size: int) -> list[bytes]:
+    return [path[i : i + hash_size] for i in range(0, len(path), hash_size)]
+
+
 def reverse_path(path: bytes, hash_size: int) -> bytes:
     """Reverse a path hop-wise, keeping each hop's bytes in order.
 
@@ -142,8 +197,7 @@ def reverse_path(path: bytes, hash_size: int) -> bytes:
         raise ValueError(f"hash_size must be positive, got {hash_size}")
     if len(path) % hash_size:
         raise ValueError(f"path of {len(path)} bytes is not whole hops of {hash_size}")
-    hops = [path[i : i + hash_size] for i in range(0, len(path), hash_size)]
-    return b"".join(reversed(hops))
+    return b"".join(reversed(_hops(path, hash_size)))
 
 
 def sender_key(record: RxRecord) -> PathKey | None:
@@ -194,6 +248,20 @@ class PathStore:
         self._learned = 0
         self._evictions = 0
         self.restored = 0
+        self._preferred_first_hop: bytes | None = None
+        self.prepend_overflow = 0
+        """Sends left unrewritten because prepending would exceed the path limits."""
+
+    @property
+    def preferred_first_hop(self) -> bytes | None:
+        """The repeater every DIRECT send leaves through first, by public key."""
+        return self._preferred_first_hop
+
+    @preferred_first_hop.setter
+    def preferred_first_hop(self, public_key: bytes | None) -> None:
+        if public_key is not None and len(public_key) != 32:
+            raise ValueError(f"a public key is 32 bytes, got {len(public_key)}")
+        self._preferred_first_hop = None if public_key is None else bytes(public_key)
 
     def observe(self, record: RxRecord) -> tuple[PathKey, LearnedPath] | None:
         """Learn from a reception. Returns what was learned, or None.
@@ -293,6 +361,63 @@ class PathStore:
             return None
         return max(candidates, key=lambda candidate: candidate.confirmed_at)
 
+    def resolve(self, key: PathKey, *, count: bool = True) -> ResolvedPath | None:
+        """The route a DIRECT send to `key` uses, after the preferred first hop.
+
+        With no preference this is `lookup` unchanged. Otherwise (design D2): a
+        destination that *is* the preferred repeater is sent to as learned; a
+        candidate already starting with it wins over newer ones; else the newest
+        candidate is shortened to start at the preferred repeater when it passes
+        through it, or has it prepended. Hops are compared at each candidate's
+        own width, never as a byte search across hop boundaries.
+
+        `count` is false for callers that only display the route, so rendering
+        the contact table does not inflate `prepend_overflow`.
+        """
+        newest = self.lookup(key)
+        preferred = self._preferred_first_hop
+        if newest is None or preferred is None:
+            return None if newest is None else ResolvedPath.as_learned(newest)
+        if key.public_key == preferred or (
+            key.public_key is None and key.node_hash == preferred[0]
+        ):
+            return ResolvedPath.as_learned(newest)
+
+        through = [
+            candidate
+            for candidate in self._paths.get((key.public_key, key.node_hash), [])
+            if candidate.hop_count > 0
+            and candidate.path[: candidate.hash_size] == preferred[: candidate.hash_size]
+        ]
+        if through:
+            best = max(through, key=lambda candidate: candidate.confirmed_at)
+            return ResolvedPath.as_learned(best, RouteRewrite.PREFERRED)
+
+        width = newest.hash_size
+        hop = preferred[:width]
+        hops = _hops(newest.path, width)
+        if hop in hops:
+            position = hops.index(hop)
+            return ResolvedPath(
+                path=b"".join(hops[position:]),
+                hash_size=width,
+                hop_count=newest.hop_count - position,
+                rewrite=RouteRewrite.SHORTENED,
+                learned=newest,
+            )
+        path = hop + newest.path
+        if len(path) > MAX_PATH_SIZE or newest.hop_count + 1 > MAX_HOP_COUNT:
+            if count:
+                self.prepend_overflow += 1
+            return ResolvedPath.as_learned(newest)
+        return ResolvedPath(
+            path=path,
+            hash_size=width,
+            hop_count=newest.hop_count + 1,
+            rewrite=RouteRewrite.PREPENDED,
+            learned=newest,
+        )
+
     def lookup_public_key(self, public_key: bytes) -> LearnedPath | None:
         return self.lookup(PathKey.for_public_key(public_key))
 
@@ -319,4 +444,26 @@ class PathStore:
             "evictions": self._evictions,
             "restored": self.restored,
             "ambiguous_destinations": sum(1 for key in self._keys.values() if key.ambiguous),
+            "preferred_first_hop": (
+                None if self._preferred_first_hop is None else self._preferred_first_hop.hex()
+            ),
+            "prepend_overflow": self.prepend_overflow,
         }
+
+
+def resolve_for_contact(
+    paths: PathStore, public_key: bytes, node_hash: int, *, count: bool = True
+) -> tuple[ResolvedPath, bool] | None:
+    """The route to a peer and whether it is ambiguous, or None for no route.
+
+    Public key first; node hash second, when that is all there is, and marked
+    ambiguous — one byte of identity (§3). Every sender and the contact table
+    call this, so none can choose a route another would not.
+    """
+    resolved = paths.resolve(PathKey.for_public_key(public_key), count=count)
+    if resolved is not None:
+        return resolved, False
+    resolved = paths.resolve(PathKey.for_node_hash(node_hash), count=count)
+    if resolved is not None:
+        return resolved, True
+    return None

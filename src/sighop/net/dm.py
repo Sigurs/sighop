@@ -58,7 +58,7 @@ from sighop.net.acks import AckMatch, AckRegistry, AckUnowned
 from sighop.net.airtime import NoRadioReadback, require_params, time_on_air_ms
 from sighop.net.bus import NetworkBus, PriorityClass, Submission, Subscription, TxHandle
 from sighop.net.contacts import Contact, ContactStore
-from sighop.net.paths import PathStore
+from sighop.net.paths import PathStore, RouteRewrite, resolve_for_contact
 from sighop.net.readback import wait_for_readback
 from sighop.net.rx import Payload, RxRecord
 from sighop.net.tx import Clock, SystemClock
@@ -150,7 +150,8 @@ class Route:
     route and the most useful one there is, not the absence of one. `ambiguous`
     is true when the route was found by node hash rather than by public key,
     which is one byte of identity and travels with the route so the output can
-    say so.
+    say so. `rewrite` says what the preferred first hop did to the learned route,
+    so a route that was prepended or shortened is never reported as learned.
     """
 
     flood: bool
@@ -158,6 +159,7 @@ class Route:
     hash_size: int = 1
     hop_count: int = 0
     ambiguous: bool = False
+    rewrite: RouteRewrite = RouteRewrite.NONE
 
     @property
     def route_type(self) -> RouteType:
@@ -168,7 +170,8 @@ class Route:
         if self.flood:
             return "FLOOD"
         suffix = "?" if self.ambiguous else ""
-        return f"DIRECT h{self.hop_count}{suffix}"
+        via = " via-pref" if self.rewrite.rewritten else ""
+        return f"DIRECT h{self.hop_count}{suffix}{via}"
 
 
 def choose_route(
@@ -183,13 +186,11 @@ def choose_route(
 
     `path_hash_size` is the width of a flood we originate; a learned route keeps
     the width it was learned at, because its path bytes are fixed at that width.
+    The learned route passes through the preferred first hop, when one is set
+    (`route-preference`); a flood never does.
     """
-    learned = paths.lookup_public_key(contact.public_key)
-    ambiguous = False
-    if learned is None:
-        learned = paths.lookup_node_hash(contact.node_hash)
-        ambiguous = learned is not None
-    if learned is None:
+    found = resolve_for_contact(paths, contact.public_key, contact.node_hash)
+    if found is None:
         if not allow_flood:
             raise NoRouteError(
                 f"no route is known to {contact.display_name} "
@@ -197,12 +198,14 @@ def choose_route(
                 "and a flood is repeated by every repeater in the mesh"
             )
         return Route(flood=True, hash_size=path_hash_size)
+    resolved, ambiguous = found
     return Route(
         flood=False,
-        path=learned.path,
-        hash_size=learned.hash_size,
-        hop_count=learned.hop_count,
+        path=resolved.path,
+        hash_size=resolved.hash_size,
+        hop_count=resolved.hop_count,
         ambiguous=ambiguous,
+        rewrite=resolved.rewrite,
     )
 
 
@@ -913,6 +916,7 @@ class DirectMessenger:
                     message_id=pending.message_id,
                     send_attempt=attempt,
                     route=route.label,
+                    route_rewrite=str(route.rewrite),
                     expected_ack=expected.hex(),
                     ack_timeout_ms=round(timeout, 1),
                     **outcome.as_json(),
@@ -1200,6 +1204,12 @@ class DirectMessenger:
                 packet_id=record.packet_id,
                 origin="ack",
             )
+        )
+        self._log.info(
+            "ack_queued",
+            packet_id=record.packet_id,
+            route=route.label,
+            route_rewrite=str(route.rewrite),
         )
         return True
 

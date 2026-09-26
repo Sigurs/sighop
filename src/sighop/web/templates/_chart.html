@@ -1,0 +1,37 @@
+{# One metrics chart as inline SVG (repeater-metrics-history D7). No script and
+   nothing loaded from elsewhere: the geometry is computed by `web.charts`, the
+   colours are panel.css variables. The plot stretches to the column width;
+   strokes keep their width because they do not scale with it. #}
+{% import "_display.html" as display %}
+
+{% macro chart(view, start, end) %}
+<figure class="chart">
+  <figcaption>
+    <strong>{{ view.title }}</strong>
+    {% if view.empty %}
+    <span class="absent">not reported in this range</span>
+    {% else %}
+    <span class="mono chart-stats">latest {{ view.latest }} · min {{ view.minimum }} · max {{ view.maximum }}</span>
+    {% endif %}
+  </figcaption>
+  <div class="chart-body">
+    <div class="chart-y mono" aria-hidden="true">
+      <span>{{ view.maximum or '' }}</span>
+      <span>{{ view.minimum or '' }}</span>
+    </div>
+    <svg class="chart-plot" viewBox="0 0 {{ view.width }} {{ view.height }}" preserveAspectRatio="none" role="img">
+      <title>{{ view.title }}{% if not view.empty %}: latest {{ view.latest }}, minimum {{ view.minimum }}, maximum {{ view.maximum }}{% endif %}</title>
+      {% for line in view.lines %}
+      <polyline class="chart-line" points="{{ line }}"/>
+      {% endfor %}
+      {% for mark in view.failures %}
+      <line class="chart-failure chart-failure-{{ mark.outcome.value }}" x1="{{ mark.x }}" x2="{{ mark.x }}" y1="{{ view.foot }}" y2="{{ view.height }}"><title>{{ mark.outcome.label }}, {{ mark.at|utc_short }}</title></line>
+      {% endfor %}
+    </svg>
+  </div>
+  <div class="chart-x mono">
+    <span>{{ display.when(start) }}</span>
+    <span>{{ display.when(end) }}</span>
+  </div>
+</figure>
+{% endmacro %}

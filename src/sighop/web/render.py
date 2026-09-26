@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING
 
 from sighop.net.adverts import EntityStub
 from sighop.net.contacts import Contact, ContactStore
-from sighop.net.paths import PathStore
+from sighop.net.paths import PathStore, resolve_for_contact
 from sighop.net.tx import DEFAULT_CEILING_FRACTION, SchedulerStatus
 from sighop.web.feed import EntityTraffic, FeedHub
 from sighop.web.state import PanelState
@@ -544,6 +544,9 @@ class RouteView:
     can have — and is not the same as no route at all. `net/paths.py` already
     draws that distinction by returning `None` for the second; drawing it in
     the table is the display's half of the same rule.
+
+    `rewritten` marks a route the preferred first hop prepended or shortened:
+    the path shown is the one a send will use, not the one learned.
     """
 
     path: str
@@ -551,6 +554,7 @@ class RouteView:
     snr_db: float | None
     confirmed_at: dt.datetime
     ambiguous: bool
+    rewritten: bool = False
 
     @property
     def zero_hop(self) -> bool:
@@ -560,7 +564,8 @@ class RouteView:
     def text(self) -> str:
         if self.zero_hop:
             return "direct, zero hops"
-        return f"{plural(self.hop_count, 'hop')} via {self.path}"
+        text = f"{plural(self.hop_count, 'hop')} via {self.path}"
+        return f"{text}, through the preferred first hop" if self.rewritten else text
 
     @property
     def status(self) -> Status:
@@ -635,23 +640,22 @@ def _node_type(contact: Contact) -> str:
 def _route_for(contact: Contact, paths: PathStore) -> RouteView | None:
     """The route the send path would actually choose, marked as it marks it.
 
-    Deliberately the same order of preference `choose_route` uses — public key
-    first, node hash second and ambiguous — so the table shows the route a
-    message would take rather than a different one that also exists.
+    The same resolution `choose_route` uses — public key first, node hash
+    second and ambiguous, then the preferred first hop — so the table shows the
+    route a message would take rather than a different one that also exists.
+    Display only, so it does not count path-limit fallbacks.
     """
-    learned = paths.lookup_public_key(contact.public_key)
-    ambiguous = False
-    if learned is None:
-        learned = paths.lookup_node_hash(contact.node_hash)
-        ambiguous = learned is not None
-    if learned is None:
+    found = resolve_for_contact(paths, contact.public_key, contact.node_hash, count=False)
+    if found is None:
         return None
+    resolved, ambiguous = found
     return RouteView(
-        path=learned.path.hex(),
-        hop_count=learned.hop_count,
-        snr_db=learned.snr_db,
-        confirmed_at=learned.confirmed_at,
+        path=resolved.path.hex(),
+        hop_count=resolved.hop_count,
+        snr_db=resolved.snr_db,
+        confirmed_at=resolved.confirmed_at,
         ambiguous=ambiguous,
+        rewritten=resolved.rewrite.rewritten,
     )
 
 

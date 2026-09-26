@@ -731,3 +731,52 @@ async def test_a_revoked_member_is_unknown_and_returns_only_by_logging_in() -> N
 async def test_revoking_somebody_who_is_not_a_member_says_so() -> None:
     server = server_for(Entity("lounge"))
     assert await server.revoke(b"\x00" * 32) is False
+
+
+# --- The preferred first hop (`route-preference`) ----------------------------
+
+PREFERRED = bytes.fromhex("ee") + bytes(31)
+
+
+async def test_a_reply_to_a_zero_hop_member_goes_through_the_preferred_repeater() -> None:
+    from sighop.protocol.packet import decode as decode_packet
+
+    lounge, client = Entity("lounge"), Entity("client")
+    paths = PathStore()
+    zero_hop_route_to(paths, client.identity.public_key, at=START)
+    paths.preferred_first_hop = PREFERRED
+    submit = RecordingSubmit()
+    server = server_for(lounge, submit=submit, paths=paths)
+
+    await server.handle(
+        _packet_for(login_packet(client=client, server=lounge, route_type=RouteType.DIRECT))
+    )
+
+    decoded = decode_packet(submit.submissions[0].packet)
+    assert decoded.route_type is RouteType.DIRECT
+    assert (decoded.hop_count, decoded.path) == (1, b"\xee")
+
+
+async def test_a_path_return_still_echoes_the_inbound_path_with_a_preference_set() -> None:
+    from sighop.protocol.packet import decode as decode_packet
+
+    lounge, client = Entity("lounge"), Entity("client")
+    paths = PathStore()
+    zero_hop_route_to(paths, client.identity.public_key, at=START)
+    paths.preferred_first_hop = PREFERRED
+    submit = RecordingSubmit()
+    server = server_for(lounge, submit=submit, paths=paths)
+
+    await server.handle(
+        _packet_for(
+            login_packet(client=client, server=lounge, route_type=RouteType.FLOOD, path=b"\xab\xcd")
+        )
+    )
+
+    packet = submit.submissions[0].packet
+    decoded = decode_packet(packet)
+    assert decoded.route_type is RouteType.FLOOD
+    assert (decoded.hop_count, decoded.path) == (0, b"")
+    _, plaintext = _decrypt_reply(server, client, packet)
+    body = parse_returned_path_body(plaintext)
+    assert body.path == b"\xab\xcd", "the route the request took, not rewritten"

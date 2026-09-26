@@ -18,6 +18,8 @@ from sighop.net.paths import (
     LearnedPath,
     PathKey,
     PathStore,
+    RouteRewrite,
+    resolve_for_contact,
     reverse_path,
     sender_key,
 )
@@ -382,3 +384,157 @@ def test_the_whole_corpus_learns_without_error(corpus_records) -> None:
     summary = store.as_json()
     assert summary["destinations"] == store.destination_count
     assert cast(int, summary["ambiguous_destinations"]) <= summary["destinations"]
+
+
+# --- The preferred first hop (`route-preference`) ----------------------------
+
+PREFERRED = bytes.fromhex("abcdef") + bytes(29)
+PEER = bytes.fromhex("5566") + bytes(30)
+_T0 = dt.datetime(2026, 9, 1, tzinfo=dt.UTC)
+
+
+def _learned(path: str, hash_size: int, *, minutes: int = 0) -> LearnedPath:
+    raw = bytes.fromhex(path)
+    return LearnedPath(
+        path=raw,
+        hash_size=hash_size,
+        hop_count=len(raw) // hash_size,
+        snr_db=5.0,
+        confirmed_at=_T0 + dt.timedelta(minutes=minutes),
+        packet_id=f"p{minutes}",
+    )
+
+
+def _store(*candidates: LearnedPath, key: PathKey | None = None) -> PathStore:
+    store = PathStore()
+    store.restore((key or PathKey.for_public_key(PEER), c) for c in candidates)
+    store.preferred_first_hop = PREFERRED
+    return store
+
+
+def test_the_preferred_first_hop_is_set_cleared_and_reported() -> None:
+    store = PathStore()
+    assert store.preferred_first_hop is None
+    assert store.as_json()["prepend_overflow"] == 0
+    store.preferred_first_hop = PREFERRED
+    assert store.preferred_first_hop == PREFERRED
+    assert store.as_json()["preferred_first_hop"] == PREFERRED.hex()
+    store.preferred_first_hop = None
+    assert store.preferred_first_hop is None
+
+
+def test_a_preferred_first_hop_that_is_not_a_public_key_is_refused() -> None:
+    with pytest.raises(ValueError, match="32 bytes"):
+        PathStore().preferred_first_hop = b"\xab"
+
+
+def test_with_no_preference_resolution_is_lookup() -> None:
+    store = _store(_learned("1122", 1))
+    store.preferred_first_hop = None
+    resolved = store.resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.NONE
+    assert resolved.learned == store.lookup_public_key(PEER)
+    assert (resolved.path, resolved.hop_count) == (b"\x11\x22", 2)
+
+
+@pytest.mark.parametrize(("width", "expected"), [(1, "ab"), (2, "abcd"), (3, "abcdef")])
+def test_a_zero_hop_route_is_prepended_at_its_own_width(width: int, expected: str) -> None:
+    store = _store(_learned("", width))
+    resolved = store.resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.PREPENDED
+    assert (resolved.path.hex(), resolved.hop_count, resolved.hash_size) == (expected, 1, width)
+
+
+def test_a_route_through_other_repeaters_is_prepended() -> None:
+    resolved = _store(_learned("1122", 1)).resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert (resolved.path.hex(), resolved.hop_count) == ("ab1122", 3)
+
+
+def test_an_older_candidate_through_the_preferred_repeater_wins() -> None:
+    store = _store(_learned("ab", 1, minutes=0), _learned("", 1, minutes=59))
+    resolved = store.resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.PREFERRED
+    assert (resolved.path.hex(), resolved.hop_count) == ("ab", 1)
+    # Learning is untouched: lookup still means most recently confirmed.
+    assert store.lookup_public_key(PEER) == _learned("", 1, minutes=59)
+    assert len(store.candidates(PathKey.for_public_key(PEER))) == 2
+
+
+def test_a_multi_byte_candidate_counts_as_through_the_preferred_repeater() -> None:
+    store = _store(_learned("abcd1122", 2, minutes=0), _learned("", 2, minutes=5))
+    resolved = store.resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.PREFERRED
+    assert resolved.path.hex() == "abcd1122"
+
+
+def test_a_route_through_the_preferred_repeater_further_along_is_shortened() -> None:
+    resolved = _store(_learned("11ab22", 1)).resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.SHORTENED
+    assert (resolved.path.hex(), resolved.hop_count) == ("ab22", 2)
+
+
+def test_hops_are_compared_at_their_width_not_as_bytes() -> None:
+    """`11ab cd22` at width 2 holds the bytes `ab cd` but no hop `abcd`."""
+    resolved = _store(_learned("11abcd22", 2)).resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.PREPENDED
+    assert resolved.path.hex() == "abcd11abcd22"
+
+
+def test_the_preferred_repeater_itself_is_sent_to_as_learned() -> None:
+    store = _store(_learned("", 1), key=PathKey.for_public_key(PREFERRED))
+    resolved = store.resolve(PathKey.for_public_key(PREFERRED))
+    assert resolved is not None
+    assert (resolved.rewrite, resolved.path, resolved.hop_count) == (RouteRewrite.NONE, b"", 0)
+
+
+def test_a_hash_keyed_route_to_the_preferred_hash_is_not_rewritten() -> None:
+    key = PathKey.for_node_hash(PREFERRED[0])
+    resolved = _store(_learned("", 1), key=key).resolve(key)
+    assert resolved is not None
+    assert resolved.rewrite is RouteRewrite.NONE
+
+
+def test_a_route_at_the_path_limit_is_sent_unchanged_and_counted() -> None:
+    long = "".join(f"{i:02x}0000" for i in range(1, 22))
+    store = _store(_learned(long, 3))
+    resolved = store.resolve(PathKey.for_public_key(PEER))
+    assert resolved is not None
+    assert (resolved.rewrite, resolved.hop_count, resolved.path.hex()) == (
+        RouteRewrite.NONE,
+        21,
+        long,
+    )
+    assert store.prepend_overflow == 1
+    assert store.as_json()["prepend_overflow"] == 1
+    store.resolve(PathKey.for_public_key(PEER), count=False)
+    assert store.prepend_overflow == 1
+
+
+def test_an_unknown_destination_still_resolves_to_nothing() -> None:
+    assert _store().resolve(PathKey.for_public_key(PEER)) is None
+
+
+def test_resolving_for_a_contact_prefers_the_public_key() -> None:
+    store = _store(_learned("", 1, minutes=1))
+    store.restore([(PathKey.for_node_hash(PEER[0]), _learned("77", 1, minutes=9))])
+    resolved = resolve_for_contact(store, PEER, PEER[0])
+    assert resolved is not None
+    route, ambiguous = resolved
+    assert (route.path.hex(), ambiguous) == ("ab", False)
+
+
+def test_an_ambiguous_route_stays_ambiguous_after_prepending() -> None:
+    store = _store(_learned("", 1), key=PathKey.for_node_hash(PEER[0]))
+    resolved = resolve_for_contact(store, PEER, PEER[0])
+    assert resolved is not None
+    route, ambiguous = resolved
+    assert ambiguous
+    assert (route.rewrite, route.path.hex()) == (RouteRewrite.PREPENDED, "ab")
+    assert resolve_for_contact(store, bytes(32), 0x99) is None

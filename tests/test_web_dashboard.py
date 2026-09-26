@@ -760,3 +760,319 @@ async def test_the_metrics_page_of_a_non_repeater_is_not_found(fresh_persistence
         response = await client.get(f"/contacts/{companion.public_key.hex()}/metrics")
 
     assert response.status_code == 404
+
+
+# --- repeater-metrics-history 2.3 / 2.4: battery ----------------------------
+
+
+async def _status_poll(persistence, key: bytes, at: dt.datetime, **stats: object) -> int:
+    from sighop.db.repositories import PollOutcome, PollRecord
+
+    recorded = await persistence.repeater_polls.record(
+        PollRecord(
+            public_key=key,
+            started_at=at,
+            outcome=PollOutcome.SUCCEEDED,
+            route="FLOOD",
+            stats=_stats(**stats),
+            neighbours_total=0,
+        )
+    )
+    return recorded.value
+
+
+async def _failed_poll(persistence, key: bytes, at: dt.datetime) -> int:
+    from sighop.db.repositories import PollOutcome, PollRecord
+
+    recorded = await persistence.repeater_polls.record(
+        PollRecord(
+            public_key=key, started_at=at, outcome=PollOutcome.LOGIN_UNANSWERED, route="FLOOD"
+        )
+    )
+    return recorded.value
+
+
+async def test_a_repeater_low_on_battery_is_marked_and_a_mains_one_is_not(
+    fresh_persistence,
+) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    low = _repeater("solar")
+    mains = _repeater("mains")
+    state.contacts.restore([low, mains])
+    await fresh_persistence.repeater_targets.select(mains.public_key, at=NOW)
+    await _status_poll(fresh_persistence, low.public_key, NOW, batt_milli_volts=3600)
+    await _status_poll(fresh_persistence, mains.public_key, NOW, batt_milli_volts=0)
+
+    async with _collect_client(state) as client:
+        body = (await client.get("/contacts")).text
+
+    assert body.count("low battery") == 1, "the deselected low one only"
+    mark = body[body.index("low battery") :][:300]
+    assert "3.60 V" in mark and "~25%" in mark and "2026-09-06 12:00 UTC" in mark
+    mains_cell = body[body.index(f"/contacts/{mains.public_key.hex()}/collect") :][:600]
+    assert "low battery" not in mains_cell
+
+
+async def test_a_failed_poll_after_a_low_reading_keeps_the_mark(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("solar")
+    state.contacts.restore([repeater])
+    await fresh_persistence.repeater_targets.select(repeater.public_key, at=NOW)
+    earlier = NOW - dt.timedelta(hours=1)
+    await _status_poll(fresh_persistence, repeater.public_key, earlier, batt_milli_volts=3660)
+    await _failed_poll(fresh_persistence, repeater.public_key, NOW)
+
+    async with _collect_client(state) as client:
+        body = (await client.get("/contacts")).text
+        ticked = await client.post(
+            f"/contacts/{repeater.public_key.hex()}/collect", data={"collect": "true"}
+        )
+
+    assert "login unanswered" in body
+    mark = body[body.index("low battery") :][:300]
+    assert "3.66 V" in mark and "2026-09-06 11:00 UTC" in mark
+    assert "low battery" in ticked.text, "the htmx re-render keeps it"
+
+
+async def test_a_companion_row_carries_no_battery_mark(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    companion = dataclasses.replace(_contact("friend"), node_type=NodeType.CHAT)
+    state.contacts.restore([companion])
+    await _status_poll(fresh_persistence, companion.public_key, NOW, batt_milli_volts=3500)
+
+    async with _collect_client(state) as client:
+        body = (await client.get("/contacts")).text
+
+    assert "low battery" not in body
+
+
+async def test_the_metrics_page_shows_the_battery_estimate(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("solar")
+    mains = _repeater("mains")
+    state.contacts.restore([repeater, mains])
+    await _status_poll(fresh_persistence, repeater.public_key, NOW, batt_milli_volts=3950)
+    await _status_poll(fresh_persistence, mains.public_key, NOW, batt_milli_volts=0)
+
+    async with _collect_client(state) as client:
+        body = (await client.get(f"/contacts/{repeater.public_key.hex()}/metrics")).text
+        unsensed = (await client.get(f"/contacts/{mains.public_key.hex()}/metrics")).text
+
+    row = body[body.index("<td>battery</td>") :][:120]
+    assert "3.950 V" in row and re.search(r"~\d+%", row)
+    assert "0.000 V · no battery sensed" in unsensed
+
+
+# --- repeater-metrics-history 3.2: one poll ---------------------------------
+
+
+async def test_an_earlier_poll_shows_its_own_status_and_neighbours(fresh_persistence) -> None:
+    from sighop.db.repositories import PollOutcome, PollRecord
+    from sighop.protocol.payloads import NeighbourEntry
+
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    valley = _repeater("valley")
+    ridge = _repeater("ridge")
+    state.contacts.restore([repeater, valley, ridge])
+    stored = await fresh_persistence.entities.store(
+        name="collector-id",
+        identity=generate_identity(),
+        secret=b"\x01" * 32,
+        node_type=NodeType.CHAT,
+    )
+    old = await fresh_persistence.repeater_polls.record(
+        PollRecord(
+            public_key=repeater.public_key,
+            entity_id=stored.value.id,
+            started_at=NOW - dt.timedelta(days=3),
+            outcome=PollOutcome.SUCCEEDED,
+            route="DIRECT h1",
+            stats=_stats(n_packets_recv=111),
+            neighbours_total=1,
+            neighbours=(NeighbourEntry(prefix=valley.public_key[:6], heard_seconds_ago=9, snr=8),),
+        )
+    )
+    await fresh_persistence.repeater_polls.record(
+        PollRecord(
+            public_key=repeater.public_key,
+            started_at=NOW,
+            outcome=PollOutcome.SUCCEEDED,
+            route="FLOOD",
+            stats=_stats(n_packets_recv=999),
+            neighbours_total=1,
+            neighbours=(NeighbourEntry(prefix=ridge.public_key[:6], heard_seconds_ago=9, snr=8),),
+        )
+    )
+    key = repeater.public_key.hex()
+
+    async with _collect_client(state) as client:
+        metrics = (await client.get(f"/contacts/{key}/metrics")).text
+        response = await client.get(f"/contacts/{key}/metrics/polls/{old.value}")
+
+    assert f'href="/contacts/{key}/metrics/polls/{old.value}"' in metrics
+    body = response.text
+    assert response.status_code == 200
+    assert "2026-09-03 12:00 UTC" in body and "DIRECT h1" in body and "collector-id" in body
+    received = body[body.index("<td>packets received</td>") :][:120]
+    assert ">111<" in received
+    assert "valley" in body and "ridge" not in body
+
+
+async def test_a_failed_poll_page_states_it_returned_no_status(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    state.contacts.restore([repeater])
+    poll_id = await _failed_poll(fresh_persistence, repeater.public_key, NOW)
+
+    async with _collect_client(state) as client:
+        response = await client.get(
+            f"/contacts/{repeater.public_key.hex()}/metrics/polls/{poll_id}"
+        )
+
+    assert response.status_code == 200
+    assert "login unanswered" in response.text and "FLOOD" in response.text
+    assert "returned no status" in response.text
+
+
+async def test_a_poll_under_another_key_or_unknown_is_not_found(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    other = _repeater("valley")
+    state.contacts.restore([repeater, other])
+    poll_id = await _status_poll(fresh_persistence, repeater.public_key, NOW)
+
+    async with _collect_client(state) as client:
+        wrong = await client.get(f"/contacts/{other.public_key.hex()}/metrics/polls/{poll_id}")
+        missing = await client.get(
+            f"/contacts/{repeater.public_key.hex()}/metrics/polls/{poll_id + 1000}"
+        )
+        junk = await client.get(f"/contacts/{repeater.public_key.hex()}/metrics/polls/abc")
+
+    assert (wrong.status_code, missing.status_code, junk.status_code) == (404, 404, 404)
+    assert "poll not found" in wrong.text
+
+
+# --- repeater-metrics-history 4.4 / 4.5: charts -----------------------------
+
+
+def _trends(body: str) -> str:
+    return body[body.index('id="trends"') : body.index("<h2>poll history</h2>")]
+
+
+async def _two_weeks(persistence, key: bytes, now: dt.datetime) -> dt.datetime:
+    """Six-hourly polls for 14 days: 4.100 V before the last week, 3.900 V in it."""
+    oldest = now - dt.timedelta(days=14)
+    for i in range(14 * 4):
+        at = oldest + dt.timedelta(hours=6 * i)
+        recent = at > now - dt.timedelta(days=7)
+        await _status_poll(
+            persistence,
+            key,
+            at,
+            batt_milli_volts=3900 if recent else 4100,
+            n_packets_recv=1000 + 60 * i,
+            total_up_time_secs=100_000 + 21_600 * i,
+        )
+    return oldest
+
+
+async def test_the_charts_default_to_the_last_seven_days(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    state.contacts.restore([repeater])
+    now = dt.datetime.now(dt.UTC)
+    await _two_weeks(fresh_persistence, repeater.public_key, now)
+    await _failed_poll(fresh_persistence, repeater.public_key, now - dt.timedelta(hours=1))
+    key = repeater.public_key.hex()
+
+    async with _collect_client(state) as client:
+        default = _trends((await client.get(f"/contacts/{key}/metrics")).text)
+        junk = _trends((await client.get(f"/contacts/{key}/metrics?range=fortnight")).text)
+
+    assert '<strong aria-current="page">last 7 days</strong>' in default
+    assert "max 3.900 V" in default and "4.100 V" not in default
+    assert "latest 10.0 /h" in default, "60 packets per 6 hours"
+    assert "chart-failure-login_unanswered" in default and "1 login unanswered" in default
+    assert default.count("<svg") == 8
+    assert "<script" not in default
+    assert "http://" not in default and "https://" not in default and "//" not in default
+    assert '<strong aria-current="page">last 7 days</strong>' in junk
+
+
+async def test_everything_kept_spans_from_the_oldest_poll(fresh_persistence) -> None:
+    from sighop.web.render import utc_short
+
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    state.contacts.restore([repeater])
+    now = dt.datetime.now(dt.UTC)
+    oldest = await _two_weeks(fresh_persistence, repeater.public_key, now)
+
+    async with _collect_client(state) as client:
+        body = _trends(
+            (await client.get(f"/contacts/{repeater.public_key.hex()}/metrics?range=all")).text
+        )
+
+    assert '<strong aria-current="page">everything kept</strong>' in body
+    assert "max 4.100 V" in body and "min 3.900 V" in body
+    first_label = body[body.index('class="chart-x mono"') :][:300]
+    assert utc_short(oldest) in first_label
+
+
+async def test_a_range_with_no_status_says_so_and_offers_wider_ones(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    state.contacts.restore([repeater])
+    now = dt.datetime.now(dt.UTC)
+    await _status_poll(fresh_persistence, repeater.public_key, now - dt.timedelta(days=3))
+    await _failed_poll(fresh_persistence, repeater.public_key, now - dt.timedelta(hours=2))
+
+    async with _collect_client(state) as client:
+        body = _trends(
+            (await client.get(f"/contacts/{repeater.public_key.hex()}/metrics?range=24h")).text
+        )
+
+    assert "No status was collected in the last 24 hours" in body
+    assert "<svg" not in body
+    assert 'href="?range=7d#trends"' in body and 'href="?range=all#trends"' in body
+
+
+async def test_the_retention_note_reads_kept_forever(fresh_persistence) -> None:
+    state = stub_state(persistence=fresh_persistence)
+    repeater = _repeater("hilltop")
+    state.contacts.restore([repeater])
+    await _status_poll(fresh_persistence, repeater.public_key, NOW)
+
+    async with _collect_client(state) as client:
+        days = (await client.get(f"/contacts/{repeater.public_key.hex()}/metrics")).text
+        await fresh_persistence.repeater_collection.save(
+            enabled=False, entity_id=None, interval_minutes=60, recent_days=3, retention_days=None
+        )
+        forever = (await client.get(f"/contacts/{repeater.public_key.hex()}/metrics")).text
+
+    assert "(30 days)" in days
+    assert "(kept forever)" in forever and "days)" not in forever
+
+
+def test_a_zero_hop_route_shows_as_one_hop_through_the_preferred_repeater() -> None:
+    """preferred-first-hop 5.3: the table shows the route a send will use."""
+    state = stub_state()
+    contact = _contact("neighbour")
+    state.contacts.restore([contact])
+    _learn(state, PathKey.for_public_key(contact.public_key), b"", 0)
+
+    unset = contact_rows(state.contacts, state.pipeline.paths)[0].route
+    assert unset is not None
+    assert (unset.zero_hop, unset.rewritten) == (True, False)
+
+    state.pipeline.paths.preferred_first_hop = b"\xab" * 32
+    route = contact_rows(state.contacts, state.pipeline.paths)[0].route
+    assert route is not None
+    assert (route.hop_count, route.path, route.rewritten) == (1, "ab", True)
+    assert route.text == "1 hop via ab, through the preferred first hop"
+
+    with _client(_app(state)) as client:
+        body = client.get("/contacts").text
+    assert "via preferred" in body
+    assert "direct, zero hops" not in body

@@ -77,7 +77,7 @@ from sighop.net.dm import (
     build_ack_packet,
 )
 from sighop.net.pathbodies import adopt_path_body, deliver_bundled_ack
-from sighop.net.paths import PathStore
+from sighop.net.paths import PathStore, resolve_for_contact
 from sighop.net.readback import wait_for_readback
 from sighop.net.rx import Payload, RxRecord
 from sighop.net.tx import Clock, SystemClock
@@ -1916,21 +1916,20 @@ class RoomServer:
 
         A route found by node hash is used when that is all there is and is
         marked ambiguous rather than presented as certain: one byte of identity
-        collides at 1 in 256 (§3).
+        collides at 1 in 256 (§3). The route passes through the preferred first
+        hop when one is set, exactly as a direct message's would.
         """
-        learned = self.paths.lookup_public_key(member.public_key)
-        ambiguous = False
-        if learned is None:
-            learned = self.paths.lookup_node_hash(member.node_hash)
-            ambiguous = learned is not None
-        if learned is None:
+        found = resolve_for_contact(self.paths, member.public_key, member.node_hash)
+        if found is None:
             return None
+        resolved, ambiguous = found
         return Route(
             flood=False,
-            path=learned.path,
-            hash_size=learned.hash_size,
-            hop_count=learned.hop_count,
+            path=resolved.path,
+            hash_size=resolved.hash_size,
+            hop_count=resolved.hop_count,
             ambiguous=ambiguous,
+            rewrite=resolved.rewrite,
         )
 
     def _path_return(

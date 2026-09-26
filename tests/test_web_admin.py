@@ -1962,6 +1962,44 @@ async def test_an_invalid_collection_setting_is_refused_and_stores_nothing(
     assert await _collection_of(persistence) == CollectionSettings()
 
 
+async def test_choosing_keep_forever_stores_no_retention_bound_and_shows_it(
+    database: Database,
+) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence, transmit_enabled=True))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client,
+            app,
+            "/system/collection",
+            **_collection_form(identity.id, retention_days="", retention_forever="true"),
+        )
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert (await _collection_of(persistence)).retention_days is None
+    assert "<strong>kept forever</strong>" in body
+    assert 'name="retention_forever" value="true" checked' in body
+    assert 'name="retention_days" value="30"' in body, "the default, so unticking is sane"
+    assert "nothing collected is ever deleted" in body
+
+
+async def test_a_blank_retention_window_without_forever_is_refused(database: Database) -> None:
+    persistence, identity = await _collector_identity(database)
+    app, _state, _log = _built(stub_state(persistence=persistence))
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/collection", **_collection_form(identity.id, retention_days="")
+        )
+
+    assert response.status_code == 400
+    assert "the retention window must be a whole number" in response.text
+    assert await _collection_of(persistence) == CollectionSettings()
+    assert "<strong>kept forever</strong>" not in response.text
+
+
 async def test_enabling_collection_without_an_identity_is_refused(database: Database) -> None:
     persistence, _identity = await _collector_identity(database)
     app, _state, _log = _built(stub_state(persistence=persistence))
@@ -2057,3 +2095,176 @@ async def test_the_collection_form_requires_the_csrf_token(database: Database) -
 
     assert response.status_code == 403
     assert await _collection_of(persistence) == CollectionSettings()
+
+
+# --- The preferred first hop (change preferred-first-hop) --------------------
+
+
+def _repeater_in(state: StubState, name: str = "hilltop") -> bytes:
+    from sighop.net.contacts import Contact
+    from sighop.protocol.payloads import WireText
+
+    identity = generate_identity()
+    state.contacts._insert(
+        Contact(
+            public_key=identity.public_key,
+            name=WireText.from_bytes(name.encode()),
+            node_type=NodeType.REPEATER,
+            advert_verified=True,
+        )
+    )
+    return identity.public_key
+
+
+def _zero_hop_to(state: StubState, public_key: bytes, *, snr_db: float = 7.5) -> None:
+    from sighop.net.paths import LearnedPath, PathKey
+
+    state.pipeline.paths.restore(
+        [
+            (
+                PathKey.for_public_key(public_key),
+                LearnedPath(
+                    path=b"",
+                    hash_size=1,
+                    hop_count=0,
+                    snr_db=snr_db,
+                    confirmed_at=NOW,
+                    packet_id="seed",
+                ),
+            )
+        ]
+    )
+
+
+async def _stored_preference(persistence: Persistence) -> bytes | None:
+    stored = await persistence.route_preference.get()
+    assert isinstance(stored, Succeeded)
+    return stored.value
+
+
+async def test_choosing_a_repeater_stores_it_and_puts_it_in_force(database: Database) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    key = _repeater_in(state)
+    _zero_hop_to(state, key)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/route-preference", preferred_first_hop=key.hex()
+        )
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert await _stored_preference(persistence) == key
+    assert state.pipeline.paths.preferred_first_hop == key
+    assert f'<option value="{key.hex()}" selected>hilltop ({key.hex()[:6]})</option>' in body
+    assert "every DIRECT send from every identity" in body
+    assert "zero-hop, confirmed" in body and "SNR 7.5 dB" in body
+    assert "has not heard the preferred repeater directly" not in body
+
+
+async def test_clearing_the_preference_routes_as_learned_again(database: Database) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    key = _repeater_in(state)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        await _apost(client, app, "/system/route-preference", preferred_first_hop=key.hex())
+        response = await _apost(client, app, "/system/route-preference", preferred_first_hop="")
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert await _stored_preference(persistence) is None
+    assert state.pipeline.paths.preferred_first_hop is None
+    assert "None is set" in body
+
+
+@pytest.mark.parametrize("kind", ["unknown", "not-a-repeater", "junk"])
+async def test_a_key_that_is_not_a_known_repeater_is_refused(database: Database, kind: str) -> None:
+    from sighop.net.contacts import Contact
+
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    stored = _repeater_in(state)
+    assert isinstance(await persistence.route_preference.save(stored), Succeeded)
+    state.pipeline.paths.preferred_first_hop = stored
+    submitted = {"unknown": generate_identity().public_key.hex(), "junk": "zz12"}.get(kind, "")
+    if kind == "not-a-repeater":
+        chat = generate_identity().public_key
+        state.contacts._insert(Contact(public_key=chat, node_type=NodeType.CHAT))
+        submitted = chat.hex()
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/route-preference", preferred_first_hop=submitted
+        )
+
+    assert response.status_code == 400
+    assert "is not the public key of a known repeater" in response.text
+    assert "nothing was changed" in response.text
+    assert await _stored_preference(persistence) == stored
+    assert state.pipeline.paths.preferred_first_hop == stored
+
+
+async def test_a_failed_write_leaves_the_running_preference_unchanged(
+    database: Database,
+) -> None:
+    from sighop.db.engine import DatabaseUnavailableError, Failed
+
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    key = _repeater_in(state)
+
+    async def unavailable(public_key, *, at=None):
+        return Failed(
+            operation="save_route_preference",
+            error=DatabaseUnavailableError("database unavailable"),
+        )
+
+    persistence.route_preference.save = unavailable  # type: ignore[method-assign]
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/route-preference", preferred_first_hop=key.hex()
+        )
+
+    assert response.status_code == 503
+    assert "could not be stored" in response.text
+    assert state.pipeline.paths.preferred_first_hop is None
+
+
+async def test_a_preferred_repeater_not_heard_directly_is_warned_about(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    key = _repeater_in(state)
+    state.pipeline.paths.preferred_first_hop = key
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert "no zero-hop route learned" in body
+    assert "has not heard the preferred repeater directly" in body
+
+
+async def test_a_forgotten_preferred_repeater_is_shown_by_key_with_the_warning(
+    database: Database,
+) -> None:
+    persistence = Persistence(database=database)
+    state = stub_state(persistence=persistence)
+    key = generate_identity().public_key
+    state.pipeline.paths.preferred_first_hop = key
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert f"{key.hex()[:6]}…" in body
+    assert "no longer a known contact" in body
+    assert "has not heard the preferred repeater directly" in body

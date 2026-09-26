@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% import "_display.html" as display %}
+{% import "_identity.html" as ident %}
+{% import "_repeater_status.html" as status %}
+
+{% block title %}poll · sighop{% endblock %}
+
+{% block content %}
+{% if poll %}
+<h1>poll of {{ ident.identity(identity) }}</h1>
+<p class="note"><a href="/contacts/{{ contact.public_key.hex() }}/metrics">← metrics</a></p>
+
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>started</td><td class="mono">{{ display.when(poll.started_at) }}</td></tr>
+      <tr>
+        <td>logged in as</td>
+        {% if login_name %}<td>{{ login_name }}</td>
+        {% else %}<td class="absent">identity since removed</td>{% endif %}
+      </tr>
+      <tr><td>route</td><td class="mono">{{ poll.route or '—' }}</td></tr>
+      <tr><td>outcome</td><td>{{ poll.outcome.label }}</td></tr>
+      <tr><td>reason</td><td>{{ poll.reason or '' }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h2>status</h2>
+{% if poll.stats %}
+<p class="note">
+  As the repeater reported it at this poll. Counters are shown as reported, since
+  its last restart — not as rates. A field the repeater did not return is
+  <strong>not reported</strong>, never zero.
+</p>
+{{ status.readings_table(readings) }}
+
+<h2>neighbours</h2>
+{% if neighbours %}
+<p class="note">
+  Repeaters this one heard zero-hop, as of this poll
+  {%- if poll.neighbours_total is not none %} ({{ poll.neighbours_total }} reported){% endif %}.
+  A key prefix is named only when exactly one known contact's key starts with it.
+</p>
+{{ status.neighbours_table(neighbours) }}
+{% else %}
+<p class="empty">No neighbours were recorded by this poll.</p>
+{% endif %}
+{% else %}
+<p class="empty"><strong>This poll returned no status.</strong></p>
+{% endif %}
+{% elif unavailable %}
+<h1>poll unavailable</h1>
+<p class="unavailable">The collected history cannot be read.</p>
+{% else %}
+<h1>poll not found</h1>
+<p class="unavailable">
+  No such poll of this repeater is recorded: it does not exist, has been pruned,
+  or belongs to another repeater.
+</p>
+{% endif %}
+{% endblock %}

@@ -669,18 +669,28 @@ survive the disabling and return if the identity is enabled again.
 ### Requirement: Repeater collection is configured on the system page
 The system SHALL offer, on the system page, a form for the repeater collection settings: enabled,
 the login identity (chosen from the stored identities that are not serving a room), the interval
-in minutes, the recency window in days, and the retention window in days. The form SHALL state
+in minutes, the recency window in days, and the retention window. The form SHALL state
 that collection logs in with a blank guest password, that only repeaters selected on the contacts
 page are polled, and how many repeaters are selected and how many of those are within the recency
 window now. The interval SHALL be accepted from 5 to 1440 minutes, the recency window from 1 to 365
-days, and the retention window from 1 to 365 days. A value outside its range or not a whole number
-SHALL be refused with the reason and nothing stored. A saved change SHALL apply to the running
+days, and the retention window from 1 to 365 days or keep forever, keep forever being offered as the
+retention window's maximum and stating that nothing collected is then ever deleted. A value outside
+its range or not a whole number SHALL be refused with the reason and nothing stored; a blank
+retention field SHALL NOT be read as keep forever. A saved change SHALL apply to the running
 process without a restart. Collection SHALL NOT be enabled while transmission is disabled without
 the form stating that no poll will be sent until transmission is enabled.
 
 #### Scenario: Saving valid settings
 - **WHEN** an operator enables collection with an identity, a 30-minute interval, a 2-day recency window and a 14-day retention window
 - **THEN** the settings are stored, the next cycle uses them without a restart, and the page shows them
+
+#### Scenario: Choosing keep forever
+- **WHEN** an operator chooses keep forever for the retention window and saves
+- **THEN** the setting is stored, the page shows the retention window as kept forever, and no pruning deletes anything from then on
+
+#### Scenario: A blank retention window
+- **WHEN** an operator clears the retention days and does not choose keep forever
+- **THEN** the form is refused with the reason and the stored settings are unchanged
 
 #### Scenario: An out-of-range interval
 - **WHEN** an operator submits an interval of 2 minutes
@@ -697,3 +707,33 @@ the form stating that no poll will be sent until transmission is enabled.
 #### Scenario: Last cycle shown
 - **WHEN** the system page is opened after a cycle has run
 - **THEN** it shows when the last cycle started, how many repeaters it polled, and how many of those succeeded
+
+### Requirement: The preferred first hop is configured on the system page
+The system SHALL offer, on the system page, a form to set or clear the preferred first hop,
+choosing from the known contacts whose advertised node type is repeater. The form SHALL state that
+the setting applies to every DIRECT send from every identity, and SHALL show, for the repeater in
+force, its name, abbreviated public key, and whether a zero-hop route to it has been learned and
+when it was last confirmed. When no zero-hop route to the chosen repeater is known, the page SHALL
+warn that the node may not reach it directly. A saved change SHALL apply to the running process
+without a restart. A submitted key that is not a known repeater contact SHALL be refused with the
+reason and nothing stored.
+
+#### Scenario: Choosing a repeater
+- **WHEN** an operator chooses a known repeater and saves
+- **THEN** it is stored, the next DIRECT send goes through it without a restart, and the page shows it as in force
+
+#### Scenario: Clearing the setting
+- **WHEN** an operator chooses none and saves
+- **THEN** the setting is cleared and routes are chosen as learned again
+
+#### Scenario: Repeater not heard directly
+- **WHEN** the repeater in force has no learned zero-hop route
+- **THEN** the page warns that the node may not reach it directly
+
+#### Scenario: Unknown key submitted
+- **WHEN** a form is submitted naming a public key that is not a known repeater contact
+- **THEN** it is refused with the reason and the stored setting is unchanged
+
+#### Scenario: Preferred repeater's contact later forgotten
+- **WHEN** the preferred repeater is no longer among the known contacts
+- **THEN** the setting stays in force by public key and the page shows it by abbreviated key, with the warning

@@ -1200,3 +1200,76 @@ async def test_the_wait_is_bounded_by_the_budget() -> None:
 
     assert elapsed < 1.0, "the report was held longer than the budget"
     assert any(isinstance(event, MessageReceived) for event in events)
+
+
+# --- The preferred first hop (`route-preference`) ----------------------------
+
+
+PREFERRED = bytes.fromhex("ab") + bytes(31)
+
+
+def _packet_on(route: Route, recipient: Entity) -> bytes:
+    packet, _ = build_message_packet(
+        sender=Entity("us", LocalIdentity.from_seed(b"\x07" * 32)).identity,
+        recipient_node_hash=recipient.node_hash,
+        secret=b"\x01" * 32,
+        body=compose_body(timestamp=1, attempt=0, text=b"hi"),
+        route=route,
+    )
+    return packet
+
+
+def test_with_no_preference_the_packet_is_byte_identical_to_the_learned_route() -> None:
+    peer = Entity("them")
+    paths = PathStore()
+    zero_hop_route_to(paths, peer.identity.public_key)
+    learned = Route(flood=False, path=b"", hash_size=1, hop_count=0)
+
+    unset = choose_route(paths, contact_for(peer.identity), path_hash_size=3)
+    paths.preferred_first_hop = PREFERRED
+    paths.preferred_first_hop = None
+    cleared = choose_route(paths, contact_for(peer.identity), path_hash_size=3)
+
+    assert unset == cleared == learned
+    assert _packet_on(unset, peer) == _packet_on(learned, peer)
+    assert unset.label == "DIRECT h0"
+
+
+async def test_a_zero_hop_contact_is_sent_one_hop_through_the_preferred_repeater() -> None:
+    from sighop.protocol.packet import decode
+
+    entity = Entity("us")
+    peer = Entity("them")
+    paths = PathStore()
+    zero_hop_route_to(paths, peer.identity.public_key)
+    paths.preferred_first_hop = PREFERRED
+    submit = RecordingSubmit()
+    events: list = []
+    logger = RecordingLogger()
+    dm = messenger(entity, paths=paths, submit=submit, events=events, logger=logger)
+
+    task = asyncio.create_task(dm.send(entity, contact_for(peer.identity), "hej"))
+    for _ in range(4):
+        await asyncio.sleep(0)
+    sent = next(event for event in events if isinstance(event, MessageSent))
+    task.cancel()
+
+    decoded = decode(submit.submissions[0].packet)
+    assert decoded.route_type is RouteType.DIRECT
+    assert (decoded.hop_count, decoded.path) == (1, b"\xab")
+    assert sent.route.label == "DIRECT h1 via-pref"
+    assert sent.ack_timeout_ms == pytest.approx(
+        ack_timeout_ms(sent.airtime_ms, Route(flood=False, hop_count=1))
+    )
+    assert logger.of("direct_message_sent")[0]["route_rewrite"] == "prepended"
+
+
+def test_no_route_still_floods_or_refuses_with_a_preference_set() -> None:
+    paths = PathStore()
+    paths.preferred_first_hop = PREFERRED
+    contact = contact_for(generate_identity())
+
+    with pytest.raises(NoRouteError, match="no route is known"):
+        choose_route(paths, contact, path_hash_size=3)
+    flood = choose_route(paths, contact, path_hash_size=2, allow_flood=True)
+    assert flood == Route(flood=True, hash_size=2)

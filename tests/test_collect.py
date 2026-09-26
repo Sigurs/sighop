@@ -6,6 +6,7 @@ No Postgres: storage is `tests/collectfixtures.py`'s, and the far end is a
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 
 import pytest
@@ -162,7 +163,8 @@ async def test_an_unanswered_status_ends_the_poll_before_neighbours() -> None:
     poll = _only_poll(r.polls.polls)
     assert poll.outcome is PollOutcome.STATUS_UNANSWERED
     assert poll.stats is None
-    assert [step for step, _, _ in repeater.requests] == ["login", "status"]
+    assert [step for step, _, _ in repeater.requests] == ["login"] + ["status"] * 3
+    assert poll.retries == 2
 
 
 async def test_neighbours_cut_short_keep_the_status_and_the_first_page() -> None:
@@ -177,6 +179,8 @@ async def test_neighbours_cut_short_keep_the_status_and_the_first_page() -> None
     assert poll.stats == STATS
     assert len(poll.neighbours) == 11
     assert poll.neighbours_total == 25
+    offsets = [offset for step, _, offset in repeater.requests if step == "neighbours"]
+    assert offsets == [0, 11, 11, 11]
 
 
 async def test_timestamps_to_one_repeater_strictly_increase_across_polls() -> None:
@@ -411,6 +415,29 @@ async def test_retention_follows_the_settings() -> None:
     assert len(r.polls.polls) == 1
 
 
+async def test_kept_forever_deletes_nothing_however_old() -> None:
+    r = rig(enabled=False)
+    r.settings.update(retention_days=None)
+    r.polls.polls.extend([_old(r, 3650), _old(r, 400), _old(r, 1)])
+    await r.collector.tick()
+    assert len(r.polls.polls) == 3
+    r.clock.advance(25 * 3600)
+    await r.collector.tick()
+    assert len(r.polls.polls) == 3, "still nothing on the next daily pruning"
+
+
+async def test_forever_changed_back_to_days_prunes_at_the_next_pruning() -> None:
+    r = rig(enabled=False)
+    r.settings.update(retention_days=None)
+    r.polls.polls.extend([_old(r, 400), _old(r, 31), _old(r, 20)])
+    await r.collector.tick()
+    assert len(r.polls.polls) == 3
+    r.settings.update(retention_days=30)
+    r.clock.advance(25 * 3600)
+    await r.collector.tick()
+    assert len(r.polls.polls) == 1, "only the poll started under 30 days ago is kept"
+
+
 def test_defaults_match_the_spec() -> None:
     settings = CollectionSettings()
     assert (settings.interval_minutes, settings.recent_days, settings.retention_days) == (60, 3, 30)
@@ -505,3 +532,250 @@ async def test_a_repeater_that_kept_our_route_needs_no_path_return_next_poll() -
     assert [p.outcome for p in r.polls.polls] == [PollOutcome.SUCCEEDED] * 2
     assert repeater.path_returns == [b"\x77"], "one path return, in the first poll only"
     assert repeater.answered_by_flood[3:] == [False, False, False]
+
+
+# --- repeater-poll-retries: resends (D1) ------------------------------------
+
+
+async def test_a_status_request_lost_once_is_resent_and_the_poll_succeeds() -> None:
+    repeater = FakeRepeater(drop={"status": 1})
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert poll.stats == STATS
+    assert repeater.lost == ["status"]
+    assert [step for step, _, _ in repeater.requests] == ["login", "status", "neighbours"]
+    assert poll.retries == 1
+
+
+async def test_a_neighbour_page_lost_once_is_resent_and_paging_continues() -> None:
+    repeater = FakeRepeater(
+        neighbours=[NeighbourEntry(bytes([i]) * 32, i, i) for i in range(25)],
+        drop={"neighbours:0": 1},
+    )
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert len(poll.neighbours) == 25
+    assert repeater.lost == ["neighbours:0"]
+    offsets = [offset for step, _, offset in repeater.requests if step == "neighbours"]
+    assert offsets == [0, 11, 22]
+    assert poll.retries == 1
+
+
+async def test_a_late_answer_to_the_first_attempt_completes_the_step() -> None:
+    """The first answer arrives while the resend waits; the resend's own
+    answer, arriving after, is a second answer and unmatched."""
+    repeater = FakeRepeater()
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    statuses = 0
+
+    async def deliver_first() -> None:
+        target, record = repeater.delayed.pop(0)
+        await target.handle(record)
+
+    def hold_status(step: str) -> None:
+        nonlocal statuses
+        if step != "status":
+            return
+        statuses += 1
+        repeater.hold_next = True
+        if statuses == 2:
+            asyncio.get_running_loop().create_task(deliver_first())
+
+    repeater.on_request = hold_status
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert poll.retries == 1
+    assert statuses == 2
+
+    target, record = repeater.delayed.pop()
+    before = r.collector.responses_unmatched
+    await target.handle(record)
+    assert r.collector.responses_unmatched == before + 1
+    assert len(r.polls.polls) == 1
+
+
+async def test_a_not_sent_attempt_is_not_retried() -> None:
+    # A repeater holding our route answers direct, so no path return is sent.
+    repeater = FakeRepeater(
+        submit_results=[TxResult.TRANSMITTED, TxResult.SUPPRESSED], out_path=b""
+    )
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.NOT_SENT
+    assert len(repeater.submissions) == 2
+    assert poll.retries == 0
+
+
+async def test_a_first_time_poll_records_zero_retries() -> None:
+    r = rig()
+    zero_hop_route_to(r.paths, r.repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert poll.retries == 0
+    assert r.collector.as_json()["repeater_retries"] == 0
+
+
+async def test_a_poll_that_needed_resends_records_the_count() -> None:
+    repeater = FakeRepeater(
+        neighbours=[NeighbourEntry(bytes([i]) * 32, i, i) for i in range(3)],
+        drop={"status": 1, "neighbours:0": 1},
+    )
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert poll.retries == 2
+    counters = r.collector.as_json()
+    assert counters["repeater_retries"] == 2
+    assert counters["repeater_login_floods"] == 0
+
+
+# --- repeater-poll-retries: login policy and flood fallback (D2, D3) --------
+
+
+def _answered(r, days_ago: float) -> None:
+    r.polls.answered[r.repeater.identity.public_key] = START - dt.timedelta(days=days_ago)
+
+
+async def test_a_repeater_never_answered_gets_one_login_and_no_flood() -> None:
+    repeater = FakeRepeater(guest_password_set=True)
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.LOGIN_UNANSWERED
+    assert repeater.requests == [("login", RouteType.DIRECT, 0)]
+    assert poll.retries == 0
+    assert r.collector.login_floods == 0
+
+
+async def test_a_repeater_that_stopped_answering_beyond_the_window_gets_one_login() -> None:
+    repeater = FakeRepeater(guest_password_set=True)
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    _answered(r, days_ago=4)  # the recency window is 3 days
+    await r.collector.tick()
+    assert repeater.requests == [("login", RouteType.DIRECT, 0)]
+    assert r.collector.login_floods == 0
+
+
+async def test_an_unreachable_repeater_that_answered_before_gets_two_direct_and_one_flooded_login() -> (
+    None
+):
+    repeater = FakeRepeater(silent={"login"})
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    _answered(r, days_ago=1)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.LOGIN_UNANSWERED
+    assert [route for _, route, _ in repeater.requests] == [
+        RouteType.DIRECT,
+        RouteType.DIRECT,
+        RouteType.FLOOD,
+    ]
+    assert poll.retries == 2
+    assert poll.route.endswith(" → FLOOD")
+    assert r.collector.login_floods == 1
+
+
+async def test_a_stale_route_falls_back_to_a_flooded_login_and_uses_the_returned_route() -> None:
+    repeater = FakeRepeater(drop_direct={"login"})
+    r = rig(repeater=repeater)
+    # Learned before the path return that replaces it.
+    zero_hop_route_to(r.paths, repeater.identity.public_key, at=START - dt.timedelta(hours=1))
+    _answered(r, days_ago=1)
+    await r.collector.tick()
+    poll = _only_poll(r.polls.polls)
+    assert poll.outcome is PollOutcome.SUCCEEDED
+    assert repeater.lost == ["login", "login"]
+    assert [route for _, route, _ in repeater.requests] == [
+        RouteType.FLOOD,
+        RouteType.DIRECT,
+        RouteType.DIRECT,
+    ]
+    assert poll.route == "DIRECT h0 → FLOOD → DIRECT h1"
+    assert poll.retries == 2
+    assert r.collector.as_json()["repeater_login_floods"] == 1
+
+
+async def test_no_route_known_sends_one_flooded_login() -> None:
+    repeater = FakeRepeater(silent={"login"})
+    r = rig(repeater=repeater)
+    _answered(r, days_ago=1)
+    await r.collector.tick()
+    assert repeater.requests == [("login", RouteType.FLOOD, 0)]
+    assert _only_poll(r.polls.polls).retries == 0
+    assert r.collector.login_floods == 0
+
+
+async def test_an_unreadable_answered_seed_sends_no_flood_and_is_retried() -> None:
+    repeater = FakeRepeater(drop_direct={"login"})
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    _answered(r, days_ago=1)
+    r.polls.fail_answered = True
+    await r.collector.tick()
+    assert _only_poll(r.polls.polls).outcome is PollOutcome.LOGIN_UNANSWERED
+    assert repeater.lost == ["login"]
+
+    r.polls.fail_answered = False
+    r.clock.advance(60 * 60)
+    await r.collector.tick()
+    assert r.polls.answered_reads == 2
+    assert r.polls.polls[-1].outcome is PollOutcome.SUCCEEDED
+    assert r.collector.login_floods == 1
+
+
+async def test_a_login_answered_in_this_run_enables_the_fallback_next_cycle() -> None:
+    repeater = FakeRepeater()
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    await r.collector.tick()
+    assert r.polls.polls[-1].outcome is PollOutcome.SUCCEEDED
+
+    repeater.drop_direct = {"login"}
+    r.clock.advance(60 * 60)
+    await r.collector.tick()
+    assert r.polls.polls[-1].outcome is PollOutcome.SUCCEEDED
+    assert r.collector.login_floods == 1
+    assert r.polls.answered_reads == 1, "seeded once, then kept up to date in memory"
+
+
+# --- The preferred first hop (`route-preference`) ----------------------------
+
+
+def test_polling_another_repeater_goes_through_the_preferred_one() -> None:
+    repeater = FakeRepeater()
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    r.paths.preferred_first_hop = bytes.fromhex("ee") + bytes(31)
+
+    route = r.collector._route(repeater.contact)
+
+    assert (route.flood, route.hop_count, route.path) == (False, 1, b"\xee")
+    assert route.label == "DIRECT h1 via-pref"
+
+
+def test_polling_the_preferred_repeater_itself_is_not_rewritten() -> None:
+    repeater = FakeRepeater()
+    r = rig(repeater=repeater)
+    zero_hop_route_to(r.paths, repeater.identity.public_key)
+    r.paths.preferred_first_hop = repeater.identity.public_key
+
+    route = r.collector._route(repeater.contact)
+
+    assert (route.flood, route.hop_count, route.path) == (False, 0, b"")
+    assert route.label == "DIRECT h0"

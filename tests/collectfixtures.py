@@ -16,7 +16,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 
 from sighop.db.engine import DatabaseError, Failed, Outcome, Succeeded
-from sighop.db.repositories import CollectionSettings, PollRecord
+from sighop.db.repositories import LOGIN_ANSWERED_OUTCOMES, CollectionSettings, PollRecord
 from sighop.net.bus import TxOutcome, TxResult
 from sighop.net.collect import RepeaterCollector
 from sighop.net.contacts import Contact, ContactStore
@@ -138,6 +138,22 @@ class MemoryTargets:
 @dataclass(slots=True)
 class MemoryPolls:
     polls: list[PollRecord] = field(default_factory=list)
+    answered: dict[bytes, dt.datetime] = field(default_factory=dict)
+    """Answered logins from before this run, beside what `polls` implies."""
+    fail_answered: bool = False
+    answered_reads: int = 0
+
+    async def last_answered(self) -> Outcome[dict[bytes, dt.datetime]]:
+        self.answered_reads += 1
+        if self.fail_answered:
+            return _failed("repeater_last_answered")
+        latest = dict(self.answered)
+        for poll in self.polls:
+            if poll.outcome in LOGIN_ANSWERED_OUTCOMES:
+                latest[poll.public_key] = max(
+                    poll.started_at, latest.get(poll.public_key, poll.started_at)
+                )
+        return Succeeded(latest)
 
     async def record(self, poll: PollRecord) -> Outcome[int]:
         self.polls.append(poll)
@@ -170,7 +186,9 @@ class FakeRepeater:
     """A stock repeater, as far as the collector can tell.
 
     `answers` scripts silence: a step name (`login`, `status`) or
-    `neighbours:<offset>` listed in `silent` is never answered.
+    `neighbours:<offset>` listed in `silent` is never answered. The same names
+    in `drop` lose that many requests on the air before any arrives, and in
+    `drop_direct` lose every direct request, as a route gone stale does.
     """
 
     identity: LocalIdentity = field(default_factory=generate_identity)
@@ -178,6 +196,10 @@ class FakeRepeater:
     stats: RepeaterStats = STATS
     neighbours: list[NeighbourEntry] = field(default_factory=list)
     silent: set[str] = field(default_factory=set)
+    drop: dict[str, int] = field(default_factory=dict)
+    drop_direct: set[str] = field(default_factory=set)
+    lost: list[str] = field(default_factory=list)
+    """Requests lost on the air by `drop` or `drop_direct`, by step name."""
     submit_results: list[TxResult] = field(default_factory=list)
     """Scheduler outcomes to hand back, in order; transmitted when exhausted."""
 
@@ -258,6 +280,8 @@ class FakeRepeater:
             matched, plaintext = mac_then_decrypt(secret, envelope.mac, envelope.ciphertext)
             assert matched.matched and plaintext is not None
             timestamp = int.from_bytes(plaintext[:4], "little")
+            if self._lost("login", flood):
+                return
             self.requests.append(("login", record.route_type, 0))
             self._hook("login")
             if plaintext[4] != 0 or self.guest_password_set or "login" in self.silent:
@@ -283,6 +307,12 @@ class FakeRepeater:
         assert envelope.payload_type is PayloadType.REQ
         request = parse_request_body(plaintext)
         assert isinstance(request, RequestBody)
+        if request.request_type == RequestType.GET_STATUS:
+            name = "status"
+        else:
+            name = f"neighbours:{int.from_bytes(request.arguments[2:4], 'little')}"
+        if self._lost(name, flood):
+            return
         if request.timestamp <= self._last_timestamp:
             return
         self._last_timestamp = request.timestamp
@@ -313,6 +343,16 @@ class FakeRepeater:
                 )
             )
         self._answer(client, secret, reply, flood)
+
+    def _lost(self, name: str, flood: bool) -> bool:
+        if not flood and name in self.drop_direct:
+            self.lost.append(name)
+            return True
+        if self.drop.get(name, 0) > 0:
+            self.drop[name] -= 1
+            self.lost.append(name)
+            return True
+        return False
 
     def _hook(self, step: str) -> None:
         if callable(self.on_request):
