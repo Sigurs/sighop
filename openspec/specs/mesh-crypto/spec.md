@@ -4,6 +4,7 @@
 The cryptography MeshCore actually uses on the wire — identity keys and node hashes, shared
 secret derivation, cipher, MAC, channel keys, advert signing — and, just as importantly, the
 limit of what each one proves. The layer is pure and offline: it decides nothing about the mesh.
+
 ## Requirements
 
 > Reference: `related-repos/MeshCore/src/Utils.cpp`, `src/Identity.cpp`,
@@ -197,55 +198,6 @@ network layers.
 - **WHEN** the crypto module is imported and exercised in a process with no serial device attached
 - **THEN** all operations complete, since no operation delegates to the modem's hardware identity
 
-### Requirement: Decryption is proven against a foreign implementation
-The system SHALL carry a known-answer test whose ciphertext was produced by a MeshCore
-implementation other than sighop, encrypted to a key sighop holds, and SHALL assert that the
-shared-secret derivation, the cipher and the MAC together recover the expected plaintext. This
-test SHALL run in the ordinary test suite, not only in a live exercise.
-
-#### Scenario: Recorded peer ciphertext decrypts
-- **WHEN** the recorded direct message from the reference peer is decrypted with the recorded recipient identity's key
-- **THEN** the MAC verifies, the plaintext recovers, and it parses as a text message body with the expected timestamp and text
-
-#### Scenario: The vector is anchored to its provenance
-- **WHEN** the known-answer test is read
-- **THEN** it names the capture file, the frame within it, the peer firmware version that produced the ciphertext, and the burned identity keyfile that opens it
-
-#### Scenario: The vector fails under a wrong key slice
-- **WHEN** the same ciphertext is decrypted with the full 32-byte secret as the cipher key, or MAC'd with only its first 16 bytes
-- **THEN** the test fails, so that the two distinct key slices stay distinguishable by evidence rather than by comment
-
-### Requirement: Acknowledgement checksums are proven against a foreign implementation
-The system SHALL assert its acknowledgement construction against an acknowledgement produced by
-another MeshCore implementation for a message sighop sent, and against an acknowledgement
-sighop produced that the peer accepted.
-
-#### Scenario: The peer's acknowledgement matches our expectation
-- **WHEN** the recorded acknowledgement for a message sighop transmitted is compared against the checksum sighop computed for that message
-- **THEN** the first four bytes match
-
-### Requirement: Channel decryption is proven against a foreign implementation
-The system SHALL carry a known-answer test over group text frames produced by MeshCore nodes other
-than sighop, recorded in the capture corpus, and SHALL assert that the stock Public channel key's
-channel hash, MAC key and cipher key together verify and decrypt every distinct `GRP_TXT` frame on
-that channel's hash. This test SHALL run in the ordinary test suite.
-
-#### Scenario: Corpus Public frames decrypt
-- **WHEN** every distinct `GRP_TXT` frame on channel hash `0x11` in the capture corpus is verified and decrypted under the Public channel key
-- **THEN** every MAC verifies and every plaintext parses as plain group text with a claimed sender name
-
-#### Scenario: The vector is anchored to its provenance
-- **WHEN** the known-answer test is read
-- **THEN** it names the capture files and the count of frames it expects, so a corpus change that alters the count fails the test rather than silently narrowing it
-
-#### Scenario: The channel hash is taken over the key at its real length
-- **WHEN** the Public channel hash is computed over the zero-extended 32-byte buffer instead of the 16-byte key
-- **THEN** it is `0x17`, not the `0x11` every corpus frame carries, so the length the hash is taken over stays distinguishable by evidence rather than by comment
-
-#### Scenario: Frames on another channel stay closed
-- **WHEN** corpus `GRP_TXT` frames on a channel hash other than `0x11` are trialled under the Public key
-- **THEN** none decrypts
-
 ### Requirement: Signing is proven against a reference implementation
 The system SHALL anchor its signing construction to a foreign implementation rather than to its
 own output, because a signature computed from the expanded private key is only useful if every
@@ -260,3 +212,52 @@ adverts no peer verifies.
 #### Scenario: The vector is anchored to its provenance
 - **WHEN** the signing known-answer vector is read
 - **THEN** it names the firmware source the keypair comes from, and its expected signature is a fixed literal rather than a value recomputed by the system under test
+
+### Requirement: Decryption is exercised end to end over the synthetic corpus
+The system SHALL carry tests that decrypt the synthetic corpus's encrypted frames — direct messages,
+group text on the Public channel and group text on a second synthetic channel — with the keys the
+generator holds, and SHALL assert that the shared-secret derivation, the cipher and the MAC together
+recover the generator's known plaintext. These tests SHALL run in the ordinary test suite.
+
+#### Scenario: Corpus direct messages decrypt
+- **WHEN** the synthetic corpus's direct messages are decrypted with the recipient's key and the sender's public key
+- **THEN** every MAC verifies and every plaintext parses as a text message body equal to the generator's message
+
+#### Scenario: Corpus Public frames decrypt
+- **WHEN** every distinct `GRP_TXT` frame on channel hash `0x11` in the synthetic corpus is verified and decrypted under the Public channel key
+- **THEN** every MAC verifies and every plaintext parses as plain group text whose sender and text are from the synthetic cast
+
+#### Scenario: The vectors name their corpus and counts
+- **WHEN** the known-answer tests are read
+- **THEN** they name the corpus files and the counts of frames they expect, so a corpus change that alters a count fails the test rather than silently narrowing it
+
+#### Scenario: The two key slices stay distinguishable
+- **WHEN** a corpus direct message is decrypted with the full 32-byte secret as the cipher key, or MAC'd with only its first 16 bytes
+- **THEN** the test fails, so that the two distinct key slices stay distinguishable by evidence rather than by comment
+
+#### Scenario: The channel hash is taken over the key at its real length
+- **WHEN** the Public channel hash is computed over the zero-extended 32-byte buffer instead of the 16-byte key
+- **THEN** it is `0x17`, not the `0x11` every Public frame in the corpus carries
+
+#### Scenario: Frames on another channel stay closed
+- **WHEN** corpus `GRP_TXT` frames on a channel hash other than `0x11` are trialled under the Public key
+- **THEN** none decrypts, and all decrypt under the second synthetic channel's key
+
+### Requirement: Acknowledgement checksums are exercised over the synthetic corpus
+The system SHALL assert its acknowledgement construction over the synthetic corpus, for both the
+4-byte and the 6-byte acknowledgement forms, against the messages the acknowledgements answer.
+
+#### Scenario: A corpus acknowledgement matches the message it answers
+- **WHEN** a corpus acknowledgement is compared with the checksum computed for the message it answers
+- **THEN** the first four bytes match
+
+### Requirement: The limits of the crypto evidence are stated
+The system SHALL state, wherever the corpus documents what it proves about cryptography, that the
+synthetic corpus is produced by sighop's own encryptor and therefore establishes agreement between
+sighop's encryptor and decryptor and the recorded expectations, and does not establish
+interoperability with any other MeshCore implementation. It SHALL NOT present a green corpus run as
+evidence of interoperability.
+
+#### Scenario: The documentation says what is not proven
+- **WHEN** the corpus documentation's cryptography section is read
+- **THEN** it says that interoperability is anchored only by the firmware-embedded signing keypair and the fixed known-answer vectors transcribed from the firmware source, and that a recorded exchange with a stock implementation existed once and was withdrawn with the recorded corpus
