@@ -58,7 +58,7 @@ UID=$(id -u) GID=$(id -g) DIALOUT_GID=$(stat -c %g /dev/ttyUSB0) \
   docker compose up -d
 ```
 
-The container runs as an arbitrary UID on a read-only root with every capability dropped. The modem is passed through as `/dev/modem`. CI builds arm64 images and pushes them to GHCR on every push to the main branch.
+The container runs as an arbitrary UID on a read-only root with every capability dropped. The modem is passed through as `/dev/modem`. CI builds arm64 images and pushes them to GHCR on every push to `master`.
 
 ## Development
 

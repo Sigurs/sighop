@@ -1,7 +1,7 @@
 name: Build image
 
 # Every gate `build.sh` runs — lock, lint, types, test, image, smoke, scan — on
-# pull requests. On a push to the main branch (or by hand) the image that
+# pull requests. On a push to master (or by hand) the image that
 # passed is also pushed to GHCR as `<commit>-<YYYYMMDD>-<HHMMSS>`, announced on
 # Discord, and only the newest three versions are kept.
 #
@@ -12,7 +12,7 @@ name: Build image
 
 on:
   push:
-    branches: [main, master]
+    branches: [master]
   pull_request:
   workflow_dispatch:
 

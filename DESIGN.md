@@ -1696,8 +1696,8 @@ from them it says so here.
   version`, the commit from git with `-dirty` on a modified tree; the image is tagged
   `sighop:<version>-<commit>` and `sighop:local`, and never pushed by the script. Images are
   built without provenance or SBOM attestations, so each is a single manifest.
-- **CI** (`.github/workflows/build.yml`) runs `./build.sh` on every pull request and push. On
-  a push to the main branch or a manual run it pushes the image to GHCR as
+- **CI** (`.github/workflows/build.yml`) runs `./build.sh` on every pull request and push to
+  `master`. On a push to `master` or a manual run it pushes the image to GHCR as
   `<commit12>-<YYYYMMDD>-<HHMMSS>` (UTC), posts the tag and digest to Discord through the
   `notify-discord` action in `Sigurs/container-rebuilds`, and deletes all but the newest
   three package versions — one push being one version is why attestations are off. Every
