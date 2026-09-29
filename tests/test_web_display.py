@@ -19,6 +19,7 @@ from jinja2 import Environment, FileSystemLoader
 import sighop.web
 from sighop.net.adverts import EntityStub
 from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+from sighop.net.contacts import ContactStore
 from sighop.net.dm import DirectMessageRecord, RecordedOutcome
 from sighop.protocol.identity import generate_identity
 from sighop.web.render import (
@@ -35,7 +36,7 @@ from sighop.web.render import (
     plural,
     utc_short,
 )
-from sighop.web.routes.chat import _channel_state, _path_copy, _path_lines, _state
+from sighop.web.routes.chat import _channel_state, _path_copy, _path_hops, _state
 
 WEB_DIR = Path(sighop.web.__file__).parent
 TEMPLATE_DIR = WEB_DIR / "templates"
@@ -245,12 +246,13 @@ def test_every_direct_message_state_has_its_own_glyph() -> None:
     assert states[3].explanation.startswith("unacknowledged after 4 attempts")
 
 
-def test_path_lines_write_each_copy_as_arrow_joined_hex() -> None:
-    assert _path_lines((bytes.fromhex("a3f128c09e4b"),), 2) == ("a3f1->28c0->9e4b",)
-    assert _path_lines((b"\x0a\xff",), 1) == ("0a->ff",)
-    assert _path_lines((b"\x0a", b"", b"\x0a\x5d"), 1) == ("0a", "direct", "0a->5d")
-    assert _path_lines((b"\x01\x02\x03", b"\x01\x02"), 2) == ("0102",)  # 3 bytes: not whole hashes
-    assert _path_lines(None, 2) == ()
+def test_path_hops_split_each_copy_into_whole_hashes() -> None:
+    assert _path_hops((bytes.fromhex("a3f128c09e4b"),), 2) == (
+        (b"\xa3\xf1", b"\x28\xc0", b"\x9e\x4b"),
+    )
+    assert _path_hops((b"\x0a", b"", b"\x0a\x5d"), 1) == ((b"\x0a",), (), (b"\x0a", b"\x5d"))
+    assert _path_hops((b"\x01\x02\x03", b"\x01\x02"), 2) == ((b"\x01\x02",),)  # 3 bytes: not whole
+    assert _path_hops(None, 2) == ()
 
 
 def test_a_received_messages_paths_are_in_its_hover_and_behind_its_copy() -> None:
@@ -264,8 +266,10 @@ def test_a_received_messages_paths_are_in_its_hover_and_behind_its_copy() -> Non
     (state,) = _channel_state(received)
 
     assert state.figures == ("2",)
-    assert state.explanation == "received over 2 hops; 2 copies heard, via a3->28, a3->5d"
-    assert _path_copy(received) == "a3->28\na3->5d"
+    assert state.explanation == "received over 2 hops; 2 copies heard, via a3 → 28, a3 → 5d"
+    assert _path_copy(received, ContactStore()) == (
+        "a3 <unknown> → 28 <unknown>\na3 <unknown> → 5d <unknown>"
+    )
 
 
 def test_nothing_to_copy_leaves_the_state_as_it_was() -> None:
@@ -275,7 +279,11 @@ def test_nothing_to_copy_leaves_the_state_as_it_was() -> None:
     unrecorded = _channel(direction="in", outcome=ChannelOutcome.RECEIVED, hop_count=2)
     post = _channel(repeats_heard=1)
 
-    assert [_path_copy(r) for r in (direct_only, unrecorded, post)] == [None, None, None]
+    assert [_path_copy(r, ContactStore()) for r in (direct_only, unrecorded, post)] == [
+        None,
+        None,
+        None,
+    ]
     assert _channel_state(direct_only)[0].explanation == "received over 0 hops"
     assert _channel_state(unrecorded)[0].explanation == "received over 2 hops"
 

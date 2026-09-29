@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import unicodedata
 import uuid
 from typing import Annotated, Any
 
@@ -60,6 +61,7 @@ from sighop.web.render import (
     plural,
     refused,
 )
+from sighop.webhooks.events import HopLookup, resolve_hop
 
 PanelDep = Annotated[Panel, Depends(panel)]
 
@@ -565,44 +567,62 @@ def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str
         "handled_at": record.handled_at,
         "wire_time": wire_time,
         "state": _channel_state(record),
-        "path_copy": _path_copy(record),
+        "path_copy": _path_copy(record, page.state.contacts),
     }
 
 
 DIRECT = "direct"
 """A copy heard without any hop, where a path would be written."""
 
-PATH_ARROW = "->"
+PATH_ARROW = " → "
+"""Between hops, as the Discord notification writes a path."""
 
 
-def _path_lines(paths: tuple[bytes, ...] | None, hash_size: int | None) -> tuple[str, ...]:
-    """Each recorded copy's path as its hop hashes in hex, `->`-joined, in arrival order.
+def _path_hops(
+    paths: tuple[bytes, ...] | None, hash_size: int | None
+) -> tuple[tuple[bytes, ...], ...]:
+    """Each recorded copy's path as its hop hashes, in arrival order; `()` for direct.
 
     A path whose length is not a whole number of hashes is left out rather than
-    split at a guess; a copy heard directly is `direct`.
+    split at a guess.
     """
     if paths is None or not hash_size:
         return ()
-    lines: list[str] = []
-    for path in paths:
-        if len(path) % hash_size:
-            continue
-        hops = (path[i : i + hash_size].hex() for i in range(0, len(path), hash_size))
-        lines.append(PATH_ARROW.join(hops) or DIRECT)
-    return tuple(lines)
+    return tuple(
+        tuple(path[i : i + hash_size] for i in range(0, len(path), hash_size))
+        for path in paths
+        if not len(path) % hash_size
+    )
 
 
-def _received_paths(record: ChannelMessageRecord) -> tuple[str, ...]:
-    """A received message's path lines, or none when no copy came over a hop."""
+def _received_hops(record: ChannelMessageRecord) -> tuple[tuple[bytes, ...], ...]:
+    """A received message's paths, or none when no copy came over a hop."""
     if not record.inbound:
         return ()
-    lines = _path_lines(record.paths, record.path_hash_size)
-    return lines if any(line != DIRECT for line in lines) else ()
+    paths = _path_hops(record.paths, record.path_hash_size)
+    return paths if any(paths) else ()
 
 
-def _path_copy(record: ChannelMessageRecord) -> str | None:
-    """What the copy control copies: one path per line. None hides the control."""
-    return "\n".join(lines) if (lines := _received_paths(record)) else None
+def _hop_label(hop: bytes, contacts: HopLookup) -> str:
+    """A hop as the Discord notification names it, as plain text. A name is advert
+    content: control characters become spaces so a path stays on one line."""
+    label = resolve_hop(hop, contacts).label
+    flattened = "".join(
+        " " if unicodedata.category(character).startswith("C") else character for character in label
+    )
+    return f"{hop.hex()} {flattened}"
+
+
+def _path_copy(record: ChannelMessageRecord, contacts: HopLookup) -> str | None:
+    """What the copy control copies: one path per line, each hop named from the
+    contacts known now. None hides the control."""
+    return (
+        "\n".join(
+            PATH_ARROW.join(_hop_label(hop, contacts) for hop in hops) or DIRECT
+            for hops in _received_hops(record)
+        )
+        or None
+    )
 
 
 def _channel_state(record: ChannelMessageRecord) -> tuple[Status, ...]:
@@ -619,7 +639,8 @@ def _channel_state(record: ChannelMessageRecord) -> tuple[Status, ...]:
             return (Status("received", "↓", ("?",), "received over an unknown number of hops"),)
         hops = plural(record.hop_count, "hop")
         explanation = f"received over {hops}"
-        if lines := _received_paths(record):
+        if paths := _received_hops(record):
+            lines = [PATH_ARROW.join(hop.hex() for hop in hops) or DIRECT for hops in paths]
             copies = plural(len(lines), "copy", "copies")
             explanation += f"; {copies} heard, via {', '.join(lines)}"
         return (Status("received", "↓", (str(record.hop_count),), explanation),)

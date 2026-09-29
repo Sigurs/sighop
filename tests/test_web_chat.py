@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import datetime as dt
+import html
 import re
 import uuid
 from pathlib import Path
@@ -1208,10 +1209,82 @@ def test_a_received_message_offers_its_paths_to_copy_and_nothing_else_does() -> 
         body = client.get("/chat/channel/2/messages").text
 
     rows = {row.split('"', 1)[0]: row for row in body.split('<tr id="p-')[1:]}
-    assert 'data-copy="a3-&gt;28-&gt;9e\ndirect\na3-&gt;5d"' in rows["routed"]
-    assert "3 copies heard, via a3-&gt;28-&gt;9e, direct, a3-&gt;5d" in rows["routed"]
+    assert (
+        'data-copy="a3 &lt;unknown&gt; → 28 &lt;unknown&gt; → 9e &lt;unknown&gt;\n'
+        'direct\na3 &lt;unknown&gt; → 5d &lt;unknown&gt;"'
+    ) in rows["routed"]
+    assert "3 copies heard, via a3 → 28 → 9e, direct, a3 → 5d" in rows["routed"]
     for ref in ("direct", "unrecorded", "post"):
         assert "copy paths" not in rows[ref]
+
+
+def _keyed_contact(key_prefix: str, name: str | None) -> Contact:
+    return Contact(
+        public_key=bytes.fromhex(key_prefix).ljust(32, b"\x01"),
+        name=None if name is None else WireText.from_bytes(name.encode()),
+        advert_verified=True,
+        first_heard=NOW,
+        last_heard=NOW,
+    )
+
+
+def _received_over(ref: str, paths: tuple[bytes, ...], hash_size: int) -> object:
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+
+    return ChannelMessageRecord(
+        channel_id=2,
+        direction="in",
+        ref=ref,
+        text=b"hi",
+        wire_timestamp=1,
+        handled_at=NOW,
+        outcome=ChannelOutcome.RECEIVED,
+        unverified_sender_name="alice",
+        hop_count=len(paths[0]) // hash_size,
+        paths=paths,
+        path_hash_size=hash_size,
+    )
+
+
+def _copied(body: str, ref: str) -> str:
+    row = next(row for row in body.split('<tr id="p-')[1:] if row.startswith(f'{ref}"'))
+    return html.unescape(row.split('data-copy="', 1)[1].split('"', 1)[0])
+
+
+def test_copied_paths_name_each_hop_as_the_discord_notification_does() -> None:
+    app, state, log = _channel_app()
+    state.contacts.restore(
+        [
+            _keyed_contact("afc6", "Kurala Hill repeater"),
+            _keyed_contact("bed0", "Glorfalas"),
+            _keyed_contact("7a01", "one"),
+            _keyed_contact("7a02", "two"),
+            _keyed_contact("c3d4e5f60708", None),
+            _keyed_contact("e5aa", "line\nbreak"),
+        ]
+    )
+    log.offer(_received_over("named", (bytes.fromhex("13370c905e3aafc6bed0"),), 2))
+    log.offer(_received_over("odd", (bytes.fromhex("7ac3e5"),), 1))
+    with _client(app) as client:
+        body = client.get("/chat/channel/2/messages").text
+
+    assert _copied(body, "named") == (
+        "1337 <unknown> → 0c90 <unknown> → 5e3a <unknown> → afc6 Kurala Hill repeater"
+        " → bed0 Glorfalas"
+    )
+    assert _copied(body, "odd") == "7a <ambiguous> → c3 c3d4e5f60708 → e5 line break"
+
+
+def test_a_hop_learned_after_the_message_is_named_on_the_next_refresh() -> None:
+    app, state, log = _channel_app()
+    log.offer(_received_over("later", (bytes.fromhex("bed0"),), 2))
+    with _client(app) as client:
+        before = client.get("/chat/channel/2/messages").text
+        state.contacts.restore([_keyed_contact("bed0", "Glorfalas")])
+        after = client.get("/chat/channel/2/messages").text
+
+    assert _copied(before, "later") == "bed0 <unknown>"
+    assert _copied(after, "later") == "bed0 Glorfalas"
 
 
 def test_a_post_over_the_limit_is_refused_with_the_text_kept_and_nothing_recorded() -> None:

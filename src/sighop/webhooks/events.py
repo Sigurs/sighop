@@ -117,11 +117,13 @@ def node_type_name(node_type: NodeType | int | None) -> str | None:
         return f"type_{int(node_type)}"
 
 
-def resolve_hop(hop: bytes, contacts: HopLookup | None, advertiser: bytes) -> PathHop:
+def resolve_hop(hop: bytes, contacts: HopLookup | None, advertiser: bytes | None = None) -> PathHop:
     """A hop against the contacts other than the advertising node (design D2).
 
     The advertiser is left out: a node never repeats its own advert, and
     counting it would turn a 1-byte collision with it into a false ambiguity.
+    With no advertiser — a channel message, whose sender is only a claimed
+    name — every contact is a candidate.
     """
     if contacts is None:
         return PathHop(hash=hop, name=None, matches=0)

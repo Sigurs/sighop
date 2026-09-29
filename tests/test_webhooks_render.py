@@ -16,6 +16,7 @@ from sighop.webhooks.events import (
     Position,
     WebhookEvent,
     event_from_observation,
+    resolve_hop,
     sample_event,
 )
 from sighop.webhooks.render import (
@@ -173,6 +174,13 @@ async def test_the_advertiser_does_not_count_as_a_match_for_its_own_path() -> No
         known=(_contact(advertiser_byte.hex() + "ff", "Hilltop"),),
     )
     [hop] = event.path
+    assert (hop.name, hop.matches) == ("Hilltop", 1)
+
+
+def test_without_an_advertiser_every_matching_contact_counts() -> None:
+    store = ContactStore()
+    store.restore((_contact("c3d4", "Hilltop"),))
+    hop = resolve_hop(bytes.fromhex("c3"), store)
     assert (hop.name, hop.matches) == ("Hilltop", 1)
 
 
