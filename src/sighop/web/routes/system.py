@@ -14,23 +14,34 @@ at every tick, so a saved change needs no reconcile call. The preferred first
 hop (preferred-first-hop D5) is held on the live path store instead, so a save
 sets it there too — only once the row is written, so memory and the database
 never disagree.
+
+The packet archive's section (packet-archive D8) shows what the archive holds,
+takes its retention bound under the same strict validation, and exports a range
+as a capture file. The maintainer re-reads the bound on every pass, so a saved
+change needs no restart either. The export is behind the same sign-in as every
+page here; the request guard is what enforces that, not this module.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 
+from sighop.db.archive import export_lines
 from sighop.db.engine import Succeeded
+from sighop.db.models import ARCHIVE_RETENTION_DAYS_RANGE
 from sighop.db.repositories import (
     COLLECTION_INTERVAL_RANGE,
     COLLECTION_RECENT_DAYS_RANGE,
     COLLECTION_RETENTION_DAYS_RANGE,
     DEFAULT_COLLECTION_RETENTION_DAYS,
+    ArchiveReadError,
+    ArchiveSettingsError,
     CollectionSettings,
     CollectionSettingsError,
     RoutePreferenceError,
@@ -53,6 +64,10 @@ router = APIRouter(prefix="/system")
 
 
 SEE_OTHER = 303
+
+DEFAULT_ARCHIVE_RETENTION_DAYS = 365
+"""What the days field shows while the archive is kept forever, so unticking
+keep forever yields a sane bound rather than an empty field."""
 
 
 @router.get("", response_class=HTMLResponse)
@@ -113,6 +128,121 @@ async def set_collection(
     return RedirectResponse("/system", status_code=SEE_OTHER)
 
 
+@router.post("/archive", response_model=None)
+async def set_archive_retention(
+    request: Request,
+    page: PanelDep,
+    retention_days: Annotated[str, Form()] = "",
+    retention_forever: Annotated[str, Form()] = "",
+) -> HTMLResponse | RedirectResponse:
+    """Store the archive's retention bound, or refuse it with the reason.
+
+    Keep forever is its own checkbox, as on the collection form: a blank days
+    field is refused, never read as forever."""
+    forever = retention_forever == "true"
+    form = {"retention_days": retention_days, "retention_forever": forever}
+    try:
+        days = (
+            None
+            if forever
+            else _whole_number(
+                retention_days,
+                ARCHIVE_RETENTION_DAYS_RANGE,
+                "the archive retention",
+                "days",
+                error=ArchiveSettingsError,
+            )
+        )
+        saved = await page.persistence.packet_archive.set_retention(days)
+    except ArchiveSettingsError as exc:
+        return await _refuse_archive(request, page, str(exc), form)
+    if not isinstance(saved, Succeeded):
+        return await _refuse_archive(
+            request, page, "the setting could not be stored; nothing was changed", form, 503
+        )
+    return RedirectResponse("/system#archive", status_code=SEE_OTHER)
+
+
+@router.get("/archive/export", response_model=None)
+async def export_archive(
+    request: Request, page: PanelDep, since: str = "", until: str = ""
+) -> HTMLResponse | StreamingResponse:
+    """A range of the archive as a capture-format JSONL download.
+
+    `since` is inclusive and `until` exclusive, each a date or an ISO time; one
+    without an offset is UTC. A range that is empty or inverted is refused with
+    the reason rather than answered with a header and nothing else. With no
+    range at all this is somebody arriving at the address, not asking for a
+    file, so they get the page whose form asks for one.
+    """
+    if not since.strip() and not until.strip():
+        return await _system_page(request, page)
+    try:
+        start, end = _instant(since, "the start"), _instant(until, "the end")
+    except ValueError as exc:
+        return await _refuse_export(request, page, str(exc))
+    if end <= start:
+        return await _refuse_export(request, page, "the end of the range must be after its start")
+
+    async def lines() -> AsyncIterator[str]:
+        try:
+            async for line in export_lines(page.persistence.packet_archive, start, end):
+                yield line
+        except ArchiveReadError as exc:
+            # The response has started; all that is left is to stop after the
+            # last whole line, which replay reads as a file cut short.
+            page.logger.error(
+                "archive_export_incomplete",
+                outcome="error",
+                since=start.isoformat(),
+                until=end.isoformat(),
+                error=str(exc),
+            )
+
+    name = f"sighop-archive-{_stamp(start)}-{_stamp(end)}.jsonl"
+    return StreamingResponse(
+        lines(),
+        media_type="application/x-ndjson",
+        headers={
+            "content-disposition": f'attachment; filename="{name}"',
+            "cache-control": "no-store",
+        },
+    )
+
+
+def _instant(value: str, what: str) -> dt.datetime:
+    text = value.strip()
+    if not text:
+        raise ValueError(f"{what} of the range is required, as a date or an ISO time")
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        raise ValueError(f"{what} of the range, {text!r}, is not a date or an ISO time") from None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=dt.UTC)
+
+
+def _stamp(at: dt.datetime) -> str:
+    return at.astimezone(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+async def _refuse_archive(
+    request: Request,
+    page: Panel,
+    reason: str,
+    form: dict[str, object],
+    status_code: int = 400,
+) -> HTMLResponse:
+    if "nothing was changed" not in reason:
+        reason = f"{reason}; nothing was changed"
+    return await _system_page(
+        request, page, archive_error=reason, archive_form=form, status_code=status_code
+    )
+
+
+async def _refuse_export(request: Request, page: Panel, reason: str) -> HTMLResponse:
+    return await _system_page(request, page, export_error=reason, status_code=400)
+
+
 @router.post("/route-preference", response_model=None)
 async def set_route_preference(
     request: Request,
@@ -156,12 +286,19 @@ async def _refuse_route(
     return await _system_page(request, page, route_error=reason, status_code=status_code)
 
 
-def _whole_number(value: str, bounds: tuple[int, int], what: str, unit: str) -> int:
+def _whole_number(
+    value: str,
+    bounds: tuple[int, int],
+    what: str,
+    unit: str,
+    *,
+    error: type[ValueError] = CollectionSettingsError,
+) -> int:
     low, high = bounds
     try:
         return int(value.strip())
     except ValueError:
-        raise CollectionSettingsError(
+        raise error(
             f"{what} must be a whole number of {unit} from {low} to {high}; "
             f"{value!r} is not one, and nothing was changed"
         ) from None
@@ -186,6 +323,9 @@ async def _system_page(
     error: str = "",
     form: dict[str, object] | None = None,
     route_error: str = "",
+    archive_error: str = "",
+    archive_form: dict[str, object] | None = None,
+    export_error: str = "",
     status_code: int = 200,
 ) -> HTMLResponse:
     """The readback once, the revision agreement, the station controls, and collection.
@@ -224,6 +364,9 @@ async def _system_page(
         collection_error=error,
         route=await _route_preference_view(page),
         route_error=route_error,
+        archive=await _archive_view(page, archive_form),
+        archive_error=archive_error,
+        export_error=export_error,
         status_code=status_code,
     )
 
@@ -318,4 +461,32 @@ async def _collection_view(page: Panel, form: dict[str, object] | None) -> dict[
         "interval_range": COLLECTION_INTERVAL_RANGE,
         "recent_range": COLLECTION_RECENT_DAYS_RANGE,
         "retention_range": COLLECTION_RETENTION_DAYS_RANGE,
+    }
+
+
+async def _archive_view(page: Panel, form: dict[str, object] | None) -> dict[str, object]:
+    """What the archive section draws: the summary, this run's counters, the
+    retention bound (or the refused form, as typed), and a default export range.
+
+    A summary or setting that cannot be read is shown as unreadable rather than
+    as an empty archive: the two look alike and mean opposite things."""
+    persistence = page.persistence
+    summary = await persistence.packet_archive.summary()
+    retention = await persistence.packet_archive.get_retention()
+    stored = retention.value if isinstance(retention, Succeeded) else None
+    values = form or {
+        "retention_days": str(DEFAULT_ARCHIVE_RETENTION_DAYS if stored is None else stored),
+        "retention_forever": stored is None,
+    }
+    today = dt.datetime.now(dt.UTC).date()
+    return {
+        "summary": summary.value if isinstance(summary, Succeeded) else None,
+        "retention_readable": isinstance(retention, Succeeded),
+        "retention_days": stored,
+        "written": persistence.archive_writer.written,
+        "discarded": persistence.archive_writer.discarded,
+        "form": values,
+        "retention_range": ARCHIVE_RETENTION_DAYS_RANGE,
+        "export_since": (today - dt.timedelta(days=1)).isoformat(),
+        "export_until": (today + dt.timedelta(days=1)).isoformat(),
     }

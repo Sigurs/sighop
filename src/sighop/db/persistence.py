@@ -26,10 +26,17 @@ costs counters and a `degraded` flag, and costs the radio nothing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from sighop.db.archive import (
+    DEFAULT_MAINTENANCE_INTERVAL_SECONDS,
+    ArchiveMaintainer,
+    rx_archive_row,
+    tx_archive_row,
+)
 from sighop.db.engine import Database, Succeeded
 from sighop.db.packetlog import (
     DEFAULT_PRUNE_INTERVAL_SECONDS,
@@ -39,6 +46,7 @@ from sighop.db.packetlog import (
 )
 from sighop.db.repositories import (
     DEFAULT_PACKET_LOG_MAX_ROWS,
+    ArchiveRow,
     BotRepository,
     BotStateRepository,
     ChannelMessageRepository,
@@ -47,6 +55,7 @@ from sighop.db.repositories import (
     DirectMessageRepository,
     EntityRepository,
     MessageRepository,
+    PacketArchiveRepository,
     PacketLogRepository,
     PacketLogRow,
     PathRepository,
@@ -75,6 +84,11 @@ marker set has to carry during an outage (design D16)."""
 
 PATH_QUEUE_CAPACITY = 512
 PACKET_LOG_QUEUE_CAPACITY = 2048
+
+ARCHIVE_QUEUE_CAPACITY = 4096
+"""Twice the feed's: the archive is the lane a gap costs most in, and at the
+measured ~191 receptions an hour this rides out a long outage before it drops
+anything (packet-archive D2)."""
 
 DIRECT_MESSAGE_QUEUE_CAPACITY = 512
 """Two offers per send and one per reception, on a link whose ceiling is a
@@ -114,6 +128,7 @@ class Persistence:
     database: Database
     packet_log_max_rows: int = DEFAULT_PACKET_LOG_MAX_ROWS
     prune_interval: float = DEFAULT_PRUNE_INTERVAL_SECONDS
+    archive_interval: float = DEFAULT_MAINTENANCE_INTERVAL_SECONDS
     writes_enabled: bool = True
     """False for a replay run (design D13): the pipeline runs and nothing is
     written, because a replayed reception carries an earlier session's timestamps
@@ -126,6 +141,11 @@ class Persistence:
     paths: PathRepository = field(init=False)
     packet_log: PacketLogRepository = field(init=False)
     pruner: PacketLogPruner = field(init=False)
+
+    # The archive has a lane of its own beside the feed's (packet-archive D2):
+    # the same two hooks offer to both, and neither can starve the other.
+    packet_archive: PacketArchiveRepository = field(init=False)
+    archive_maintainer: ArchiveMaintainer = field(init=False)
 
     # Rooms have no write-behind queue of their own, and that is design D5
     # rather than an omission: an ACL write is rare and must land before the
@@ -183,11 +203,13 @@ class Persistence:
     contact_writer: WriteBehind[Contact] = field(init=False)
     path_writer: WriteBehind[tuple[PathKey, LearnedPath]] = field(init=False)
     packet_log_writer: WriteBehind[PacketLogRow] = field(init=False)
+    archive_writer: WriteBehind[ArchiveRow] = field(init=False)
     dm_writer: WriteBehind[DirectMessageRecord] = field(init=False)
     channel_writer: WriteBehind[ChannelMessageRecord] = field(init=False)
 
     restored: RestoredCounts = field(default_factory=RestoredCounts)
     _contact_store: ContactStore | None = field(default=None, init=False)
+    _archive_start: asyncio.Task[None] | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.logger = self.logger or get_logger(component="persistence")
@@ -199,6 +221,10 @@ class Persistence:
         )
         self.pruner = PacketLogPruner(
             self.packet_log, interval=self.prune_interval, logger=self.logger
+        )
+        self.packet_archive = PacketArchiveRepository(database=self.database)
+        self.archive_maintainer = ArchiveMaintainer(
+            self.packet_archive, interval=self.archive_interval, logger=self.logger
         )
         self.rooms = RoomRepository(database=self.database)
         self.members = RoomMemberRepository(database=self.database)
@@ -238,6 +264,13 @@ class Persistence:
             batch_size=128,
             logger=self.logger,
         )
+        self.archive_writer = WriteBehind(
+            "packet_archive",
+            self._flush_archive,
+            capacity=ARCHIVE_QUEUE_CAPACITY,
+            batch_size=256,
+            logger=self.logger,
+        )
         self.dm_writer = WriteBehind(
             "direct_messages",
             self._flush_direct_messages,
@@ -260,6 +293,7 @@ class Persistence:
             logger=self.logger,
         )
         self.database.on_recovery(self.backfill_contacts)
+        self.database.on_recovery(self._ensure_archive_partitions)
 
     # --- Sinks the stores hold ---------------------------------------------
 
@@ -378,12 +412,28 @@ class Persistence:
             self.dm_writer.start()
             self.channel_writer.start()
             self.pruner.start()
+            if self._archive_start is None:
+                self._archive_start = asyncio.create_task(
+                    self._start_archive(), name="packet-archive-start"
+                )
         self.database.start_probe()
+
+    async def _start_archive(self) -> None:
+        """The first maintenance pass, then the writer (packet-archive D4).
+
+        Awaited before the writer starts so this month's partition exists before
+        the first insert. Anything offered meanwhile waits in the bounded buffer.
+        """
+        await self.archive_maintainer.start()
+        self.archive_writer.start()
+
+    async def _ensure_archive_partitions(self) -> None:
+        await self.archive_maintainer.ensure()
 
     async def stop(self) -> None:
         """Flush what is buffered, stop the tasks, and close the pool.
 
-        The five lanes drain *concurrently* under *one* deadline taken from
+        The six lanes drain *concurrently* under *one* deadline taken from
         `shutdown_budget` (design D3): one absolute instant shared between them,
         rather than a duration each, so the time a stop may take does not grow
         with the number of write lanes. What a lane could not write inside the
@@ -394,6 +444,12 @@ class Persistence:
         rather than at shutdown (design D2).
         """
         await self.pruner.stop()
+        archive_start, self._archive_start = self._archive_start, None
+        if archive_start is not None:
+            archive_start.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await archive_start
+        await self.archive_maintainer.stop()
         deadline = asyncio.get_running_loop().time() + self.database.config.shutdown_budget
         await asyncio.gather(
             *(
@@ -402,6 +458,7 @@ class Persistence:
                     self.contact_writer,
                     self.path_writer,
                     self.packet_log_writer,
+                    self.archive_writer,
                     self.dm_writer,
                     self.channel_writer,
                 )
@@ -442,6 +499,14 @@ class Persistence:
         self.database.stats.packet_log_discarded += len(batch)
         return False
 
+    async def _flush_archive(self, batch: Sequence[ArchiveRow]) -> bool:
+        outcome = await self.packet_archive.write_many(list(batch))
+        if isinstance(outcome, Succeeded):
+            self.database.stats.archive_written += len(batch)
+            return True
+        self.database.stats.archive_discarded += len(batch)
+        return False
+
     async def _flush_direct_messages(self, batch: Sequence[DirectMessageRecord]) -> bool:
         outcome = await self.direct_messages.upsert_many(list(batch))
         if isinstance(outcome, Succeeded):
@@ -465,12 +530,14 @@ class Persistence:
         if not self.writes_enabled:
             return
         self.packet_log_writer.offer(rx_row(record, airtime_ms=airtime_ms))
+        self.archive_writer.offer(rx_archive_row(record))
 
     def record_tx(self, submission: Submission, outcome: TxOutcome, *, at: dt.datetime) -> None:
         """Offer one resolved transmission to the feed — suppressed ones too."""
         if not self.writes_enabled:
             return
         self.packet_log_writer.offer(tx_row(submission, outcome, at=at))
+        self.archive_writer.offer(tx_archive_row(submission, outcome, at=at))
 
     # --- Recovery (design D15) ---------------------------------------------
 
@@ -541,6 +608,9 @@ class Persistence:
             **self.contact_writer.as_json(),
             **self.path_writer.as_json(),
             **self.packet_log_writer.as_json(),
+            **self.archive_writer.as_json(),
+            "archive_partitions_created": self.archive_maintainer.created,
+            "archive_partitions_dropped": self.archive_maintainer.dropped,
             **self.dm_writer.as_json(),
             **self.channel_writer.as_json(),
         }
@@ -551,6 +621,7 @@ class Persistence:
             self.contact_writer.wait_idle(),
             self.path_writer.wait_idle(),
             self.packet_log_writer.wait_idle(),
+            self.archive_writer.wait_idle(),
             self.dm_writer.wait_idle(),
             self.channel_writer.wait_idle(),
         )

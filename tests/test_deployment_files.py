@@ -266,7 +266,8 @@ WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
 
 def test_the_workflow_runs_build_sh_and_pins_every_action_by_commit() -> None:
     text = WORKFLOW.read_text()
-    assert "run: ./build.sh" in text, "CI runs the same gates as a local build"
+    # Only the image gate: the others run locally, not in CI (ci-image-build-only).
+    assert re.findall(r"run: \./build\.sh\b.*", text) == ["run: ./build.sh image"]
     uses = re.findall(r"uses: (\S+)", text)
     assert uses, "no actions found"
     for action in uses:
@@ -280,7 +281,7 @@ def test_the_workflow_tags_by_commit_and_time_and_keeps_three_versions() -> None
     assert 'tag="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d-%H%M%S)"' in text
     assert "min-versions-to-keep: 3" in text
     assert "delete-only-untagged-versions: false" in text
-    # Pull requests build and verify; only pushes publish, notify and prune.
+    # Pull requests only build; only pushes publish, notify and prune.
     for step in ("Log in to GHCR", "Push", "Notify Discord", "Keep only the newest three versions"):
         block = text[text.index(f"- name: {step}") :].split("\n      - ", 1)[0]
         assert "if: github.event_name != 'pull_request'" in block, step
@@ -293,12 +294,8 @@ def test_one_push_is_one_package_version() -> None:
     assert "--provenance=false" in image and "--sbom=false" in image
 
 
-def test_the_workflow_gives_the_test_gate_a_database() -> None:
-    """`database`: the suite refuses to run without one, so CI must provide it —
-    pinned by digest like every other image here, and on a non-UTC zone."""
+def test_the_workflow_starts_no_database() -> None:
+    """No gate that runs in CI needs one, so none is started (ci-image-build-only)."""
     text = WORKFLOW.read_text()
-    assert re.search(
-        r"^\s+services:\n\s+postgres:\n\s+image: postgres:\d+@sha256:[0-9a-f]{64}$", text, re.M
-    )
-    assert "TZ: Europe/Helsinki" in text
-    assert "SIGHOP_TEST_DATABASE_URL: postgresql+asyncpg://" in text
+    assert not re.search(r"^\s+services:", text, re.M)
+    assert "SIGHOP_TEST_DATABASE_URL" not in text

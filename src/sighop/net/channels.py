@@ -93,6 +93,11 @@ REPEAT_REGISTRY_TTL_SECONDS = 3600.0
 """An hour and 256 posts: longer than any flood echo, and far more posts than a
 station posts in an hour under an airtime ceiling."""
 
+MAX_PATHS = 32
+"""How many copies' paths one received message keeps. Copies heard beyond it
+are ignored: a flood that reaches the station more often than this says nothing
+the first 32 routes did not."""
+
 
 class ChannelKind(StrEnum):
     """How a channel's key is obtained — `channel.kind`."""
@@ -194,6 +199,12 @@ class ChannelMessageRecord:
     `text` is the message body's bytes as they travel, without the
     `name: ` prefix — the name is `unverified_sender_name` inbound and the
     posting identity outbound.
+
+    `paths` is inbound only: every copy's raw path in arrival order, the first
+    copy's first, `b""` for a copy heard directly. All copies share the hash
+    size, which the originator sets, so `path_hash_size` is one number. Both are
+    None where nothing was recorded — outbound, and rows from before paths were
+    kept.
     """
 
     channel_id: int
@@ -211,6 +222,8 @@ class ChannelMessageRecord:
     rssi_dbm: int | None = None
     repeats_heard: int = 0
     outcome_reason: str | None = None
+    paths: tuple[bytes, ...] | None = None
+    path_hash_size: int | None = None
     row_id: int | None = None
 
     @property
@@ -499,6 +512,61 @@ class RepeatRegistry:
             del self._entries[key]
 
 
+@dataclass(slots=True)
+class _Heard:
+    paths: list[bytes]
+    registered_at: dt.datetime
+    record: ChannelMessageRecord | None = None
+    """The received message these copies belong to, once it has been decrypted.
+    None for a group text nobody here can read, or one not yet handled."""
+
+
+class HeardRegistry:
+    """Group texts heard, by dedup key, with every copy's path; bounded like posts.
+
+    Entered from whichever sees a message first. The reception observer is told
+    about the first copy synchronously, but the bus handler that decrypts it runs
+    later, so a duplicate can be observed before the message it belongs to is
+    recorded: its path waits here and goes into the record when it is made.
+    """
+
+    def __init__(
+        self,
+        *,
+        capacity: int = REPEAT_REGISTRY_CAPACITY,
+        ttl_seconds: float = REPEAT_REGISTRY_TTL_SECONDS,
+    ) -> None:
+        self.capacity = capacity
+        self.ttl = dt.timedelta(seconds=ttl_seconds)
+        self._entries: OrderedDict[bytes, _Heard] = OrderedDict()
+
+    def first_copy(self, key: bytes, path: bytes, now: dt.datetime) -> _Heard:
+        """The entry for a message's first copy, made with `path` if new."""
+        self._expire(now)
+        entry = self._entries.get(key)
+        if entry is not None:
+            return entry
+        entry = self._entries[key] = _Heard([path], now)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+        return entry
+
+    def get(self, key: bytes, now: dt.datetime) -> _Heard | None:
+        self._expire(now)
+        return self._entries.get(key)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def _expire(self, now: dt.datetime) -> None:
+        cutoff = now - self.ttl
+        while self._entries:
+            key, entry = next(iter(self._entries.items()))
+            if entry.registered_at >= cutoff:
+                return
+            del self._entries[key]
+
+
 # --- The messenger ----------------------------------------------------------
 
 
@@ -544,6 +612,7 @@ class ChannelMessenger:
         self._log = logger or get_logger(component="channels")
         self._records: list[ChannelMessageSink] = [] if records is None else [records]
         self.registry = registry or RepeatRegistry()
+        self.heard = HeardRegistry()
         self._last_timestamp = 0
         self._resolutions: set[asyncio.Task[ChannelMessageRecord]] = set()
         self.decrypted = 0
@@ -716,22 +785,28 @@ class ChannelMessenger:
         raw = body.message.text.raw
         separator = GROUP_NAME_SEPARATOR.encode()
         text = raw.partition(separator)[2] if claimed is not None else raw
-        self._record(
-            ChannelMessageRecord(
-                channel_id=channel.id,
-                direction=INBOUND,
-                ref=record.packet_id,
-                text=text,
-                wire_timestamp=body.message.timestamp,
-                handled_at=record.received_at,
-                outcome=ChannelOutcome.RECEIVED,
-                unverified_sender_name=claimed,
-                packet_id=record.packet_id,
-                hop_count=record.hop_count,
-                snr_db=record.snr_db,
-                rssi_dbm=record.rssi_dbm,
-            )
+        packet = record.packet
+        assert packet is not None
+        heard = self.heard.first_copy(
+            content_key(int(PayloadType.GRP_TXT), packet.payload), packet.path, self.clock.now()
         )
+        heard.record = ChannelMessageRecord(
+            channel_id=channel.id,
+            direction=INBOUND,
+            ref=record.packet_id,
+            text=text,
+            wire_timestamp=body.message.timestamp,
+            handled_at=record.received_at,
+            outcome=ChannelOutcome.RECEIVED,
+            unverified_sender_name=claimed,
+            packet_id=record.packet_id,
+            hop_count=record.hop_count,
+            snr_db=record.snr_db,
+            rssi_dbm=record.rssi_dbm,
+            paths=tuple(heard.paths),
+            path_hash_size=packet.hash_size,
+        )
+        self._record(heard.record)
         self._log.info(
             "channel_message_received",
             packet_id=record.packet_id,
@@ -759,7 +834,8 @@ class ChannelMessenger:
         )
 
     def observe(self, record: RxRecord, duplicate: bool) -> None:
-        """Reception observer: count copies of our own posts. Never raises."""
+        """Reception observer: count copies of our own posts, and keep every
+        copy's path for received messages. Never raises."""
         try:
             self._observe(record, duplicate)
         except Exception as exc:  # pragma: no cover - defensive, observers never raise
@@ -775,8 +851,10 @@ class ChannelMessenger:
         if packet is None or packet.payload_type is not PayloadType.GRP_TXT:
             return
         key = content_key(int(PayloadType.GRP_TXT), packet.payload)
-        entry = self.registry.get(key, self.clock.now())
+        now = self.clock.now()
+        entry = self.registry.get(key, now)
         if entry is None:
+            self._copy_heard(key, packet.path, duplicate, now)
             return
         entry.record = replace(entry.record, repeats_heard=entry.record.repeats_heard + 1)
         self.repeats_heard += 1
@@ -802,6 +880,24 @@ class ChannelMessenger:
                 duplicate=duplicate,
             )
         )
+
+    def _copy_heard(self, key: bytes, path: bytes, duplicate: bool, now: dt.datetime) -> None:
+        """One copy of a group text that is not ours: its path, kept with the message.
+
+        The first copy's path is the message's own, whichever of this and the
+        bus handler sees it first. A duplicate of a message no longer remembered
+        — expired, displaced, or from before a restart — is not attached.
+        """
+        if not duplicate:
+            self.heard.first_copy(key, path, now)
+            return
+        heard = self.heard.get(key, now)
+        if heard is None or len(heard.paths) >= MAX_PATHS:
+            return
+        heard.paths.append(path)
+        if heard.record is not None:
+            heard.record = replace(heard.record, paths=tuple(heard.paths))
+            self._record(heard.record)
 
     # --- Outbound ------------------------------------------------------------
 

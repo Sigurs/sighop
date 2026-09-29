@@ -1167,6 +1167,53 @@ def test_a_transmitted_post_states_repeats_and_that_no_acknowledgement_exists() 
     assert page.count("No acknowledgement exists for channel messages") == 1
 
 
+def test_a_received_message_offers_its_paths_to_copy_and_nothing_else_does() -> None:
+    from sighop.net.channels import ChannelMessageRecord, ChannelOutcome
+
+    app, state, log = _channel_app()
+    stub = state.adverts.stubs[0]
+
+    def received(ref: str, **fields: object) -> ChannelMessageRecord:
+        return ChannelMessageRecord(
+            channel_id=2,
+            direction="in",
+            ref=ref,
+            text=b"hi",
+            wire_timestamp=1,
+            handled_at=NOW,
+            outcome=ChannelOutcome.RECEIVED,
+            unverified_sender_name="alice",
+            **fields,  # type: ignore[arg-type]
+        )
+
+    log.offer(
+        received("routed", hop_count=3, paths=(b"\xa3\x28\x9e", b"", b"\xa3\x5d"), path_hash_size=1)
+    )
+    log.offer(received("direct", hop_count=0, paths=(b"",), path_hash_size=1))
+    log.offer(received("unrecorded", hop_count=2))
+    log.offer(
+        ChannelMessageRecord(
+            channel_id=2,
+            direction="out",
+            ref="post",
+            text=b"hi",
+            wire_timestamp=1,
+            handled_at=NOW,
+            outcome=ChannelOutcome.TRANSMITTED,
+            entity_public_key=stub.identity.public_key,
+            repeats_heard=1,
+        )
+    )
+    with _client(app) as client:
+        body = client.get("/chat/channel/2/messages").text
+
+    rows = {row.split('"', 1)[0]: row for row in body.split('<tr id="p-')[1:]}
+    assert 'data-copy="a3-&gt;28-&gt;9e\ndirect\na3-&gt;5d"' in rows["routed"]
+    assert "3 copies heard, via a3-&gt;28-&gt;9e, direct, a3-&gt;5d" in rows["routed"]
+    for ref in ("direct", "unrecorded", "post"):
+        assert "copy paths" not in rows[ref]
+
+
 def test_a_post_over_the_limit_is_refused_with_the_text_kept_and_nothing_recorded() -> None:
     app, state, log = _channel_app()
     stub = state.adverts.stubs[0]

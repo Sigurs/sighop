@@ -565,20 +565,64 @@ def _channel_message_view(page: Panel, record: ChannelMessageRecord) -> dict[str
         "handled_at": record.handled_at,
         "wire_time": wire_time,
         "state": _channel_state(record),
+        "path_copy": _path_copy(record),
     }
+
+
+DIRECT = "direct"
+"""A copy heard without any hop, where a path would be written."""
+
+PATH_ARROW = "->"
+
+
+def _path_lines(paths: tuple[bytes, ...] | None, hash_size: int | None) -> tuple[str, ...]:
+    """Each recorded copy's path as its hop hashes in hex, `->`-joined, in arrival order.
+
+    A path whose length is not a whole number of hashes is left out rather than
+    split at a guess; a copy heard directly is `direct`.
+    """
+    if paths is None or not hash_size:
+        return ()
+    lines: list[str] = []
+    for path in paths:
+        if len(path) % hash_size:
+            continue
+        hops = (path[i : i + hash_size].hex() for i in range(0, len(path), hash_size))
+        lines.append(PATH_ARROW.join(hops) or DIRECT)
+    return tuple(lines)
+
+
+def _received_paths(record: ChannelMessageRecord) -> tuple[str, ...]:
+    """A received message's path lines, or none when no copy came over a hop."""
+    if not record.inbound:
+        return ()
+    lines = _path_lines(record.paths, record.path_hash_size)
+    return lines if any(line != DIRECT for line in lines) else ()
+
+
+def _path_copy(record: ChannelMessageRecord) -> str | None:
+    """What the copy control copies: one path per line. None hides the control."""
+    return "\n".join(lines) if (lines := _received_paths(record)) else None
 
 
 def _channel_state(record: ChannelMessageRecord) -> tuple[Status, ...]:
     """A channel message's state, in the only terms a channel offers.
 
     That no acknowledgement exists is said in the transmitted glyph's hover and
-    once on the page (`POST_NOTE`), not spelled out again on every row.
+    once on the page (`POST_NOTE`), not spelled out again on every row. A
+    received message's paths are said in its hover too, comma-separated because
+    a title's line breaks render differently from browser to browser; the
+    figure stays the hop count, so the column never widens.
     """
     if record.inbound:
         if record.hop_count is None:
             return (Status("received", "↓", ("?",), "received over an unknown number of hops"),)
         hops = plural(record.hop_count, "hop")
-        return (Status("received", "↓", (str(record.hop_count),), f"received over {hops}"),)
+        explanation = f"received over {hops}"
+        if lines := _received_paths(record):
+            copies = plural(len(lines), "copy", "copies")
+            explanation += f"; {copies} heard, via {', '.join(lines)}"
+        return (Status("received", "↓", (str(record.hop_count),), explanation),)
     match record.outcome:
         case ChannelOutcome.AWAITING:
             return (Status("awaiting", "◷", explanation="awaiting transmission"),)

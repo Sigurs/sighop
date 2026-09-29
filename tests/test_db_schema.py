@@ -30,6 +30,8 @@ WEB_TABLES = ("web_user",)
 WEBHOOK_TABLES = ("webhook",)
 REPEATER_TABLES = ("repeater_collection", "repeater_target", "repeater_poll", "repeater_neighbour")
 ROUTE_TABLES = ("route_preference",)
+ARCHIVE_TABLES = ("packet_archive", "packet_archive_settings")
+"""The parent and its settings; the monthly children are the maintainer's."""
 
 
 # --- 2.5 Migrations are the only schema authority ---------------------------
@@ -57,7 +59,7 @@ def test_no_application_code_calls_create_all() -> None:
 
 
 def test_the_migration_chain_has_one_head_the_code_expects() -> None:
-    assert migrations.expected_revision() == "0014"
+    assert migrations.expected_revision() == "0016"
     assert migrations.knows_revision("0001")
     assert migrations.knows_revision("0002")
     assert migrations.knows_revision("0003")
@@ -72,6 +74,8 @@ def test_the_migration_chain_has_one_head_the_code_expects() -> None:
     assert migrations.knows_revision("0012")
     assert migrations.knows_revision("0013")
     assert migrations.knows_revision("0014")
+    assert migrations.knows_revision("0015")
+    assert migrations.knows_revision("0016")
     assert not migrations.knows_revision("beef")
 
 
@@ -160,9 +164,11 @@ async def test_the_tables_exist_with_timestamptz_and_a_non_unique_node_hash(
 async def test_the_repeater_models_match_what_migration_0011_built(database: Database) -> None:
     """The models and the migrations describe the same tables.
 
-    Scoped to the tables 0011 and 0014 add; the older ones predate this check.
+    Scoped to the tables 0011, 0014 and 0016 add; the older ones predate this
+    check. The archive's monthly children are created at run time and are not
+    in the allowlist, so they never read as drift.
     """
-    compared = REPEATER_TABLES + ROUTE_TABLES
+    compared = REPEATER_TABLES + ROUTE_TABLES + ARCHIVE_TABLES
 
     def include(
         obj: object, name: str | None, type_: str, reflected: bool, compare_to: object
@@ -199,6 +205,7 @@ async def test_upgrade_downgrade_upgrade_leaves_the_schema_at_head(
             | set(WEB_TABLES)
             | set(REPEATER_TABLES)
             | set(ROUTE_TABLES)
+            | set(ARCHIVE_TABLES)
         )
 
         await migrations.upgrade_async(config)

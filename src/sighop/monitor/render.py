@@ -369,6 +369,7 @@ def render_status(
     contacts: int = 0,
     persistence: str,
     packet_log_discarded: int = 0,
+    archive_discarded: int = 0,
     routes_discarded: int = 0,
     awaiting_backfill: int = 0,
     webhooks: str | None = None,
@@ -376,7 +377,7 @@ def render_status(
 ) -> str:
     """The periodic status line. Duty cycle first — it is the limit that binds.
 
-    The three persistence counters are always rendered, including as zeros. A
+    The four persistence counters are always rendered, including as zeros. A
     field that disappears when it is zero is a field a reader cannot tell from a
     field nobody wrote, and the whole reason they are here is so that a gap in
     the feed reads as a gap rather than as a quiet mesh.
@@ -398,6 +399,7 @@ def render_status(
         f"cache={dedup.entries}/{dedup.max_entries} paths={learned_paths} "
         f"contacts={contacts} "
         f"persist={persistence} log_drop={packet_log_discarded} "
+        f"arch_drop={archive_discarded} "
         f"route_drop={routes_discarded} backfill={awaiting_backfill}"
     )
     if active_overrides:

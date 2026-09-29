@@ -204,8 +204,10 @@ The board is observable through exactly four seams, none of them structural:
 is not even compiled into this example. sighop's own logging is therefore the *only*
 observability into the radio layer — which raises the value of logging every frame at the
 transport boundary, including ones that fail to parse. A malformed frame we silently drop is
-invisible forever. That rule also quietly recovers ESP32 panic backtraces, which arrive
-interleaved in the KISS stream as unparseable bytes.
+invisible forever. The log stream and the packet log's `raw` column carry that rule; since
+change `packet-archive`, `packet_archive` (§6) keeps every frame's bytes durably as well.
+That rule also quietly recovers ESP32 panic backtraces, which arrive interleaved in the KISS
+stream as unparseable bytes.
 
 The link is also a **single point of failure with no side channel**, so the reconnect loop
 and its wide events matter more than they would otherwise.
@@ -514,8 +516,9 @@ Postgres via SQLAlchemy 2.0 async. The eight-table sketch below is the original 
 milestone 7 **all eight exist**, and a ninth the sketch did not have joined the last of
 them. Milestone 8 adds a tenth, milestone 9 an eleventh that is not about the mesh at
 all, change `webhook-notifications` a twelfth, change `channel-messaging` a thirteenth and
-fourteenth, and change `repeater-metrics-collection` four more for what sighop collects from
-the repeaters around it.
+fourteenth, change `repeater-metrics-collection` four more for what sighop collects from
+the repeaters around it, and change `packet-archive` two for the permanent record of every
+frame.
 
 **Built (milestone 5, migration `0001`):**
 
@@ -600,6 +603,47 @@ is chosen. **Selection is not a `contact` column**, so an advert refreshing a co
 clear it, and it has no foreign key to `contact`. Pruning deletes `repeater_poll` rows older
 than the retention window and the neighbours go by cascade. **A downgrade from `0011` drops all
 four tables**: the settings, every selection and all collected history.
+
+**Built (change `packet-archive`, migration `0016`):**
+
+- **packet_archive** — partitioned `BY RANGE (at)` into monthly children
+  `packet_archive_yYYYYmMM`; `at`, identity `id` (PK `(at, id)`, because a partitioned
+  table's key must carry the partition key), `kind` (`rx`|`unparsed`|`tx`, checked),
+  `packet_id` (indexed), `raw` (never null), nullable `snr_db`, `rssi_dbm`, `reason`,
+  `tx_result`, `airtime_ms`, `entity_id` (no foreign key) and `priority_class`
+- **packet_archive_settings** — one row (`id = 1`, checked): nullable `retention_days`
+  (30–3650), seeded NULL, meaning keep forever
+
+**The archive is what the packet log deliberately is not.** `packet_log` is a feed: bounded,
+bytes only for what failed to decode, and nothing depends on a row. `packet_archive` keeps
+the exact wire bytes of every reception — duplicates, undecodable frames and bytes the modem
+could not frame included — and of every resolved transmission, suppressed and dropped ones
+included, so that a feature added later can be filled in from past traffic rather than
+starting on the day it ships. It stores **no decoded fields**: the bytes are the source, and
+a backfill decodes them with the decoder of its own day. The two are joined by `packet_id`.
+
+It is written the way the feed is, not the way content is: off the reception path, on a
+write-behind lane of its own, and a row that cannot be buffered or written is **dropped and
+counted** (`arch_drop=` on the status line, and on the system page) rather than spooled to
+disk. That was an operator decision: the archive is complete while the database keeps up,
+and a gap is visible as a gap rather than silent. A replay run writes nothing to it.
+
+**The runtime creates the partitions, and there is no DEFAULT partition.** The maintainer
+creates this month's and next month's at startup (before the archive writer starts), every
+six hours and on database recovery, so the app role needs CREATE on its schema — which it
+already has, because it runs the migrations. A DEFAULT partition was rejected: once it holds
+a month's rows, that month's own partition can no longer be created until they are moved,
+which turns a counted gap into a manual repair. Without one, a missing month fails the
+insert, the batch is counted as dropped, and the next pass fixes it.
+
+**Retention is by whole month and defaults to forever.** With a bound set, the maintainer
+drops every child whose month ended before `now - retention_days` — detach, then drop, never
+row deletes — so records may outlive the bound by up to a month. At the measured ~191
+receptions an hour the archive grows by roughly 0.3 GB a year. It is read back two ways: an
+ordered, keyset-paged range read for in-process backfill, and an export from the system page
+as a capture-format JSONL file whose header says `source: packet_archive`, which
+`radio/replay.py` and the corpus tools read unchanged. **A downgrade from `0016` drops the
+whole archive.**
 
 **The thirteenth table holds channels, and it seals by kind** (§7 Channels). A pre-shared key
 is a read-and-post credential, the same class as a webhook URL, so a `psk` row carries it
@@ -723,7 +767,8 @@ beats a walkie-talkie.
 
 `packet_log` is a bounded ring buffer, aggressively pruned. It exists to power the live
 feed, not to be a permanent record; unbounded packet logging on a busy mesh will fill a
-disk. Milestone 8 gave it its first **read** — `recent(limit)`, newest first, capped, under
+disk. The permanent record is `packet_archive` (above), which is partitioned by month so its
+retention costs a `DROP TABLE` rather than a delete. Milestone 8 gave it its first **read** — `recent(limit)`, newest first, capped, under
 the engine's existing statement bound — so the WebUI's feed can paint what happened before
 the browser connected. It stays a feed: nothing on the reception, dedup, dispatch or
 transmit path consults it, and a degraded database answers the read as unavailable rather
@@ -1696,15 +1741,15 @@ from them it says so here.
   version`, the commit from git with `-dirty` on a modified tree; the image is tagged
   `sighop:<version>-<commit>` and `sighop:local`, and never pushed by the script. Images are
   built without provenance or SBOM attestations, so each is a single manifest.
-- **CI** (`.github/workflows/build.yml`) runs `./build.sh` on every pull request and push to
-  `master`. On a push to `master` or a manual run it pushes the image to GHCR as
+- **CI** (`.github/workflows/build.yml`) runs only the image gate, `./build.sh image`, on
+  every pull request, push to `master` and manual run; the other gates run locally with
+  `./build.sh` and are not repeated in CI, to save CI time (change ci-image-build-only), so
+  an image in GHCR is not by itself proof that they passed. On a push to `master` or a manual run it pushes the image to GHCR as
   `<commit12>-<YYYYMMDD>-<HHMMSS>` (UTC), posts the tag and digest to Discord through the
   `notify-discord` action in `Sigurs/container-rebuilds`, and deletes all but the newest
   three package versions — one push being one version is why attestations are off. Every
-  action is pinned to a commit. The job runs a digest-pinned `postgres` service beside the
-  build, on `TZ=Europe/Helsinki`, and names it in `SIGHOP_TEST_DATABASE_URL`: the test gate
-  refuses to run without a database, and one test proves timestamps survive a server whose
-  `TimeZone` is not UTC. One pitfall found while
+  action is pinned to a commit. No gate run in CI needs a database, so the job starts none.
+  One pitfall found while
   building it: `set -e` does not apply inside a function run as an `if` condition, so every
   step in a gate ends in `|| return 1` — without that, the smoke gate passed an image that
   failed to start.
@@ -1835,7 +1880,7 @@ sighop/
 ├── compose.yaml        sighop, configured entirely in environment:, external DATABASE_URL
 ├── build.sh            lock, lint, types, test (needs a database), image, smoke, replay,
 │                       scan (scan reports only)
-├── .github/workflows/  build.yml: build.sh on PRs, with a Postgres for the test gate;
+├── .github/workflows/  build.yml: `build.sh image` only (no other gate, no Postgres);
 │                       push, Discord, keep-3 on main
 ├── Dockerfile          two stages, digest-pinned python:3.13-alpine, no USER
 ├── .dockerignore       an allowlist

@@ -38,7 +38,10 @@
             <span class="mono">{{ message.raw }}</span>
           {% endif %}
         </td>
-        <td class="message-state">{{ display.statuses(message.state) }}</td>
+        <td class="message-state">
+          {{- display.statuses(message.state) -}}
+          {%- if message.path_copy %} {{ display.copy_path(message.path_copy) }}{% endif -%}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

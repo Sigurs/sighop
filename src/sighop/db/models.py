@@ -21,6 +21,10 @@ The twelfth, `webhook`, holds the outside systems told about new repeaters and
 companions; its URL is sealed because the URL is the posting credential
 (webhook-notifications design D5, D6).
 
+Change `packet-archive` adds `packet_archive`, the permanent counterpart of
+`packet_log`: every frame's wire bytes, partitioned by month, kept forever unless
+an operator bounds it (packet-archive D1, D3).
+
 Three details are deliberate rather than accidental:
 
 * **`node_hash` is indexed but not unique, on either table.** §3 says a 1-byte
@@ -54,6 +58,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Identity,
     Index,
     Integer,
     LargeBinary,
@@ -656,6 +661,14 @@ class ChannelMessage(Base):
     """The scheduler's reason for a post that was not transmitted."""
 
     repeats_heard: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    paths: Mapped[list[bytes] | None] = mapped_column(ARRAY(LargeBinary), nullable=True)
+    """Inbound only: every copy's raw path, in arrival order, `b""` for a copy
+    heard directly. NULL is "not recorded" — outbound, and rows from before
+    paths were kept — never "no hops"."""
+
+    path_hash_size: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    """How wide each hop hash in `paths` is. The originator sets it, so every
+    copy shares it."""
 
     __table_args__ = (
         UniqueConstraint("channel_id", "ref", name="uq_channel_message_channel_id_ref"),
@@ -831,3 +844,72 @@ class RepeaterNeighbourRow(Base):
     snr_db: Mapped[float] = mapped_column(Float, nullable=False)
 
     __table_args__ = (Index("ix_repeater_neighbour_poll_id", "poll_id"),)
+
+
+PACKET_ARCHIVE_KINDS = ("rx", "unparsed", "tx")
+"""`rx` is a framed reception, decodable or not; `unparsed` is bytes the modem
+could not frame; `tx` is a resolved transmission (packet-archive D3)."""
+
+ARCHIVE_RETENTION_DAYS_RANGE = (30, 3650)
+"""Removal is by whole month, so a bound under a month would promise more than
+it delivers (packet-archive D5)."""
+
+
+class PacketArchive(Base):
+    """Every frame received or resolved for transmission, with its wire bytes.
+
+    The permanent counterpart of `packet_log` (packet-archive D1): bytes always,
+    decoded fields never, so a backfill decodes history with today's decoder.
+    Append-only — nothing updates a row, and only retention removes one, a whole
+    month's partition at a time.
+
+    Range-partitioned by month on `at`. The children are created by the runtime
+    (`ArchiveMaintainer`) rather than by migrations, and there is deliberately no
+    DEFAULT partition (D4), so the primary key carries the partition key.
+    """
+
+    __tablename__ = "packet_archive"
+
+    at: Mapped[dt.datetime] = mapped_column(TIMESTAMPTZ, primary_key=True)
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    packet_id: Mapped[str] = mapped_column(Text, nullable=False)
+    raw: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    snr_db: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rssi_dbm: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    """The modem's reason for unframed bytes; the outcome's reason for a TX."""
+
+    tx_result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    airtime_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    """TX only. No foreign key: deleting an identity must not rewrite history."""
+
+    priority_class: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{k}'" for k in PACKET_ARCHIVE_KINDS) + ")",
+            name="kind",
+        ),
+        Index("ix_packet_archive_packet_id", "packet_id"),
+        {"postgresql_partition_by": "RANGE (at)"},
+    )
+
+
+class PacketArchiveSettingsRow(Base):
+    """The archive's one settings row: NULL retention keeps everything forever."""
+
+    __tablename__ = "packet_archive_settings"
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("id = 1", name="single_row"),
+        CheckConstraint(
+            "retention_days IS NULL OR retention_days BETWEEN "
+            f"{ARCHIVE_RETENTION_DAYS_RANGE[0]} AND {ARCHIVE_RETENTION_DAYS_RANGE[1]}",
+            name="retention_days",
+        ),
+    )

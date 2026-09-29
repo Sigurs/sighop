@@ -387,7 +387,7 @@ def test_the_status_line_leads_with_the_gate_and_the_duty_cycle():
     assert line == (
         "== TX=disabled duty= 12.5% (45/360s) q=0/0/2/1 tx=4 sup=7 drop=1 fail=2 "
         "dup=11.0% cache=42/4096 paths=5 contacts=3 "
-        "persist=on log_drop=0 route_drop=0 backfill=0"
+        "persist=on log_drop=0 arch_drop=0 route_drop=0 backfill=0"
     )
 
 

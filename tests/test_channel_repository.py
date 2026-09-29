@@ -213,6 +213,32 @@ async def test_a_post_is_updated_in_place(database: Database) -> None:
     assert stored.entity_public_key == b"\x01" * 32
 
 
+async def test_a_received_message_gains_paths_in_place(database: Database) -> None:
+    from dataclasses import replace
+
+    history = ChannelMessageRepository(database=database)
+    first = _message(
+        1, "rx1", hop_count=3, paths=(bytes.fromhex("a3f128c09e4b"),), path_hash_size=2
+    )
+    _value(await history.upsert(first))
+    both = replace(first, paths=(bytes.fromhex("a3f128c09e4b"), b""))
+    _value(await history.upsert(both))
+    _value(await history.upsert(first))  # a stale offer takes nothing back
+
+    [stored] = _value(await history.recent(1))
+    assert stored.ref == "rx1" and stored.hop_count == 3
+    assert stored.paths == (bytes.fromhex("a3f128c09e4b"), b"")
+    assert stored.path_hash_size == 2
+
+
+async def test_a_message_without_paths_reads_back_as_none(database: Database) -> None:
+    history = ChannelMessageRepository(database=database)
+    _value(await history.upsert(_message(1, "old", hop_count=2)))
+
+    [stored] = _value(await history.recent(1))
+    assert stored.paths is None and stored.path_hash_size is None and stored.hop_count == 2
+
+
 async def test_history_is_ordered_by_handled_time_not_wire_time(database: Database) -> None:
     history = ChannelMessageRepository(database=database)
     _value(await history.upsert(_message(1, "first", wire_timestamp=1_757_000_000)))

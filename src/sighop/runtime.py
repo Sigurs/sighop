@@ -1601,6 +1601,7 @@ class Runtime:
             contacts=len(self.contacts),
             persistence=persistence,
             packet_log_discarded=0 if writers is None else writers.packet_log_writer.discarded,
+            archive_discarded=0 if writers is None else writers.archive_writer.discarded,
             routes_discarded=0 if writers is None else writers.path_writer.discarded,
             awaiting_backfill=self.contacts.awaiting_backfill,
             webhooks=None if self.webhooks is None else self.webhooks.status_segment(),

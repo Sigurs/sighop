@@ -137,6 +137,7 @@ def test_the_three_persistence_states_are_distinguishable(state: str) -> None:
 def test_the_counters_read_zero_rather_than_being_omitted() -> None:
     line = render_status(_status(), dedup=_dedup_stats(), learned_paths=0, persistence="on")
     assert "log_drop=0" in line
+    assert "arch_drop=0" in line
     assert "route_drop=0" in line
     assert "backfill=0" in line
 
@@ -148,10 +149,11 @@ def test_the_counters_report_what_was_discarded() -> None:
         learned_paths=0,
         persistence="degraded",
         packet_log_discarded=17,
+        archive_discarded=9,
         routes_discarded=4,
         awaiting_backfill=2,
     )
-    assert "persist=degraded log_drop=17 route_drop=4 backfill=2" in line
+    assert "persist=degraded log_drop=17 arch_drop=9 route_drop=4 backfill=2" in line
 
 
 async def test_degraded_clears_with_no_write_once_the_probe_succeeds() -> None:

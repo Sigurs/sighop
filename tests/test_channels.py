@@ -16,6 +16,7 @@ import pytest
 from sighop.net.bus import IngressPipeline, NetworkBus, PriorityClass, TxResult
 from sighop.net.channels import (
     MAX_CHANNEL_TEXT_LEN,
+    MAX_PATHS,
     ChannelKind,
     ChannelMessageReceived,
     ChannelMessageRecord,
@@ -32,6 +33,7 @@ from sighop.net.channels import (
     ChannelUndecryptable,
     ChannelUnknown,
     ChannelUnsupportedText,
+    HeardRegistry,
     IdentityNotLoadedError,
     LoadedChannel,
     RepeatRegistry,
@@ -540,6 +542,150 @@ def test_the_registry_evicts_past_capacity_and_age() -> None:
     assert registry.get(b"b", late) is None
     assert registry.get(b"c", late) is not None
     assert len(registry) == 1
+
+
+# --- Every copy's path (change `channel-message-path-copy`) -------------------
+
+
+def routed(frame: bytes, path: bytes, *, hash_size: int) -> bytes:
+    """`frame`'s payload as it would arrive over `path`, hashes `hash_size` wide."""
+    decoded = decode_packet(frame)
+    assert not isinstance(decoded, DecodeFailure)
+    return encode_packet(
+        Packet(
+            header=decoded.header,
+            transport_codes=None,
+            hop_count=len(path) // hash_size,
+            hash_size=hash_size,
+            path=path,
+            payload=decoded.payload,
+        )
+    )
+
+
+def ingress(m: ChannelMessenger) -> tuple[IngressPipeline, asyncio.Queue[RxRecord]]:
+    bus = NetworkBus(logger=RecordingLogger())
+    subscription = bus.subscribe("channels")
+    pipeline = IngressPipeline(bus=bus, dedup=DedupCache(), logger=RecordingLogger())
+    pipeline.observers.append(m.observe)
+    return pipeline, subscription.queue
+
+
+async def drain(m: ChannelMessenger, queue: asyncio.Queue[RxRecord]) -> None:
+    while not queue.empty():
+        await m.handle(queue.get_nowait())
+
+
+A3F1_28C0_9E4B = bytes.fromhex("a3f128c09e4b")
+
+
+async def test_a_received_message_records_its_path_and_hash_size() -> None:
+    m, sink, _events, _ = messenger(HASHTAG)
+
+    await m.handle(reception(routed(group_frame(HASHTAG, b"al: hi"), A3F1_28C0_9E4B, hash_size=2)))
+
+    [record] = sink.records
+    assert record.paths == (A3F1_28C0_9E4B,)
+    assert record.path_hash_size == 2 and record.hop_count == 3
+
+
+async def test_a_post_records_no_paths() -> None:
+    entity = Entity("dev-companion")
+    m, sink, _events, _ = messenger(HASHTAG, entities=(entity,))
+
+    await m.post(2, entity, "hello").resolution
+
+    assert sink.records and all(r.paths is None for r in sink.records)
+    assert all(r.path_hash_size is None for r in sink.records)
+
+
+async def test_duplicates_add_their_paths_in_arrival_order_to_the_same_record() -> None:
+    m, sink, _events, _ = messenger(HASHTAG)
+    pipeline, queue = ingress(m)
+    frame = group_frame(HASHTAG, b"al: hi")
+
+    pipeline.ingest(reception(routed(frame, A3F1_28C0_9E4B, hash_size=2), packet_id="first"))
+    await drain(m, queue)
+    pipeline.ingest(reception(routed(frame, b"", hash_size=2), packet_id="second"))
+    pipeline.ingest(reception(routed(frame, bytes.fromhex("a3f15d02"), hash_size=2)))
+
+    assert pipeline.duplicates == 2
+    assert {r.ref for r in sink.records} == {"first"}
+    last = sink.records[-1]
+    assert last.paths == (A3F1_28C0_9E4B, b"", bytes.fromhex("a3f15d02"))
+    assert last.hop_count == 3 and last.snr_db == 7.5 and last.rssi_dbm == -60
+
+
+async def test_a_duplicate_heard_before_the_message_is_decrypted_is_not_lost() -> None:
+    """The observer is told synchronously; the bus handler runs later."""
+    m, sink, _events, _ = messenger(HASHTAG)
+    pipeline, queue = ingress(m)
+    frame = group_frame(HASHTAG, b"al: hi")
+
+    pipeline.ingest(reception(routed(frame, b"\x0a", hash_size=1), packet_id="first"))
+    pipeline.ingest(reception(routed(frame, b"\x0a\xff", hash_size=1)))
+    assert not sink.records
+    await drain(m, queue)
+
+    [record] = sink.records
+    assert record.ref == "first" and record.paths == (b"\x0a", b"\x0a\xff")
+
+
+async def test_copies_beyond_the_bound_are_ignored() -> None:
+    m, sink, _events, _ = messenger(HASHTAG)
+    pipeline, queue = ingress(m)
+    frame = group_frame(HASHTAG, b"al: hi")
+
+    pipeline.ingest(reception(routed(frame, b"\x00", hash_size=1)))
+    await drain(m, queue)
+    for hop in range(1, MAX_PATHS + 5):
+        pipeline.ingest(reception(routed(frame, bytes([hop, hop]), hash_size=1)))
+
+    assert len(sink.records[-1].paths or ()) == MAX_PATHS
+    assert len(sink.records) == MAX_PATHS  # the first record, then one per attached copy
+
+
+async def test_a_duplicate_after_the_message_is_forgotten_is_not_attached() -> None:
+    clock = TickingClock()
+    m, sink, _events, _ = messenger(HASHTAG, clock=clock)
+    pipeline, queue = ingress(m)
+    frame = group_frame(HASHTAG, b"al: hi")
+
+    pipeline.ingest(reception(routed(frame, b"\x01", hash_size=1)))
+    await drain(m, queue)
+    clock.advance(3601)
+    pipeline.ingest(reception(routed(frame, b"\x02", hash_size=1)))
+
+    assert pipeline.duplicates == 1
+    assert [r.paths for r in sink.records] == [(b"\x01",)]
+
+
+async def test_our_own_posts_heard_back_gain_no_paths() -> None:
+    entity = Entity("dev-companion")
+    m, sink, _events, submit = messenger(HASHTAG, entities=(entity,))
+    await m.post(2, entity, "hello").resolution
+    pipeline, queue = ingress(m)
+
+    raw = submit.submissions[0].packet
+    pipeline.ingest(reception(echo_of(raw, hops=1)))
+    pipeline.ingest(reception(echo_of(raw, hops=2)))
+    await drain(m, queue)
+
+    assert m.repeats_heard == 2 and len(m.heard) == 0
+    assert all(r.paths is None for r in sink.records)
+
+
+def test_the_heard_registry_evicts_past_capacity_and_age() -> None:
+    registry = HeardRegistry(capacity=2, ttl_seconds=3600)
+    registry.first_copy(b"a", b"", START)
+    registry.first_copy(b"b", b"", START + dt.timedelta(seconds=1))
+    registry.first_copy(b"c", b"", START + dt.timedelta(seconds=2))
+    assert registry.first_copy(b"c", b"\x09", START).paths == [b""]  # an existing entry stands
+
+    assert registry.get(b"a", START + dt.timedelta(seconds=3)) is None
+    late = START + dt.timedelta(seconds=3602)
+    assert registry.get(b"b", late) is None
+    assert registry.get(b"c", late) is not None
 
 
 def test_a_raising_sink_does_not_stop_the_next() -> None:

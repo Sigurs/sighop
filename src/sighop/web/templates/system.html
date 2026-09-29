@@ -242,6 +242,73 @@
   </table>
 </div>
 
+<h2 id="archive">packet archive</h2>
+{% set a = archive %}
+{% if archive_error %}
+<p class="unavailable" role="alert">{{ archive_error }}</p>
+{% endif %}
+<p class="note">
+  Every frame received and every transmission resolved, with its exact bytes,
+  kept so a later feature can be filled in from past traffic. Unlike the live
+  feed it is not a sample, but it is only complete while the database keeps up:
+  a frame that cannot be written is dropped and counted below.
+</p>
+{% if a.summary is none %}
+<p class="unavailable"><strong>The archive cannot be read.</strong> Its size is not known.</p>
+{% else %}
+<div class="table-wrap">
+  <table class="counters">
+    <tbody>
+      <tr><td>records (approximate)</td><td class="mono">{{ a.summary.rows }}</td></tr>
+      <tr><td>oldest</td><td class="mono">{{ display.when(a.summary.oldest) }}</td></tr>
+      <tr><td>newest</td><td class="mono">{{ display.when(a.summary.newest) }}</td></tr>
+      <tr><td>monthly partitions</td><td class="mono">{{ a.summary.partitions }}</td></tr>
+      <tr><td>written / dropped this run</td><td class="mono">{{ a.written }} / {{ a.discarded }}</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% if not a.retention_readable %}
+<p class="unavailable">
+  <strong>The retention setting cannot be read.</strong> Saving writes what the form holds.
+</p>
+{% endif %}
+<form method="post" action="/system/archive">
+  <input type="hidden" name="_token" value="{{ token }}">
+  <p>
+    <label>keep records for this many days ({{ a.retention_range[0] }}–{{ a.retention_range[1] }}, or keep forever)
+      <input class="mono" type="text" name="retention_days" value="{{ a.form.retention_days }}">
+    </label>
+    <label>
+      <input type="checkbox" name="retention_forever" value="true"{% if a.form.retention_forever %} checked{% endif %}>
+      keep forever
+    </label>
+    <span class="note">Kept forever, nothing archived is ever deleted; the days are then ignored.
+      With a bound, records are removed a whole month at a time, so they may be kept
+      up to a month past it.</span>
+  </p>
+  {% if a.retention_readable and a.retention_days is none %}
+  <p class="note">The archive is currently kept forever: <strong>nothing is pruned</strong>.</p>
+  {% endif %}
+  <button type="submit">save</button>
+</form>
+<p class="note">A saved change applies at the next maintenance pass, without a restart.</p>
+{% if export_error %}
+<p class="unavailable" role="alert">{{ export_error }}</p>
+{% endif %}
+<form method="get" action="/system/archive/export">
+  <p>
+    <label>export from (UTC, inclusive)
+      <input class="mono" type="text" name="since" value="{{ a.export_since }}">
+    </label>
+    <label>to (UTC, exclusive)
+      <input class="mono" type="text" name="until" value="{{ a.export_until }}">
+    </label>
+    <button type="submit">export</button>
+  </p>
+  <p class="note">A capture file (JSONL) that the replay and the corpus tools read as they read a recording.</p>
+</form>
+
 <h2>schema</h2>
 {% if unavailable %}
 <p class="unavailable">

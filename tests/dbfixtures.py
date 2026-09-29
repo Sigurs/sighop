@@ -28,6 +28,7 @@ database — out of each other's tables.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import os
 import secrets
 from collections.abc import AsyncIterator, Iterator
@@ -42,6 +43,7 @@ from sighop.config import DatabaseConfig
 from sighop.db import migrations
 from sighop.db.engine import Database
 from sighop.db.persistence import Persistence
+from sighop.db.repositories import archive_partition_name, month_start, next_month
 
 TEST_DATABASE_URL_VARIABLE = "SIGHOP_TEST_DATABASE_URL"
 """Preferred over `DATABASE_URL` so a developer can point the suite somewhere
@@ -271,6 +273,27 @@ async def _truncate(handle: Database) -> None:
                 "repeater_neighbour, route_preference RESTART IDENTITY CASCADE"
             )
         )
+        # The archive back to what 0016 leaves: only the current month's child,
+        # and retention forever. Tests create and drop other months, and a
+        # leftover child would show up in the next test's partition count.
+        children = (
+            await session.execute(
+                text(
+                    "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid "
+                    "WHERE i.inhparent = 'packet_archive'::regclass"
+                )
+            )
+        ).scalars()
+        for child in list(children):
+            await session.execute(text(f'DROP TABLE "{child}"'))
+        start = month_start(dt.datetime.now(dt.UTC))
+        await session.execute(
+            text(
+                f'CREATE TABLE "{archive_partition_name(start)}" PARTITION OF packet_archive '
+                f"FOR VALUES FROM ('{start.isoformat()}') TO ('{next_month(start).isoformat()}')"
+            )
+        )
+        await session.execute(text("UPDATE packet_archive_settings SET retention_days = NULL"))
         # Back to what an upgrade leaves: migration `0007` seeds the Public channel.
         await session.execute(
             text(

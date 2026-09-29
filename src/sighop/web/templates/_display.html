@@ -37,6 +37,16 @@
   {#- #}<span class="key-full mono" hidden></span></span>
 {%- endmacro %}
 
+{# The copy control alone, for a received channel message's paths: one path per
+   line, hops joined by `->`. The same `.copy` button and `.key-full` holder as
+   a key, so `display.js`'s fallbacks serve it unchanged; the text itself is
+   already in the state's hover. #}
+{% macro copy_path(text) -%}
+<span class="key path-copy">
+  {#- #}<button type="button" class="copy" data-copy="{{ text }}" title="copy paths" aria-label="copy paths">⧉</button>
+  {#- #}<span class="key-full mono" hidden></span></span>
+{%- endmacro %}
+
 {# A timestamp. The server writes compact UTC, marked UTC; `display.js`
    rewrites it relative to now in the viewer's own clock and keeps it current. #}
 {% macro when(value, empty='—') -%}

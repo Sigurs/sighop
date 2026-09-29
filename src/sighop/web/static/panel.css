@@ -566,6 +566,11 @@ table.feed td {
   user-select: all;
 }
 
+/* A channel message's paths, one per line, when they are put up by hand. */
+.path-copy .key-full {
+  white-space: pre;
+}
+
 .copy {
   margin-left: 0.25em;
   padding: 0 0.3em;

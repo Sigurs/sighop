@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import json
 
 import httpx2
 import pytest
@@ -25,7 +26,7 @@ from fastapi.testclient import TestClient
 from sighop.config import generate_secret_key
 from sighop.db.engine import Database, Succeeded
 from sighop.db.persistence import Persistence
-from sighop.db.repositories import CollectionSettings
+from sighop.db.repositories import ArchiveRow, CollectionSettings
 from sighop.net.acks import AckRegistry
 from sighop.net.paths import PathStore
 from sighop.net.room import RoomServer
@@ -2268,3 +2269,179 @@ async def test_a_forgotten_preferred_repeater_is_shown_by_key_with_the_warning(
     assert f"{key.hex()[:6]}…" in body
     assert "no longer a known contact" in body
     assert "has not heard the preferred repeater directly" in body
+
+
+# --- packet-archive 5.1 / 5.2 The archive on the system page -----------------
+
+
+def _archive_state(database: Database):
+    persistence = Persistence(database=database)
+    return persistence, stub_state(persistence=persistence)
+
+
+async def _archived(persistence: Persistence, *ats: dt.datetime) -> None:
+    rows = [
+        ArchiveRow(
+            at=at, kind="rx", packet_id=f"p-{n}", raw=bytes([n, 0xAB]), snr_db=1.5, rssi_dbm=-90
+        )
+        for n, at in enumerate(ats)
+    ]
+    assert isinstance(await persistence.packet_archive.write_many(rows), Succeeded)
+
+
+async def _retention_of(persistence: Persistence) -> int | None:
+    stored = await persistence.packet_archive.get_retention()
+    assert isinstance(stored, Succeeded)
+    return stored.value
+
+
+async def test_the_system_page_shows_the_archive_and_that_it_is_kept_forever(
+    database: Database,
+) -> None:
+    persistence, state = _archive_state(database)
+    first = dt.datetime.now(dt.UTC).replace(microsecond=0) - dt.timedelta(minutes=5)
+    await _archived(persistence, first, first + dt.timedelta(minutes=1))
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        body = (await client.get("/system")).text
+
+    assert 'id="archive"' in body
+    assert 'records (approximate)</td><td class="mono">2</td>' in body
+    assert 'monthly partitions</td><td class="mono">1</td>' in body
+    assert 'written / dropped this run</td><td class="mono">0 / 0</td>' in body
+    assert "kept forever: <strong>nothing is pruned</strong>" in body
+    assert "nothing archived is ever deleted" in body
+    assert "a whole month at a time" in body
+    assert 'action="/system/archive/export"' in body
+
+
+async def test_setting_an_archive_bound_stores_it_and_shows_it(database: Database) -> None:
+    persistence, state = _archive_state(database)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/system/archive", retention_days="365")
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/system#archive"
+    assert await _retention_of(persistence) == 365
+    assert 'name="retention_days" value="365"' in body
+    assert "kept forever: <strong>nothing is pruned</strong>" not in body
+
+
+async def test_choosing_keep_forever_for_the_archive_clears_the_bound(database: Database) -> None:
+    persistence, state = _archive_state(database)
+    assert isinstance(await persistence.packet_archive.set_retention(90), Succeeded)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(
+            client, app, "/system/archive", retention_days="", retention_forever="true"
+        )
+        body = (await client.get("/system")).text
+
+    assert response.status_code == 303
+    assert await _retention_of(persistence) is None
+    assert "kept forever: <strong>nothing is pruned</strong>" in body
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        ("7", "30 to 3650"),
+        ("3651", "30 to 3650"),
+        ("", "must be a whole number of days from 30 to 3650"),
+        ("abc", "must be a whole number of days from 30 to 3650"),
+    ],
+)
+async def test_an_invalid_archive_bound_is_refused_and_stores_nothing(
+    database: Database, value: str, reason: str
+) -> None:
+    persistence, state = _archive_state(database)
+    assert isinstance(await persistence.packet_archive.set_retention(90), Succeeded)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await _apost(client, app, "/system/archive", retention_days=value)
+
+    assert response.status_code == 400
+    assert reason in response.text
+    assert "nothing was changed" in response.text
+    assert await _retention_of(persistence) == 90
+
+
+async def test_a_signed_in_export_is_a_capture_file_of_the_range(database: Database) -> None:
+    persistence, state = _archive_state(database)
+    day = dt.datetime.now(dt.UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    await _archived(
+        persistence,
+        day + dt.timedelta(hours=1),
+        day + dt.timedelta(hours=2),
+        day + dt.timedelta(days=1, hours=1),
+    )
+    app, _state, _log = _built(state)
+    since, until = day.date().isoformat(), (day + dt.timedelta(days=1)).date().isoformat()
+
+    async with _live(app) as client:
+        response = await client.get(f"/system/archive/export?since={since}&until={until}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    assert "attachment" in response.headers["content-disposition"]
+    lines = [json.loads(line) for line in response.text.splitlines()]
+    assert (lines[0]["kind"], lines[0]["source"]) == ("capture_meta", "packet_archive")
+    assert [line["raw_hex"] for line in lines[1:]] == ["00ab", "01ab"]
+
+
+async def test_an_export_without_a_session_is_refused(database: Database) -> None:
+    persistence, state = _archive_state(database)
+    await _archived(persistence, dt.datetime.now(dt.UTC))
+    app, _state, _log = _built(state)
+
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
+        base_url="http://127.0.0.1:8080",
+        follow_redirects=False,
+    ) as client:
+        response = await client.get("/system/archive/export?since=2000-01-01&until=2100-01-01")
+
+    assert response.status_code == 303
+    assert response.headers["location"].startswith("/login")
+    assert "raw_hex" not in response.text
+
+
+async def test_the_bare_export_address_leads_to_the_export_form(database: Database) -> None:
+    _persistence, state = _archive_state(database)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await client.get("/system/archive/export")
+
+    assert response.status_code == 200
+    assert 'action="/system/archive/export"' in response.text
+    assert "raw_hex" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("query", "reason"),
+    [
+        ("since=2026-09-02&until=2026-09-01", "must be after its start"),
+        ("since=2026-09-01&until=2026-09-01", "must be after its start"),
+        ("since=yesterday&until=2026-09-01", "is not a date or an ISO time"),
+        ("until=2026-09-01", "is required"),
+    ],
+)
+async def test_a_bad_export_range_is_refused_with_the_reason(
+    database: Database, query: str, reason: str
+) -> None:
+    _persistence, state = _archive_state(database)
+    app, _state, _log = _built(state)
+
+    async with _live(app) as client:
+        response = await client.get(f"/system/archive/export?{query}")
+
+    assert response.status_code == 400
+    assert reason in response.text
+    assert 'role="alert"' in response.text

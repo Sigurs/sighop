@@ -8,7 +8,8 @@
  *     in the viewer's own clock, puts the local date-time and the exact UTC
  *     value on hover, and keeps it current: every 30 s, and on content HTMX
  *     swaps in (a refreshed partial arrives with the server's text again).
- *  2. **Copying a key.** A `.copy` button carries the full key in `data-copy`.
+ *  2. **Copying a key.** A `.copy` button carries the full key in `data-copy` —
+ *     or, beside a received channel message, its paths, one per line.
  *     Clicks are delegated from the document, so swapped-in rows need no
  *     rebinding. The clipboard is written where the browser allows it; where it
  *     does not — a panel served over plain HTTP is in no secure context, which

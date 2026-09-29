@@ -22,15 +22,25 @@ import datetime as dt
 import hmac
 import unicodedata
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, field, fields
 from enum import StrEnum
 
-from sqlalchemy import delete, func, literal, select, tuple_, update
+from sqlalchemy import case, delete, func, literal, select, tuple_, update
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import insert
 
 from sighop.db.engine import Database, Failed, Outcome, Succeeded
+from sighop.db.models import (
+    ARCHIVE_RETENTION_DAYS_RANGE,
+    PacketArchive,
+    PacketArchiveSettingsRow,
+    RepeaterCollectionRow,
+    RepeaterNeighbourRow,
+    RepeaterPollRow,
+    RepeaterTargetRow,
+    RoutePreferenceRow,
+)
 from sighop.db.models import Bot as BotRow
 from sighop.db.models import BotState as BotStateRow
 from sighop.db.models import Channel as ChannelRow
@@ -41,13 +51,6 @@ from sighop.db.models import Entity as EntityRow
 from sighop.db.models import Message as MessageRow
 from sighop.db.models import PacketLog as PacketLogRowModel
 from sighop.db.models import Path as PathRow
-from sighop.db.models import (
-    RepeaterCollectionRow,
-    RepeaterNeighbourRow,
-    RepeaterPollRow,
-    RepeaterTargetRow,
-    RoutePreferenceRow,
-)
 from sighop.db.models import Room as RoomRow
 from sighop.db.models import RoomMember as RoomMemberRow
 from sighop.db.models import Webhook as WebhookRow
@@ -84,6 +87,7 @@ from sighop.protocol.payloads import (
     RepeaterStats,
     WireText,
 )
+from sighop.radio.modem import ModemEvent, RxEvent, RxMeta, UnparsedEvent
 from sighop.webhooks.config import (
     WebhookExistsError,
     parse_format,
@@ -3539,6 +3543,19 @@ class ChannelMessageRepository:
                         "repeats_heard": func.greatest(
                             ChannelMessageRow.repeats_heard, statement.excluded.repeats_heard
                         ),
+                        # Paths only grow, as repeats only count up: a stale
+                        # offer never takes back a copy already recorded.
+                        "paths": case(
+                            (
+                                func.coalesce(func.cardinality(statement.excluded.paths), -1)
+                                >= func.coalesce(func.cardinality(ChannelMessageRow.paths), -1),
+                                statement.excluded.paths,
+                            ),
+                            else_=ChannelMessageRow.paths,
+                        ),
+                        "path_hash_size": func.coalesce(
+                            statement.excluded.path_hash_size, ChannelMessageRow.path_hash_size
+                        ),
                     },
                 )
             )
@@ -3609,6 +3626,8 @@ def _channel_message_values(record: ChannelMessageRecord) -> dict[str, object]:
         "outcome": str(record.outcome),
         "outcome_reason": record.outcome_reason,
         "repeats_heard": record.repeats_heard,
+        "paths": None if record.paths is None else list(record.paths),
+        "path_hash_size": record.path_hash_size,
     }
 
 
@@ -3637,6 +3656,8 @@ def _channel_message(row: ChannelMessageRow) -> ChannelMessageRecord:
         rssi_dbm=row.rssi_dbm,
         repeats_heard=int(row.repeats_heard),
         outcome_reason=row.outcome_reason,
+        paths=None if row.paths is None else tuple(bytes(path) for path in row.paths),
+        path_hash_size=row.path_hash_size,
         row_id=int(row.id),
     )
 
@@ -4217,4 +4238,337 @@ def _neighbour(row: RepeaterNeighbourRow) -> NeighbourEntry:
         prefix=bytes(row.prefix),
         heard_seconds_ago=row.heard_seconds_ago,
         snr=round(row.snr_db * 4),
+    )
+
+
+# --- The packet archive (change packet-archive) ------------------------------
+
+ARCHIVE_STREAM_BATCH = 1000
+"""Rows per keyset page: each is its own `Database.run`, so each stays inside
+the statement bound however long the range (packet-archive D6)."""
+
+ARCHIVE_PARTITION_PREFIX = "packet_archive_y"
+
+
+class ArchiveReadError(RuntimeError):
+    """A batch of an archive read failed. Raised, not returned as an outcome:
+    nothing on the live path reads the archive, and a backfill that silently
+    skipped a batch would record a gap as though it were a quiet mesh."""
+
+
+class ArchiveSettingsError(ValueError):
+    """A retention value outside the accepted range. Nothing was stored."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRow:
+    """One frame to archive: its bytes and what was known when it happened.
+
+    Deliberately carries no decoded fields (packet-archive D3): the bytes are
+    the source, and a backfill decodes them with the decoder of its day.
+    """
+
+    at: dt.datetime
+    kind: str
+    """`rx`, `unparsed` or `tx`."""
+
+    packet_id: str
+    raw: bytes
+    snr_db: float | None = None
+    rssi_dbm: int | None = None
+    reason: str | None = None
+    tx_result: str | None = None
+    airtime_ms: float | None = None
+    entity_id: uuid.UUID | None = None
+    priority_class: int | None = None
+
+    def values(self) -> dict[str, object]:
+        return {
+            "at": ensure_utc(self.at, field="packet_archive.at"),
+            "kind": self.kind,
+            "packet_id": self.packet_id,
+            "raw": self.raw,
+            "snr_db": self.snr_db,
+            "rssi_dbm": self.rssi_dbm,
+            "reason": self.reason,
+            "tx_result": self.tx_result,
+            "airtime_ms": self.airtime_ms,
+            "entity_id": self.entity_id,
+            "priority_class": self.priority_class,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRecord:
+    """An archived frame read back: the row as written, plus its id."""
+
+    id: int
+    row: ArchiveRow
+
+    def as_modem_event(self) -> ModemEvent:
+        """The event the live decode path takes, so a backfill reuses it exactly.
+
+        Only a reception has one; a transmission was never an event the modem
+        delivered, and replaying it as one would invent traffic (§12).
+        """
+        row = self.row
+        if row.kind == "unparsed":
+            return UnparsedEvent(raw=row.raw, reason=row.reason or "", received_at=row.at)
+        if row.kind == "rx":
+            meta = (
+                None
+                if row.snr_db is None or row.rssi_dbm is None
+                else RxMeta(snr_db=row.snr_db, rssi_dbm=row.rssi_dbm)
+            )
+            return RxEvent(packet=row.raw, rx_meta=meta, received_at=row.at)
+        raise ValueError(f"a {row.kind} record has no modem event")
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivePartition:
+    name: str
+    rows: int
+    """Postgres's estimate, or an exact count for a partition never analysed."""
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSummary:
+    rows: int
+    """Approximate: the sum of per-partition estimates (packet-archive D8)."""
+
+    oldest: dt.datetime | None
+    newest: dt.datetime | None
+    partitions: int
+
+
+def archive_partition_name(month_start: dt.datetime) -> str:
+    return f"{ARCHIVE_PARTITION_PREFIX}{month_start.year:04d}m{month_start.month:02d}"
+
+
+def archive_partition_month(name: str) -> dt.datetime | None:
+    """The first instant of the month a child covers, or None for a stranger."""
+    if not name.startswith(ARCHIVE_PARTITION_PREFIX):
+        return None
+    rest = name[len(ARCHIVE_PARTITION_PREFIX) :]
+    if len(rest) != 7 or rest[4] != "m" or not (rest[:4] + rest[5:]).isdigit():
+        return None
+    year, month = int(rest[:4]), int(rest[5:])
+    if not 1 <= month <= 12:
+        return None
+    return dt.datetime(year, month, 1, tzinfo=dt.UTC)
+
+
+def month_start(at: dt.datetime) -> dt.datetime:
+    at = ensure_utc(at, field="month_start").astimezone(dt.UTC)
+    return dt.datetime(at.year, at.month, 1, tzinfo=dt.UTC)
+
+
+def next_month(start: dt.datetime) -> dt.datetime:
+    return dt.datetime(start.year + (start.month == 12), start.month % 12 + 1, 1, tzinfo=dt.UTC)
+
+
+def validate_archive_retention(days: int | None) -> None:
+    low, high = ARCHIVE_RETENTION_DAYS_RANGE
+    if days is not None and not low <= days <= high:
+        raise ArchiveSettingsError(
+            f"the archive retention must be {low} to {high} days, or keep forever"
+        )
+
+
+class PacketArchiveRepository:
+    """The archive's SQL, partition DDL included; the policy is `db/archive.py`'s."""
+
+    def __init__(self, *, database: Database) -> None:
+        self.database = database
+
+    async def write_many(self, rows: Sequence[ArchiveRow]) -> Outcome[int]:
+        if not rows:
+            return Succeeded(value=0)
+        values = [row.values() for row in rows]
+
+        async def work(session: object) -> int:
+            await session.execute(insert(PacketArchive).values(values))  # type: ignore[attr-defined]
+            return len(values)
+
+        return await self.database.run("write_packet_archive", work)
+
+    async def stream(
+        self,
+        since: dt.datetime,
+        until: dt.datetime,
+        *,
+        batch: int = ARCHIVE_STREAM_BATCH,
+    ) -> AsyncIterator[ArchiveRecord]:
+        """Every record with `since <= at < until`, oldest first, a page at a time.
+
+        Keyset on `(at, id)`, the primary key, so each page is an index range
+        scan and nothing but one page is ever held (packet-archive D6).
+        """
+        since = ensure_utc(since, field="since")
+        until = ensure_utc(until, field="until")
+        size = max(1, int(batch))
+        after: tuple[dt.datetime, int] | None = None
+        while True:
+            outcome = await self._page(since, until, after, size)
+            if isinstance(outcome, Failed):
+                raise ArchiveReadError(
+                    f"reading the packet archive failed after {after}: {outcome.error}"
+                )
+            page = outcome.value
+            for record in page:
+                yield record
+            if len(page) < size:
+                return
+            after = (page[-1].row.at, page[-1].id)
+
+    async def _page(
+        self,
+        since: dt.datetime,
+        until: dt.datetime,
+        after: tuple[dt.datetime, int] | None,
+        size: int,
+    ) -> Outcome[list[ArchiveRecord]]:
+        async def work(session: object) -> list[ArchiveRecord]:
+            statement = select(PacketArchive).where(
+                PacketArchive.at >= since, PacketArchive.at < until
+            )
+            if after is not None:
+                statement = statement.where(
+                    tuple_(PacketArchive.at, PacketArchive.id)
+                    > tuple_(literal(after[0]), literal(after[1]))
+                )
+            statement = statement.order_by(PacketArchive.at, PacketArchive.id).limit(size)
+            rows = (await session.execute(statement)).scalars()  # type: ignore[attr-defined]
+            return [_archive_record(row) for row in rows]
+
+        return await self.database.run("read_packet_archive", work)
+
+    async def partitions(self) -> Outcome[list[ArchivePartition]]:
+        """The children that exist now, oldest name first."""
+
+        async def work(session: object) -> list[ArchivePartition]:
+            rows = (
+                await session.execute(  # type: ignore[attr-defined]
+                    sql_text(
+                        "SELECT c.relname, c.reltuples FROM pg_inherits i "
+                        "JOIN pg_class c ON c.oid = i.inhrelid "
+                        "WHERE i.inhparent = 'packet_archive'::regclass ORDER BY c.relname"
+                    )
+                )
+            ).all()
+            found: list[ArchivePartition] = []
+            for name, estimate in rows:
+                if estimate is None or estimate < 0:
+                    # Never analysed: -1 would read as empty. Count it instead;
+                    # this is at most the partitions autovacuum has not reached.
+                    exact = (
+                        await session.execute(  # type: ignore[attr-defined]
+                            sql_text(f'SELECT count(*) FROM "{name}"')
+                        )
+                    ).scalar_one()
+                    found.append(ArchivePartition(name=name, rows=int(exact)))
+                else:
+                    found.append(ArchivePartition(name=name, rows=int(estimate)))
+            return found
+
+        return await self.database.run("list_packet_archive_partitions", work)
+
+    async def create_partition(self, start: dt.datetime) -> Outcome[bool]:
+        """Create the child for the month beginning at `start`. True if it was new."""
+        start = month_start(start)
+        end = next_month(start)
+        name = archive_partition_name(start)
+
+        async def work(session: object) -> bool:
+            existed = (
+                await session.execute(  # type: ignore[attr-defined]
+                    sql_text("SELECT to_regclass(:name) IS NOT NULL"), {"name": name}
+                )
+            ).scalar_one()
+            if existed:
+                return False
+            await session.execute(  # type: ignore[attr-defined]
+                sql_text(
+                    f'CREATE TABLE IF NOT EXISTS "{name}" PARTITION OF packet_archive '
+                    f"FOR VALUES FROM ('{start.isoformat()}') TO ('{end.isoformat()}')"
+                )
+            )
+            return True
+
+        return await self.database.run("create_packet_archive_partition", work)
+
+    async def drop_partition(self, name: str) -> Outcome[None]:
+        """Detach and drop one child. Only ever called with a name we parsed."""
+        if archive_partition_month(name) is None:
+            raise ValueError(f"{name!r} is not a packet archive partition")
+
+        async def work(session: object) -> None:
+            await session.execute(  # type: ignore[attr-defined]
+                sql_text(f'ALTER TABLE packet_archive DETACH PARTITION "{name}"')
+            )
+            await session.execute(sql_text(f'DROP TABLE "{name}"'))  # type: ignore[attr-defined]
+
+        return await self.database.run("drop_packet_archive_partition", work)
+
+    async def summary(self) -> Outcome[ArchiveSummary]:
+        listed = await self.partitions()
+        if isinstance(listed, Failed):
+            return listed
+
+        async def work(session: object) -> ArchiveSummary:
+            oldest, newest = (
+                await session.execute(  # type: ignore[attr-defined]
+                    select(func.min(PacketArchive.at), func.max(PacketArchive.at))
+                )
+            ).one()
+            return ArchiveSummary(
+                rows=sum(p.rows for p in listed.value),
+                oldest=oldest,
+                newest=newest,
+                partitions=len(listed.value),
+            )
+
+        return await self.database.run("summarise_packet_archive", work)
+
+    async def get_retention(self) -> Outcome[int | None]:
+        """Days kept, or None for forever — also None if the row is somehow gone."""
+
+        async def work(session: object) -> int | None:
+            row = await session.get(PacketArchiveSettingsRow, 1)  # type: ignore[attr-defined]
+            return None if row is None else row.retention_days
+
+        return await self.database.run("get_packet_archive_retention", work)
+
+    async def set_retention(self, days: int | None) -> Outcome[int | None]:
+        """Store the bound; `None` keeps everything. Raises `ArchiveSettingsError`."""
+        validate_archive_retention(days)
+
+        async def work(session: object) -> int | None:
+            statement = (
+                insert(PacketArchiveSettingsRow)
+                .values(id=1, retention_days=days)
+                .on_conflict_do_update(index_elements=["id"], set_={"retention_days": days})
+            )
+            await session.execute(statement)  # type: ignore[attr-defined]
+            return days
+
+        return await self.database.run("set_packet_archive_retention", work)
+
+
+def _archive_record(row: PacketArchive) -> ArchiveRecord:
+    return ArchiveRecord(
+        id=row.id,
+        row=ArchiveRow(
+            at=row.at,
+            kind=row.kind,
+            packet_id=row.packet_id,
+            raw=bytes(row.raw),
+            snr_db=row.snr_db,
+            rssi_dbm=row.rssi_dbm,
+            reason=row.reason,
+            tx_result=row.tx_result,
+            airtime_ms=row.airtime_ms,
+            entity_id=row.entity_id,
+            priority_class=row.priority_class,
+        ),
     )

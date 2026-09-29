@@ -57,14 +57,72 @@ def capture_meta_record(probe_result: ProbeResult | None) -> dict:
     return record
 
 
+ARCHIVE_SOURCE = "packet_archive"
+"""The header's `source` for a file exported from the archive rather than
+recorded from a board (packet-archive D7)."""
+
+
+def archive_meta_record(since: dt.datetime, until: dt.datetime) -> dict:
+    """The header of an archive export: where it came from, not what a board said.
+
+    No board was probed for an export, so the probe is an explicit null with its
+    reason — the same shape a capture uses when the link never became ready —
+    and the requested range is recorded so the file states its own coverage.
+    """
+    return {
+        "ts": dt.datetime.now(dt.UTC).isoformat(),
+        "kind": CAPTURE_META_KIND,
+        "source": ARCHIVE_SOURCE,
+        "range": {"since": since.isoformat(), "until": until.isoformat()},
+        "sighop": _sighop_provenance(),
+        "probe": None,
+        "probe_absent_reason": "exported from the packet archive; no board was probed",
+    }
+
+
+def rx_frame_record(
+    raw: bytes, *, at: dt.datetime, snr_db: float | None, rssi_dbm: int | None
+) -> dict:
+    """A reception, as `rx_frame`. Signal measurements only when both are known."""
+    rx_meta = None
+    if snr_db is not None and rssi_dbm is not None:
+        rx_meta = {"snr_db": snr_db, "rssi_dbm": rssi_dbm}
+    return {"ts": at.isoformat(), "kind": "rx_frame", "raw_hex": raw.hex(), "rx_meta": rx_meta}
+
+
+def unparsed_record(raw: bytes, *, at: dt.datetime, reason: str) -> dict:
+    """Bytes the modem could not frame, as `unparsed`, with its reason."""
+    return {"ts": at.isoformat(), "kind": "unparsed", "raw_hex": raw.hex(), "reason": reason}
+
+
+def tx_frame_record(
+    packet: bytes,
+    *,
+    at: dt.datetime,
+    packet_id: str | None,
+    airtime_ms: float | None,
+) -> dict:
+    """A frame sighop put on the air, as `tx_frame`."""
+    return {
+        "ts": at.isoformat(),
+        "kind": TX_FRAME_KIND,
+        "raw_hex": packet.hex(),
+        "packet_id": packet_id,
+        "airtime_ms": None if airtime_ms is None else round(airtime_ms, 3),
+    }
+
+
 def _record_for(event: ModemEvent) -> dict:
-    ts = (event.received_at or dt.datetime.now(dt.UTC)).isoformat()
+    at = event.received_at or dt.datetime.now(dt.UTC)
     if isinstance(event, RxEvent):
-        rx_meta = None
-        if event.rx_meta is not None:
-            rx_meta = {"snr_db": event.rx_meta.snr_db, "rssi_dbm": event.rx_meta.rssi_dbm}
-        return {"ts": ts, "kind": "rx_frame", "raw_hex": event.packet.hex(), "rx_meta": rx_meta}
-    return {"ts": ts, "kind": "unparsed", "raw_hex": event.raw.hex(), "reason": event.reason}
+        meta = event.rx_meta
+        return rx_frame_record(
+            event.packet,
+            at=at,
+            snr_db=None if meta is None else meta.snr_db,
+            rssi_dbm=None if meta is None else meta.rssi_dbm,
+        )
+    return unparsed_record(event.raw, at=at, reason=event.reason)
 
 
 class CaptureWriter:
@@ -140,13 +198,12 @@ class CaptureWriter:
         directions, which is the first time the corpus can contain a packet
         whose plaintext we know (milestone 4, `protocol-corpus`).
         """
-        record: dict = {
-            "ts": (at or dt.datetime.now(dt.UTC)).isoformat(),
-            "kind": TX_FRAME_KIND,
-            "raw_hex": packet.hex(),
-            "packet_id": packet_id,
-            "airtime_ms": None if airtime_ms is None else round(airtime_ms, 3),
-        }
+        record = tx_frame_record(
+            packet,
+            at=at or dt.datetime.now(dt.UTC),
+            packet_id=packet_id,
+            airtime_ms=airtime_ms,
+        )
         if not self._started:
             self._held.append(record)
             return

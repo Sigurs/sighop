@@ -1,14 +1,14 @@
 name: Build image
 
-# Every gate `build.sh` runs — lock, lint, types, test, image, smoke, scan — on
-# pull requests. On a push to master (or by hand) the image that
-# passed is also pushed to GHCR as `<commit>-<YYYYMMDD>-<HHMMSS>`, announced on
-# Discord, and only the newest three versions are kept.
+# The image only: `./build.sh image`, on pull requests, pushes to master and
+# manual runs. The other gates — lock, format, lint, types, test, smoke, replay,
+# scan — run locally with `./build.sh` before a change is pushed, and are not
+# repeated here, to save CI time (operator decision, ci-image-build-only). So no
+# database is started either.
 #
-# The scan reports vulnerabilities in the log and does not fail the build
-# (operator decision, milestone 9). The test gate needs a database — the suite
-# refuses to run without one rather than skip half of itself — so the job runs a
-# throwaway Postgres beside it.
+# On a push to master (or by hand) the built image is also pushed to GHCR as
+# `<commit>-<YYYYMMDD>-<HHMMSS>`, announced on Discord, and only the newest three
+# versions are kept.
 
 on:
   push:
@@ -31,24 +31,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # The test gate's database, for this job only. On a non-UTC zone on purpose:
-    # one test proves a timestamp round-trips through a server whose TimeZone is
-    # not UTC, which is what the deployment's database is.
-    services:
-      postgres:
-        image: postgres:18@sha256:86c951e05bf56c93d95d397747fb8820ac76cc3bedb78f43abd83eedbe3666ae
-        env:
-          POSTGRES_USER: sighop
-          POSTGRES_PASSWORD: sighop-ci
-          POSTGRES_DB: sighop
-          TZ: Europe/Helsinki
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U sighop -d sighop"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
@@ -64,11 +46,13 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "Image: ${image}:${tag}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build and verify (build.sh)
+      # build.sh rather than a bare `docker build`: its image gate owns the
+      # version and commit build args and the no-attestation flags the
+      # keep-three step relies on. It needs uv for `uv version`, hence setup-uv.
+      - name: Build the image (build.sh image)
         env:
           IMAGE: ${{ steps.name.outputs.image }}:${{ steps.name.outputs.tag }}
-          SIGHOP_TEST_DATABASE_URL: postgresql+asyncpg://sighop:sighop-ci@localhost:5432/sighop
-        run: ./build.sh
+        run: ./build.sh image
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request'

@@ -202,6 +202,12 @@ class PersistenceStats:
     failures: int = 0
     packet_log_written: int = 0
     packet_log_discarded: int = 0
+    archive_written: int = 0
+    archive_discarded: int = 0
+    """Archive rows whose write failed — a gap in what can be backfilled,
+    counted apart from the feed's because it is a gap in a record rather than in
+    a sample (packet-archive D2)."""
+
     routes_written: int = 0
     routes_discarded: int = 0
     contacts_written: int = 0
@@ -223,6 +229,8 @@ class PersistenceStats:
             "db_failures": self.failures,
             "packet_log_written": self.packet_log_written,
             "packet_log_discarded": self.packet_log_discarded,
+            "archive_written": self.archive_written,
+            "archive_discarded": self.archive_discarded,
             "routes_written": self.routes_written,
             "routes_discarded": self.routes_discarded,
             "contacts_written": self.contacts_written,
