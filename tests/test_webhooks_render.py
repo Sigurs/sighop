@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from sighop.geo import Place
 from sighop.net.contacts import Contact, ContactStore
 from sighop.protocol.crypto import VerifiedAdvert, sign_advert, verify_advert
 from sighop.protocol.identity import LocalIdentity
@@ -273,6 +274,7 @@ def test_the_json_body_is_the_documented_schema_1_event() -> None:
                 "latitude": 60.169856,
                 "longitude": 24.938379,
                 "map_url": "https://www.google.com/maps/search/?api=1&query=60.169856,24.938379",
+                "place": None,
             },
         },
         "reception": {
@@ -293,6 +295,36 @@ def test_a_multi_byte_event_keeps_node_hash_at_one_byte() -> None:
     assert node["node_hash"] == "ab"
     assert node["hash"] == "ab0101"
     assert node["hash_size"] == 3
+
+
+HELSINKI = Place(neighborhood="Kamppi", city="Helsinki", country="Finland", country_code="FI")
+
+
+def test_a_named_place_is_under_the_position_in_json() -> None:
+    position = json.loads(render_json(_fixed(place=HELSINKI)))["node"]["position"]
+    assert position["latitude"] == 60.169856
+    assert position["place"] == {
+        "neighborhood": "Kamppi",
+        "city": "Helsinki",
+        "country": "Finland",
+        "country_code": "FI",
+    }
+
+
+def test_a_place_with_no_neighborhood_has_a_null_one_in_json() -> None:
+    place = Place(neighborhood=None, city="Helsinki", country="Finland", country_code="FI")
+    body = json.loads(render_json(_fixed(place=place)))
+    assert body["node"]["position"]["place"]["neighborhood"] is None
+
+
+def test_a_position_with_no_place_keeps_its_coordinates_in_json() -> None:
+    position = json.loads(render_json(_fixed(place=None)))["node"]["position"]
+    assert position["map_url"].endswith("query=60.169856,24.938379")
+    assert position["place"] is None
+
+
+def test_no_position_stays_null_in_json() -> None:
+    assert json.loads(render_json(_fixed(position=None)))["node"]["position"] is None
 
 
 def test_a_zero_hop_reception_has_an_empty_path_in_json() -> None:
@@ -411,6 +443,25 @@ def test_a_located_node_links_its_coordinates_to_a_map() -> None:
         "[60.169856, 24.938379]"
         "(https://www.google.com/maps/search/?api=1&query=60.169856,24.938379)"
     )
+
+
+def test_a_named_place_is_shown_above_the_coordinates() -> None:
+    assert _field(_fixed(place=HELSINKI), "Location") == (
+        "Kamppi, Helsinki, Finland\n"
+        "[60.169856, 24.938379]"
+        "(https://www.google.com/maps/search/?api=1&query=60.169856,24.938379)"
+    )
+
+
+def test_a_place_with_no_neighborhood_names_city_and_country() -> None:
+    place = Place(neighborhood=None, city="Uppsala", country="Sweden", country_code="SE")
+    assert _field(_fixed(place=place), "Location").split("\n")[0] == "Uppsala, Sweden"
+
+
+def test_a_place_name_with_markdown_is_shown_literally() -> None:
+    place = Place(neighborhood="[x](y)", city="Saint-Denis", country="France", country_code="FR")
+    line = _field(_fixed(place=place), "Location").split("\n")[0]
+    assert line == "\\[x\\]\\(y\\), Saint\\-Denis, France"
 
 
 def test_a_node_with_no_advertised_position_says_so() -> None:

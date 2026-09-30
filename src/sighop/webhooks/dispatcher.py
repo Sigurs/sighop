@@ -10,6 +10,10 @@ Three properties carry the design:
   database when an event is taken off the queue, so a change made by
   the panel, or directly in the database by another process, applies to the next
   event without a restart. A failed read falls back to the last good list.
+* **The place is named on the way out.** An event's position is named from the
+  gazetteer once, when it is taken off the queue and before any webhook renders
+  it (webhook-place-names D3), so every webhook and every retry name the same
+  place and the listener stays free of I/O.
 * **One webhook never waits on another.** Each matching webhook gets its own
   task with its own retry schedule; a semaphore caps concurrent HTTP attempts,
   and is held only for an attempt, never across a backoff sleep.
@@ -21,6 +25,7 @@ for the attempt and goes nowhere else.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 import uuid
 from collections import deque
@@ -29,6 +34,8 @@ from typing import Protocol
 
 from sighop.db.engine import Outcome, Succeeded
 from sighop.db.repositories import OpenedWebhook, WebhookRecord
+from sighop.geo import Place, default_namer
+from sighop.geo.places import Located
 from sighop.logging import Logger, get_logger
 from sighop.net.contacts import ContactObservation
 from sighop.net.rx import RxRecord
@@ -64,6 +71,25 @@ MAX_ATTEMPTS = len(RETRY_DELAYS_SECONDS) + 1
 type Transport = Callable[[str, bytes, str, float], AttemptResult]
 type Sleep = Callable[[float], Awaitable[None]]
 type Clock = Callable[[], dt.datetime]
+
+
+class PlaceSource(Protocol):
+    """The part of `PlaceNamer` delivery uses. Faked in tests."""
+
+    async def name(self, position: Located | None) -> Place | None: ...
+
+
+async def with_place(event: WebhookEvent, places: PlaceSource, log: Logger) -> WebhookEvent:
+    """The event with its position's place named. Never raises: an event that
+    cannot be named goes out with its coordinates alone."""
+    if event.position is None or event.place is not None:
+        return event
+    try:
+        place = await places.name(event.position)
+    except Exception as exc:
+        log.error("place_lookup_failed", outcome="error", error=f"{type(exc).__name__}: {exc}")
+        return event
+    return event if place is None else dataclasses.replace(event, place=place)
 
 
 class WebhookSource(Protocol):
@@ -113,8 +139,10 @@ class WebhookDispatcher:
         queue_capacity: int = QUEUE_CAPACITY,
         max_in_flight: int = MAX_IN_FLIGHT_DELIVERIES,
         contacts: HopLookup | None = None,
+        places: PlaceSource = default_namer,
     ) -> None:
         self._repository = repository
+        self._places = places
         self._contacts = contacts
         self._secret = secret
         self._log = logger or get_logger(component="webhooks")
@@ -197,10 +225,10 @@ class WebhookDispatcher:
             await self._shutdown()
 
     async def dispatch(self, event: WebhookEvent) -> None:
-        """Start a delivery of one event to each matching webhook."""
+        """Name the event's place, then start a delivery of it to each matching webhook."""
         self._dispatching += 1
         try:
-            await self._dispatch(event)
+            await self._dispatch(await with_place(event, self._places, self._log))
         finally:
             self._dispatching -= 1
 
@@ -406,6 +434,7 @@ async def send_sample(
     clock: Clock = _utcnow,
     transport: Transport = post,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    places: PlaceSource = default_namer,
 ) -> AttemptResult:
     """One attempt with a sample event, no retry (design D8).
 
@@ -414,7 +443,7 @@ async def send_sample(
     """
     log = logger or get_logger(component="webhooks")
     record = opened.record
-    event = sample_event(trigger, clock())
+    event = await with_place(sample_event(trigger, clock()), places, log)
     if opened.url is None:
         result = AttemptResult(
             AttemptOutcome.FINAL, reason=f"the stored URL cannot be opened: {opened.error}"

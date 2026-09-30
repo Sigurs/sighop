@@ -6,8 +6,10 @@ Discord webhook message, and every advert-derived string in it was written by
 whoever sent the advert — so markdown is escaped and mentions are disabled.
 
 The two formats do not carry the same fields. The Discord message shows an
-advertised position as a maps link a reader can click, and shows no SNR: link
-quality of a first sighting is for a machine, and stays in `json`.
+advertised position as a maps link a reader can click, under the name of the
+place it is in when the gazetteer knows one, and shows no SNR: link quality of a
+first sighting is for a machine, and stays in `json`. In `json` the place is an
+object under the position, null when the position has no place.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import re
 import unicodedata
 
+from sighop.geo import Place
 from sighop.webhooks.config import WebhookFormat
 from sighop.webhooks.events import PathHop, Position, WebhookEvent
 from sighop.webhooks.triggers import Trigger
@@ -86,6 +89,14 @@ def render_json(event: WebhookEvent) -> bytes:
                 "latitude": event.position.latitude,
                 "longitude": event.position.longitude,
                 "map_url": maps_url(event.position),
+                "place": None
+                if event.place is None
+                else {
+                    "neighborhood": event.place.neighborhood,
+                    "city": event.place.city,
+                    "country": event.place.country,
+                    "country_code": event.place.country_code,
+                },
             },
         },
         "reception": {
@@ -134,16 +145,22 @@ def discord_path(path: tuple[PathHop, ...]) -> str:
     return shown
 
 
-def discord_location(position: Position | None) -> str:
-    """The coordinates as a masked maps link, or that none were advertised.
+def discord_location(position: Position | None, place: Place | None = None) -> str:
+    """The coordinates as a masked maps link under the place's name, or that
+    none were advertised.
 
     Coordinates are numbers sighop formats, never advert text, so they are not
-    escaped; the masked-link syntax around them is ours.
+    escaped; the masked-link syntax around them is ours. Place names come from
+    GeoNames, not an advert, but are escaped all the same: they carry `-`, `(`
+    and `'`, and one must not reach Discord as markup.
     """
     if position is None:
         return NO_POSITION
     label = f"{_coordinate(position.latitude)}, {_coordinate(position.longitude)}"
-    return f"[{label}]({maps_url(position)})"
+    link = f"[{label}]({maps_url(position)})"
+    if place is None:
+        return link
+    return f"{escape_discord(place.label)}\n{link}"
 
 
 def render_discord(event: WebhookEvent) -> bytes:
@@ -167,7 +184,11 @@ def render_discord(event: WebhookEvent) -> bytes:
             "value": "unknown" if event.hop_count is None else str(event.hop_count),
             "inline": True,
         },
-        {"name": "Location", "value": discord_location(event.position), "inline": True},
+        {
+            "name": "Location",
+            "value": discord_location(event.position, event.place),
+            "inline": True,
+        },
         {"name": "Public key", "value": f"`{public_key}`", "inline": False},
         {"name": "Path", "value": discord_path(event.path), "inline": False},
     ]

@@ -8,6 +8,7 @@ and flakier to say.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import datetime as dt
 import json
 import threading
@@ -19,16 +20,19 @@ import pytest
 
 from sighop.db.engine import DatabaseError, Failed, Outcome, Succeeded
 from sighop.db.repositories import OpenedWebhook, WebhookRecord
+from sighop.geo import Place
+from sighop.geo.places import Located
 from sighop.net.contacts import Contact, ContactObservation, ContactStore
+from sighop.protocol.crypto import VerifiedAdvert, sign_advert, verify_advert
 from sighop.protocol.identity import generate_identity
-from sighop.protocol.payloads import NodeType
+from sighop.protocol.payloads import NodeType, build_appdata
 from sighop.webhooks.dispatcher import (
     MAX_ATTEMPTS,
     WebhookDispatcher,
     enabled_summary,
     send_sample,
 )
-from sighop.webhooks.events import WebhookEvent, sample_event
+from sighop.webhooks.events import Position, WebhookEvent, sample_event
 from sighop.webhooks.transport import AttemptOutcome, AttemptResult, post
 from sighop.webhooks.triggers import Trigger
 from tests.botfixtures import advert_record, verified_advert
@@ -622,3 +626,121 @@ async def test_a_sample_to_an_unresolvable_host_reports_why() -> None:
     assert not result.delivered
     assert result.status is None
     assert result.reason, "the failure says why"
+
+
+# --- webhook-place-names 4.1-4.3: the place is named on the way out -----------
+
+STOCKHOLM = Place(neighborhood="Gamla Stan", city="Stockholm", country="Sweden", country_code="SE")
+
+
+@dataclass
+class FakePlaces:
+    place: Place | None = STOCKHOLM
+    error: Exception | None = None
+    calls: list[Located | None] = field(default_factory=list)
+
+    async def name(self, position: Located | None) -> Place | None:
+        self.calls.append(position)
+        if self.error is not None:
+            raise self.error
+        return self.place
+
+
+def _located(trigger: Trigger = Trigger.NEW_REPEATER) -> WebhookEvent:
+    return dataclasses.replace(_event(trigger), position=Position(59.329460, 18.068580))
+
+
+async def test_every_webhook_and_retry_names_the_same_place() -> None:
+    plain, discord = _record("dev-json"), _record("dev-discord", format="discord")
+    transport = FakeTransport(script={plain.url_host: [BUSY, OK]})
+    places = FakePlaces()
+    dispatcher = _dispatcher(FakeRepository(records=[plain, discord]), transport, places=places)
+
+    await _deliver(dispatcher, _located())
+
+    assert len(places.calls) == 1, "named once per event"
+    bodies = [json.loads(body) for url, body, *_ in transport.calls]
+    json_places = [b["node"]["position"]["place"] for b in bodies if "node" in b]
+    assert len(json_places) == 2, "the first attempt and its retry"
+    assert all(
+        p
+        == {
+            "neighborhood": "Gamla Stan",
+            "city": "Stockholm",
+            "country": "Sweden",
+            "country_code": "SE",
+        }
+        for p in json_places
+    )
+    [embed] = [b["embeds"][0] for b in bodies if "embeds" in b]
+    [location] = [f["value"] for f in embed["fields"] if f["name"] == "Location"]
+    assert location.startswith("Gamla Stan, Stockholm, Sweden\n[59.329460, 18.068580]")
+
+
+async def test_an_event_without_a_position_is_never_named() -> None:
+    places = FakePlaces()
+    transport = FakeTransport()
+    dispatcher = _dispatcher(FakeRepository(records=[_record("dev-a")]), transport, places=places)
+
+    await _deliver(dispatcher, _event())
+
+    assert places.calls == []
+    assert json.loads(transport.calls[0][1])["node"]["position"] is None
+
+
+@pytest.mark.parametrize("places", [FakePlaces(place=None), FakePlaces(error=RuntimeError("x"))])
+async def test_a_position_that_cannot_be_named_is_still_delivered(places: FakePlaces) -> None:
+    transport = FakeTransport()
+    dispatcher = _dispatcher(FakeRepository(records=[_record("dev-a")]), transport, places=places)
+
+    await _deliver(dispatcher, _located())
+
+    assert dispatcher.delivered == 1
+    position = json.loads(transport.calls[0][1])["node"]["position"]
+    assert position["latitude"] == 59.32946 and position["place"] is None
+
+
+async def test_the_listener_names_nothing_until_the_event_leaves_the_queue() -> None:
+    identity = generate_identity()
+    appdata = build_appdata(
+        NodeType.REPEATER, name="Hilltop", latitude=59_329_460, longitude=18_068_580
+    )
+    verified = verify_advert(sign_advert(identity, 1_700_000_000, appdata))
+    assert isinstance(verified, VerifiedAdvert)
+    places = FakePlaces()
+    transport = FakeTransport()
+    dispatcher = _dispatcher(FakeRepository(records=[_record("dev-a")]), transport, places=places)
+    store = ContactStore()
+    store.add_observation_listener(dispatcher.on_observation)
+
+    await store.handle(advert_record(verified))
+
+    assert dispatcher.pending == 1 and places.calls == [], "offering named nothing"
+    runner = asyncio.create_task(dispatcher.run())
+    while dispatcher.delivered == 0:
+        await asyncio.sleep(0.001)
+    runner.cancel()
+    await asyncio.gather(runner, return_exceptions=True)
+    assert places.calls == [Position(59.32946, 18.06858)]
+    assert json.loads(transport.calls[0][1])["node"]["position"]["place"]["city"] == "Stockholm"
+
+
+async def test_a_discord_sample_shows_its_place_above_the_link() -> None:
+    hook = _record("dev-a", format="discord")
+    transport = FakeTransport()
+
+    await send_sample(
+        OpenedWebhook(record=hook, url=_url(hook)),
+        Trigger.NEW_REPEATER,
+        transport=transport,
+        places=FakePlaces(),
+    )
+
+    [(_, body, _, _)] = transport.calls
+    fields = json.loads(body)["embeds"][0]["fields"]
+    [location] = [f["value"] for f in fields if f["name"] == "Location"]
+    assert location == (
+        "Gamla Stan, Stockholm, Sweden\n"
+        "[59.329460, 18.068580]"
+        "(https://www.google.com/maps/search/?api=1&query=59.329460,18.068580)"
+    )

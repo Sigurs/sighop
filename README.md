@@ -20,7 +20,7 @@ sighop drives a single modem running the MeshCore **KISS modem firmware**, which
   - room browsing
   - a chat client
   - repeater metrics with history charts
-- **Webhooks, packet log, JSONL capture and replay.**
+- **Webhooks, packet log, JSONL capture and replay.** Webhooks name an advertised position's neighborhood, city and country offline.
 - **Encrypted at rest**: entity seeds are sealed under `SIGHOP_SECRET_KEY`.
 
 Out of scope for now: repeating or forwarding, multipart payloads, bridging to other protocols, and more than one modem.
@@ -71,7 +71,13 @@ The test suite requires a database. Each run works in its own throwaway schema. 
 
 The dev container (`.devcontainer/`) has the full toolchain.
 
+Place names come from a gazetteer bundled in `src/sighop/geo/`. Regenerate it from GeoNames with `uv run python scripts/build_places.py`.
+
 ## Documentation
 
 - [DESIGN.md](DESIGN.md): architecture, TX scheduler, cryptography, persistence and deployment
 - [openspec/specs/](openspec/specs/): one behavioural spec per capability
+
+## Data
+
+Place names are from [GeoNames](https://www.geonames.org), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

@@ -12,6 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+from sighop.geo import Place
 from sighop.net.contacts import Contact, ContactObservation
 from sighop.net.rx import AdvertOutcome, RxRecord
 from sighop.protocol.payloads import NodeType
@@ -83,6 +84,9 @@ class WebhookEvent:
     hash_size: int = 1
     path: tuple[PathHop, ...] = ()
     test: bool = False
+    place: Place | None = None
+    """Where `position` is, named on the delivery side before rendering
+    (webhook-place-names D3); None until then, and when it has no place."""
 
     @property
     def node_hash(self) -> int:
